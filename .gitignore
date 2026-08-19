@@ -1,0 +1,10 @@
+node_modules/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+.thaarei/fixtures/
+.thaarei/generated/
+*.log
+.DS_Store

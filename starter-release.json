@@ -1,0 +1,140 @@
+{
+  "$schema": "./tooling/release/starter-release.schema.json",
+  "schemaVersion": 1,
+  "release": "0.1.0-dev.1",
+  "status": "prerelease",
+  "releasedAt": null,
+  "runtime": {
+    "node": "24.19.0",
+    "pnpm": "11.22.0"
+  },
+  "approvedMajors": {
+    "@biomejs/biome": 2,
+    "@base-ui/react": 1,
+    "@fastify/swagger": 9,
+    "@fastify/swagger-ui": 6,
+    "@hey-api/openapi-ts": 0,
+    "@tailwindcss/postcss": 4,
+    "@tanstack/react-form": 1,
+    "@tanstack/react-query": 5,
+    "@trpc/client": 11,
+    "@trpc/server": 11,
+    "@types/node": 24,
+    "@types/react": 19,
+    "@types/react-dom": 19,
+    "ai": 7,
+    "better-auth": 1,
+    "drizzle-orm": 0,
+    "expo": 57,
+    "expo-notifications": 57,
+    "expo-router": 57,
+    "expo-secure-store": 57,
+    "fastify": 5,
+    "graphile-worker": 0,
+    "js-yaml": 4,
+    "next": 16,
+    "pino": 10,
+    "postgres": 3,
+    "react": 19,
+    "react-native": 0,
+    "react-native-gesture-handler": 2,
+    "react-native-reanimated": 4,
+    "react-native-unistyles": 3,
+    "shadcn": 4,
+    "tailwindcss": 4,
+    "turbo": 2,
+    "tsx": 4,
+    "typescript": 6,
+    "vitest": 4,
+    "yaml": 2,
+    "zod": 4
+  },
+  "testedPackages": {
+    "@biomejs/biome": "2.5.9",
+    "@base-ui/react": "1.7.0",
+    "@fastify/swagger": "9.8.1",
+    "@fastify/swagger-ui": "6.1.1",
+    "@hey-api/openapi-ts": "0.99.0",
+    "@tailwindcss/postcss": "4.3.3",
+    "@tanstack/react-form": "1.33.5",
+    "@tanstack/react-query": "5.101.4",
+    "@trpc/client": "11.18.0",
+    "@trpc/server": "11.18.0",
+    "@types/node": "24.13.3",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "ai": "7.0.68",
+    "better-auth": "1.7.1",
+    "drizzle-orm": "0.45.2",
+    "expo": "57.0.14",
+    "expo-notifications": "57.0.12",
+    "expo-router": "57.0.14",
+    "expo-secure-store": "57.0.1",
+    "fastify": "5.12.1",
+    "graphile-worker": "0.17.3",
+    "js-yaml": "4.3.1",
+    "next": "16.3.1",
+    "pino": "10.3.1",
+    "postgres": "3.4.9",
+    "react": "19.2.3",
+    "react-native": "0.86.2",
+    "react-native-gesture-handler": "2.32.0",
+    "react-native-reanimated": "4.5.1",
+    "react-native-unistyles": "3.3.0",
+    "shadcn": "4.18.0",
+    "tailwindcss": "4.3.3",
+    "turbo": "2.10.10",
+    "tsx": "4.23.12",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11",
+    "yaml": "2.9.0",
+    "zod": "4.4.3"
+  },
+  "containerImages": {
+    "node": {
+      "reference": "node:24.19.0-bookworm-slim",
+      "digest": "sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03"
+    },
+    "postgresql": {
+      "reference": "postgres:18.3-bookworm",
+      "digest": "sha256:80630f83606d8db77d30b3851b16a9f78be2d0d4dda6f7b82a1fdca5ebe3acba"
+    },
+    "python": {
+      "reference": "python:3.12.13-slim-bookworm",
+      "digest": "sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b"
+    }
+  },
+  "enabledProfiles": [],
+  "compatibilityEvidence": [
+    {
+      "gate": "source-template-validation",
+      "status": "passed",
+      "evidence": "Pinned Node 24.19.0 source validation and the seven-fixture matrix are recorded in .thaarei/work/STARTER-001.md and .thaarei/work/STARTER-002.md."
+    },
+    {
+      "gate": "better-auth-expo-sdk-57-native-build",
+      "status": "blocked_external",
+      "evidence": "Requires iOS and Android development-build proof."
+    },
+    {
+      "gate": "expo-metro-image-size-security-patch",
+      "status": "blocked_external",
+      "evidence": "Two high-severity image-size advisories are narrowly waived for the mobile build path because the stated patched release 2.0.3 is not published. Generated repositories record the waiver and require version-controlled build assets."
+    },
+    {
+      "gate": "python-container-build",
+      "status": "passed",
+      "evidence": "The pinned Python 3.12.13 image built locally, started successfully, and returned HTTP 200 from /health/ready; the proof is recorded in .thaarei/work/STARTER-002.md."
+    },
+    {
+      "gate": "dokploy-live-deployment-restore-rollback",
+      "status": "blocked_external",
+      "evidence": "Requires a disposable Dokploy environment."
+    },
+    {
+      "gate": "railway-live-service-mapping",
+      "status": "blocked_external",
+      "evidence": "Requires a disposable Railway project."
+    }
+  ]
+}

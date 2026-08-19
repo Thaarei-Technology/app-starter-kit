@@ -1,0 +1,40 @@
+{
+  "name": "thaarei-starter-source",
+  "version": "0.1.0-dev.1",
+  "private": true,
+  "description": "Source template and validation tooling for independent Thaarei client repositories.",
+  "type": "module",
+  "packageManager": "pnpm@11.22.0",
+  "engines": {
+    "node": "24.19.x"
+  },
+  "scripts": {
+    "check:boundaries": "tsx tooling/governance/src/cli.ts check:boundaries",
+    "check:implementation": "tsx tooling/governance/src/cli.ts check:implementation",
+    "check:source-of-truth": "tsx tooling/governance/src/cli.ts check:source-of-truth",
+    "check:fixtures": "tsx tooling/starter-init/src/validate-fixtures.ts",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "implementation:list": "tsx tooling/governance/src/cli.ts implementation:list",
+    "implementation:new": "tsx tooling/governance/src/cli.ts implementation:new",
+    "implementation:sync": "tsx tooling/governance/src/cli.ts implementation:sync",
+    "lint": "biome lint .",
+    "release:check": "tsx tooling/release/check-release.ts",
+    "starter:init": "tsx tooling/starter-init/src/index.ts",
+    "validate:starter": "pnpm release:check && pnpm check:source-of-truth && pnpm check:boundaries && pnpm check:implementation && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm check:fixtures",
+    "check": "pnpm validate:starter",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.9",
+    "@types/node": "24.13.3",
+    "turbo": "2.10.10",
+    "tsx": "4.23.12",
+    "typescript": "6.0.3",
+    "vitest": "4.1.11",
+    "yaml": "2.9.0",
+    "zod": "4.4.3"
+  }
+}
