@@ -117,6 +117,10 @@ Store the canonical plan, evidence, validation results, and blockers in
 `IMPLEMENTATION.md` with `pnpm implementation:sync`. Never edit that generated
 file by hand.
 
+For the end-to-end workflow, including destination-repository setup, initializer
+options, profile selection, and generated-repository validation, see [Create a
+client project](create-client-project.md).
+
 Initialize a client repository with one deterministic command:
 
 ```text

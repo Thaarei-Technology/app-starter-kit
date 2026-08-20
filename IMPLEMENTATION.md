@@ -4,6 +4,13 @@
 
 Canonical records: `.thaarei/work/*.md`.
 
+## STARTER-004: Add the client-project creation guide
+
+- Status: complete
+- Owner: primary-agent
+- Updated: 2026-08-20
+- Paths: README.md, docs/create-client-project.md, docs/engineering-starter-kit.md, .thaarei/work/STARTER-004.md, IMPLEMENTATION.md
+
 ## STARTER-001: Implement the executable Thaarei engineering starter contract
 
 - Status: complete

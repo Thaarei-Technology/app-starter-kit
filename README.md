@@ -19,6 +19,9 @@ The mobile profile also carries a narrow, recorded waiver for two high-severity
 
 ## Initialize a client fixture
 
+For the complete client-project creation workflow, see [Create a client
+project](docs/create-client-project.md).
+
 Install the pinned toolchain and run the initializer with explicit profiles:
 
 ```bash
