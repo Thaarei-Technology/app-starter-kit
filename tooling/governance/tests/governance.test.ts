@@ -161,6 +161,28 @@ test("boundaries allow selected provider SDKs only in packages/adapters", async 
   );
 });
 
+test("boundaries allow only the Better Auth browser client in packages/api-client", async () => {
+  const root = await temporaryRoot();
+  await mkdir(join(root, "packages", "api-client"), { recursive: true });
+  await writeFile(
+    join(root, "packages", "api-client", "package.json"),
+    JSON.stringify({ name: "@test/api-client" }),
+  );
+  await writeFile(
+    join(root, "packages", "api-client", "client.ts"),
+    'import { createAuthClient } from "better-auth/client";\n',
+  );
+  const allowed = await checkBoundaries(root);
+  assert.equal(allowed.ok, true);
+
+  await writeFile(
+    join(root, "packages", "api-client", "server.ts"),
+    'import { betterAuth } from "better-auth";\n',
+  );
+  const rejected = await checkBoundaries(root);
+  assert.ok(rejected.diagnostics.some((diagnostic) => diagnostic.code === "BOUNDARY_PROVIDER_SDK"));
+});
+
 test("provider matching does not classify unrelated names such as airtable", async () => {
   const root = await temporaryRoot();
   await mkdir(join(root, "packages", "core"), { recursive: true });

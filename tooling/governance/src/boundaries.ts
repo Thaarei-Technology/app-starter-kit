@@ -31,6 +31,9 @@ const isProviderModule = (specifier: string): boolean =>
       ? specifier.startsWith(prefix)
       : specifier === prefix || specifier.startsWith(`${prefix}/`),
   );
+const isAllowedProviderClient = (specifier: string, owner: PackageInfo | undefined): boolean =>
+  (specifier === "better-auth/client" || specifier.startsWith("better-auth/client/")) &&
+  (owner?.name.endsWith("/api-client") ?? false);
 
 const importSpecifiers = (source: string): readonly string[] => {
   const specifiers: string[] = [];
@@ -223,7 +226,11 @@ export const checkBoundaries = async (root: string): Promise<CheckResult> => {
           ),
         );
       }
-      if (isProviderModule(specifier) && !(owner?.name.endsWith("/adapters") ?? false)) {
+      if (
+        isProviderModule(specifier) &&
+        !(owner?.name.endsWith("/adapters") ?? false) &&
+        !isAllowedProviderClient(specifier, owner)
+      ) {
         diagnostics.push(
           diagnostic(
             "BOUNDARY_PROVIDER_SDK",

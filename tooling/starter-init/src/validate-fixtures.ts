@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -18,6 +18,12 @@ interface Fixture {
 const FIXTURES: readonly Fixture[] = [
   { name: "web-only", profiles: "web", deployment: "dokploy", mobile: false },
   { name: "internal-tool", profiles: "web,api,data", deployment: "dokploy", mobile: false },
+  {
+    name: "web-developer-handoff",
+    profiles: "web,api,data,identity",
+    deployment: "dokploy",
+    mobile: false,
+  },
   {
     name: "web-mobile-product",
     profiles: "web,mobile,api,data,identity",
@@ -168,40 +174,62 @@ async function proveGeneratedReleaseContract(root: string): Promise<void> {
 export async function validateFixtures(): Promise<void> {
   for (const fixture of FIXTURES) {
     const root = await mkdtemp(join(tmpdir(), `thaarei-${fixture.name}-`));
-    process.stdout.write(`Generating ${fixture.name} at ${root}\n`);
-    await runInitializer(initializerArguments(fixture, root));
-    const [installedAgents, expectedAgents] = await Promise.all([
-      readFile(join(root, "AGENTS.md"), "utf8"),
-      readFile(join(sourceRoot, "templates", "AGENTS.md"), "utf8"),
-    ]);
-    if (installedAgents !== expectedAgents)
-      throw new Error(`${fixture.name} did not receive the canonical AGENTS.md template`);
-    await runPnpm(root, ["install", "--frozen-lockfile", "--ignore-scripts"]);
-    if (fixture.name === "web-only") {
-      await proveGeneratedReleaseDrift(root);
-      await proveGeneratedReleaseContract(root);
-    }
-    await runPnpm(root, [
-      "audit",
-      "--prod",
-      "--audit-level",
-      "high",
-      ...(fixture.mobile
-        ? ["--ignore", "GHSA-w3rx-r6r6-pgpr", "--ignore", "GHSA-5p2g-fcmc-qvqq"]
-        : []),
-    ]);
-    if (fixture.mobile) {
-      await runPnpm(root, [
-        "--filter",
-        "@fixture/mobile-app",
-        "exec",
-        "expo",
-        "install",
-        "--check",
+    try {
+      process.stdout.write(`Generating ${fixture.name} at ${root}\n`);
+      await runInitializer(initializerArguments(fixture, root));
+      const [installedAgents, expectedAgents] = await Promise.all([
+        readFile(join(root, "AGENTS.md"), "utf8"),
+        readFile(join(sourceRoot, "templates", "AGENTS.md"), "utf8"),
       ]);
+      if (installedAgents !== expectedAgents)
+        throw new Error(`${fixture.name} did not receive the canonical AGENTS.md template`);
+      const developerGuide = await readFile(join(root, "docs", "developer-guide.md"), "utf8");
+      for (const profile of fixture.profiles.split(",")) {
+        if (!developerGuide.includes(`\`${profile}\``))
+          throw new Error(`${fixture.name} developer guide omitted selected profile ${profile}`);
+      }
+      if (fixture.name === "web-only") {
+        for (const unselected of ["api", "data", "identity", "mobile"]) {
+          if (developerGuide.includes(`\`${unselected}\``))
+            throw new Error(`web-only developer guide listed unselected profile ${unselected}`);
+        }
+        const marker = JSON.parse(
+          await readFile(join(root, ".thaarei", "starter-init.json"), "utf8"),
+        ) as { readonly generatedFiles: readonly string[] };
+        for (const forbidden of ["compose.yaml", "packages/database/src/migrate.ts"]) {
+          if (marker.generatedFiles.includes(forbidden))
+            throw new Error(`web-only fixture received forbidden artifact ${forbidden}`);
+        }
+      }
+      await runPnpm(root, ["install", "--frozen-lockfile", "--ignore-scripts"]);
+      if (fixture.name === "web-only") {
+        await proveGeneratedReleaseDrift(root);
+        await proveGeneratedReleaseContract(root);
+      }
+      await runPnpm(root, [
+        "audit",
+        "--prod",
+        "--audit-level",
+        "high",
+        ...(fixture.mobile
+          ? ["--ignore", "GHSA-w3rx-r6r6-pgpr", "--ignore", "GHSA-5p2g-fcmc-qvqq"]
+          : []),
+      ]);
+      if (fixture.mobile) {
+        await runPnpm(root, [
+          "--filter",
+          "@fixture/mobile-app",
+          "exec",
+          "expo",
+          "install",
+          "--check",
+        ]);
+      }
+      await runPnpm(root, ["check"]);
+      process.stdout.write(`Validated ${fixture.name}\n`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
     }
-    await runPnpm(root, ["check"]);
-    process.stdout.write(`Validated ${fixture.name}\n`);
   }
 }
 

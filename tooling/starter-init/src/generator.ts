@@ -70,6 +70,8 @@ const NODE_IMAGE =
 const PYTHON_VERSION = "3.12.13";
 const PYTHON_IMAGE =
   "python:3.12.13-slim-bookworm@sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b";
+const POSTGRES_IMAGE =
+  "postgres:18.3-bookworm@sha256:80630f83606d8db77d30b3851b16a9f78be2d0d4dda6f7b82a1fdca5ebe3acba";
 const DEPENDENCY_VERSIONS = {
   nodeTypes: "24.13.3",
   typescript: "6.0.3",
@@ -236,6 +238,7 @@ function packageManifest(
   config: InitConfig,
   name: string,
   dependencies: Readonly<Record<string, string>> = {},
+  extraDevDependencies: Readonly<Record<string, string>> = {},
 ): GeneratedFile {
   return jsonFile(`packages/${name}/package.json`, {
     name: packageName(config, name),
@@ -248,6 +251,7 @@ function packageManifest(
     devDependencies: {
       "@types/node": DEPENDENCY_VERSIONS.nodeTypes,
       typescript: DEPENDENCY_VERSIONS.typescript,
+      ...extraDevDependencies,
     },
   });
 }
@@ -283,6 +287,8 @@ function appManifest(
     type: "module",
     scripts: {
       build: "tsc -p tsconfig.json",
+      dev:
+        name === "api" ? "tsx --env-file=../../.env watch src/index.ts" : "tsx watch src/index.ts",
       typecheck: "tsc -p tsconfig.json --noEmit",
       start: "node dist/index.js",
     },
@@ -435,6 +441,8 @@ function externalOpenApiDocument(config: InitConfig): Readonly<Record<string, un
           properties: {
             status: { type: "string", enum: ["ok", "degraded"] },
             checkedAt: { type: "string", format: "date-time" },
+            detail: { type: "string" },
+            failedDependency: { type: "string" },
           },
         },
         ProblemDetails: {
@@ -662,8 +670,6 @@ function contractsPackageFile(plan: CapabilityPlan): GeneratedFile {
   const zodImport = usesZod ? `import { z } from "zod";\n\n` : "";
   const apiSchemas = plan.needsApi
     ? `
-export interface HealthResponse { readonly status: "ok" | "degraded"; readonly checkedAt: string; }
-export interface ProblemDetails { readonly type: string; readonly title: string; readonly status: number; readonly detail?: string; }
 export const healthResponseSchema = z.object({
   status: z.enum(["ok", "degraded"]),
   checkedAt: z.string().datetime(),
@@ -676,6 +682,8 @@ export const problemDetailsSchema = z.object({
   status: z.number().int().min(100).max(599),
   detail: z.string().optional(),
 });
+export type HealthResponse = z.infer<typeof healthResponseSchema>;
+export type ProblemDetails = z.infer<typeof problemDetailsSchema>;
 `
     : "";
   const jobSchema = plan.needsWorker
@@ -848,6 +856,64 @@ export class ToolRegistry {
   );
 }
 
+function migrationRunnerFile(): GeneratedFile {
+  return textFile(
+    "packages/database/src/migrate.ts",
+    `import { createHash } from "node:crypto";
+import { readdir, readFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import postgres from "postgres";
+
+try { process.loadEnvFile(resolve(process.cwd(), ".env")); } catch (error: unknown) {
+  if (!(error instanceof Error) || !("code" in error && error.code === "ENOENT")) throw error;
+}
+const databaseUrl = process.env.DATABASE_URL;
+if (!databaseUrl) throw new Error("DATABASE_URL is required; copy .env.example to .env first");
+const migrationsDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "../migrations");
+const sql = postgres(databaseUrl, { max: 1 });
+const checksum = (content: string): string => createHash("sha256").update(content).digest("hex");
+const migrationName = (name: string): boolean => /^\\d{4}_[a-z0-9-]+\\.sql$/u.test(name);
+
+try {
+  await sql.unsafe("CREATE TABLE IF NOT EXISTS thaarei_migrations (name text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())");
+  const appliedRows = await sql.unsafe("SELECT name, checksum FROM thaarei_migrations ORDER BY name");
+  const applied = new Map<string, string>();
+  for (const row of appliedRows) {
+    if (typeof row.name !== "string" || typeof row.checksum !== "string") throw new Error("Migration ledger row is invalid");
+    applied.set(row.name, row.checksum);
+  }
+  const files = (await readdir(migrationsDirectory, { withFileTypes: true }))
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".sql"))
+    .map((entry) => entry.name)
+    .sort();
+  const invalidName = files.find((name) => !migrationName(name));
+  if (invalidName) throw new Error(\`Invalid numbered migration filename: \${invalidName}\`);
+  const missingFile = [...applied.keys()].find((name) => !files.includes(name));
+  if (missingFile) throw new Error(\`Applied migration file is missing: \${missingFile}\`);
+  for (const name of files) {
+    const content = await readFile(join(migrationsDirectory, name), "utf8");
+    const digest = checksum(content);
+    const previous = applied.get(name);
+    if (previous) {
+      if (previous !== digest) throw new Error(\`Migration checksum changed: \${name}\`);
+      process.stdout.write(\`Skipping unchanged migration \${name}\\n\`);
+      continue;
+    }
+    await sql.begin(async (transaction) => {
+      await transaction.unsafe(content);
+      await transaction.unsafe("INSERT INTO thaarei_migrations (name, checksum) VALUES ($1, $2)", [name, digest]);
+    });
+    process.stdout.write(\`Applied migration \${name}\\n\`);
+  }
+  process.stdout.write(files.length === applied.size ? "No migrations to apply (second run is a no-op)\\n" : "Migration run complete\\n");
+} finally {
+  await sql.end({ timeout: 5 });
+}
+`,
+  );
+}
+
 function databasePackageFile(config: InitConfig, plan: CapabilityPlan): GeneratedFile {
   const drizzleImports = [
     ...(plan.needsIdentity ? ["boolean"] : []),
@@ -1006,17 +1072,19 @@ export function createInMemoryWorkflowStore(): WorkflowStore {
   const identityDatabase = plan.needsIdentity
     ? `
   const identity: IdentityRepository = {
-    ensureAuthenticationSubject: async (authenticationSubjectId) => {
-      const id = crypto.randomUUID();
-      const rows = await sql.unsafe("INSERT INTO application_users (id, authentication_subject_id) VALUES ($1, $2) ON CONFLICT (authentication_subject_id) DO UPDATE SET authentication_subject_id = EXCLUDED.authentication_subject_id RETURNING id", [id, authenticationSubjectId]);
-      const row = rows[0];
-      if (!row || typeof row.id !== "string") throw new Error("Failed to map authentication subject");
-      return { subjectId: row.id };
+      ensureAuthenticationSubject: async (authenticationSubjectId) => {
+      const existing = await identityDatabase.select().from(applicationUsers).where(eq(applicationUsers.authenticationSubjectId, authenticationSubjectId)).limit(1);
+      if (existing[0]) return { subjectId: existing[0].id };
+      const inserted = await identityDatabase.insert(applicationUsers).values({ id: crypto.randomUUID(), authenticationSubjectId }).onConflictDoNothing().returning({ id: applicationUsers.id });
+      if (inserted[0]) return { subjectId: inserted[0].id };
+      const concurrent = await identityDatabase.select().from(applicationUsers).where(eq(applicationUsers.authenticationSubjectId, authenticationSubjectId)).limit(1);
+      if (!concurrent[0]) throw new Error("Failed to map authentication subject");
+      return { subjectId: concurrent[0].id };
     },
     resolveAuthenticationSubject: async (authenticationSubjectId) => {
-      const rows = await sql.unsafe("SELECT id FROM application_users WHERE authentication_subject_id = $1", [authenticationSubjectId]);
+      const rows = await identityDatabase.select().from(applicationUsers).where(eq(applicationUsers.authenticationSubjectId, authenticationSubjectId)).limit(1);
       const row = rows[0];
-      return row && typeof row.id === "string" ? { subjectId: row.id } : null;
+      return row ? { subjectId: row.id } : null;
     },
   };
 `
@@ -1047,7 +1115,7 @@ export function createInMemoryWorkflowStore(): WorkflowStore {
   return textFile(
     "packages/database/src/index.ts",
     `import postgres from "postgres";
-${plan.needsIdentity ? 'import { drizzle } from "drizzle-orm/postgres-js";\n' : ""}import { ${drizzleImports} } from "drizzle-orm/pg-core";
+${plan.needsIdentity ? 'import { eq } from "drizzle-orm";\nimport { drizzle } from "drizzle-orm/postgres-js";\n' : ""}import { ${drizzleImports} } from "drizzle-orm/pg-core";
 ${coreTypeImport}
 
 ${sourceOfTruthBlock({ id: "starter.database.schema", keywords: databaseKeywords, what: "Persistence schema, readiness, and repositories for selected capabilities.", why: "Durable state and provider sessions need one explicit persistence owner.", when: "Use for migrations, repositories, idempotency, and operational readiness.", how: databaseOwners, boundaries: "Apps compose this package; core and adapters must not import its driver directly." })}
@@ -1066,7 +1134,7 @@ export function databaseUrl(): string {
 ${workflowRuntime}
 export function createDatabaseRuntime(url = databaseUrl()): DatabaseRuntime {
   const sql = postgres(url, { max: 2 });
-${plan.needsIdentity ? "  const authentication = { database: drizzle(sql, { schema: authSchema }), schema: authSchema };\n" : ""}${identityDatabase}${workflowDatabase}${metadataDatabase}${aiDatabase}
+${plan.needsIdentity ? "  const authentication = { database: drizzle(sql, { schema: authSchema }), schema: authSchema };\n  const identityDatabase = drizzle(sql, { schema: { applicationUsers } });\n" : ""}${identityDatabase}${workflowDatabase}${metadataDatabase}${aiDatabase}
   return {
     checkReadiness: async () => { await sql.unsafe("SELECT 1"); },
     close: async () => { await sql.end({ timeout: 5 }); },
@@ -1161,6 +1229,285 @@ ${identity}${jobs}${storage}${ai}
   );
 }
 
+function developerGuideFile(config: InitConfig, plan: CapabilityPlan): GeneratedFile {
+  const hasWeb = hasProfile(config, "web");
+  const hasMobile = hasProfile(config, "mobile");
+  const hasPython = hasProfile(config, "python");
+  const modules = [
+    ["foundation", "ready baseline", "shared primitives"],
+    ["core", "ready baseline", "domain rules and ports"],
+    ["contracts", "ready baseline", "Zod-backed wire contracts"],
+    ...(plan.needsDatabase
+      ? [["database", "ready baseline", "schema, repositories, migrations"] as const]
+      : []),
+    ...(plan.needsApi
+      ? [
+          [
+            "api",
+            "ready baseline",
+            plan.needsIdentity
+              ? "Fastify, tRPC, health, authentication transport"
+              : "Fastify, tRPC, and health",
+          ] as const,
+        ]
+      : []),
+    ...(plan.needsApiClient
+      ? [
+          [
+            "api-client",
+            "ready baseline",
+            plan.needsExternalApi
+              ? "generated OpenAPI client types"
+              : "typed tRPC application client",
+          ] as const,
+        ]
+      : []),
+    ...(plan.needsIdentity
+      ? [
+          [
+            "identity",
+            "ready baseline",
+            "authentication adapter and application identity mapping",
+          ] as const,
+        ]
+      : []),
+    ["test-support", "ready baseline", "shared test helpers"],
+    ...(hasWeb || hasMobile
+      ? [["design-tokens", "ready baseline", "shared presentation tokens"] as const]
+      : []),
+    ["adapters", "scaffold", "replaceable provider integrations"],
+    ...(hasWeb ? [["web", "scaffold", "browser application shell"] as const] : []),
+    ...(hasMobile ? [["mobile", "scaffold", "native application shell"] as const] : []),
+    ...(plan.needsWorker ? [["worker", "scaffold", "Graphile Worker process"] as const] : []),
+    ...(plan.needsAi ? [["AI", "scaffold", "AI SDK adapter and tool budget policy"] as const] : []),
+    ...(hasProfile(config, "durable-ai")
+      ? [["durable AI", "scaffold", "durable job orchestration seam"] as const]
+      : []),
+    ...(plan.needsStorage
+      ? [["storage", "scaffold", "object storage adapter and metadata persistence"] as const]
+      : []),
+    ...(plan.needsExternalApi
+      ? [["external API", "ready baseline", "OpenAPI contract and generated client"] as const]
+      : []),
+    ...(hasPython ? [["python", "scaffold", "optional Python service boundary"] as const] : []),
+    [
+      "product integrations",
+      "deferred integration",
+      "organization, RBAC, AI, jobs, storage, and deployment operations unless selected and implemented",
+    ],
+  ];
+  const table = modules
+    .map(([name, maturity, purpose]) => `| ${name} | ${maturity} | ${purpose} |`)
+    .join("\n");
+  const databaseCommands = plan.needsDatabase ? "    pnpm db:up\n    pnpm db:migrate\n" : "";
+  const prerequisites = plan.needsDatabase
+    ? `Use Node ${NODE_VERSION}, pnpm ${PNPM_VERSION}, and Docker. Copy .env.example to .env and never commit secrets.`
+    : `Use Node ${NODE_VERSION} and pnpm ${PNPM_VERSION}. Copy .env.example to .env and never commit secrets.`;
+  const architecture = [
+    "Domain rules belong in packages/core, persistence belongs in packages/database when selected, and provider implementations belong in packages/adapters.",
+    ...(plan.needsApi
+      ? [
+          "The API validates transport data and composes selected persistence and provider dependencies.",
+        ]
+      : []),
+    ...(hasWeb && plan.needsApi && !plan.needsExternalApi
+      ? [
+          "Browser code uses the typed tRPC client. Server-only Next.js routes proxy selected API paths through API_INTERNAL_URL and preserve cookies.",
+        ]
+      : []),
+    ...(hasWeb && plan.needsExternalApi
+      ? [
+          "The web profile is an application shell; the external API profile owns the OpenAPI contract and generated client types.",
+        ]
+      : []),
+    ...(hasWeb && !plan.needsApi
+      ? ["The web application imports shared presentation values from packages/design-tokens."]
+      : []),
+    ...(hasMobile
+      ? ["The mobile application imports shared presentation values from packages/design-tokens."]
+      : []),
+    ...(plan.needsWorker ? ["The worker process executes selected durable background jobs."] : []),
+    ...(hasPython
+      ? ["The optional Python service remains behind its explicit service boundary."]
+      : []),
+  ].join(" ");
+  const extensionRecipes = [
+    "Add domain rules in packages/core.",
+    ...(plan.needsApi ? ["Add typed procedures in packages/api."] : []),
+    ...(plan.needsDatabase
+      ? [
+          "Add persistence changes as numbered migrations. Run pnpm db:migrate, and never edit an applied migration.",
+        ]
+      : []),
+    "Add providers in packages/adapters behind an existing core port.",
+    ...(hasWeb && plan.needsApiClient && !plan.needsExternalApi
+      ? [
+          "Extend the reference flow only after you understand the typed client and same-origin proxy.",
+        ]
+      : []),
+    ...(plan.needsExternalApi
+      ? ["Regenerate the OpenAPI client after changing the external contract."]
+      : []),
+    ...(plan.needsWorker
+      ? ["Add background work through the jobs port and worker composition."]
+      : []),
+    ...(plan.needsStorage ? ["Implement storage behavior behind the core storage ports."] : []),
+  ].join(" ");
+  const troubleshooting = [
+    ...(plan.needsApi
+      ? ["Verify the API health endpoint and confirm that port 3001 is available."]
+      : []),
+    ...(hasWeb
+      ? [
+          "If the web app does not start, confirm that port 3000 is available and rerun pnpm dev:web.",
+        ]
+      : []),
+    ...(hasWeb && plan.needsApi && !plan.needsExternalApi
+      ? ["If proxied browser requests fail, check server-only API_INTERNAL_URL."]
+      : []),
+    ...(plan.needsIdentity
+      ? ["Verify signup, signin, the session cookie, viewer mapping, and persisted identity rows."]
+      : []),
+    ...(plan.needsExternalApi
+      ? ["Run pnpm check:generated when the OpenAPI client is stale."]
+      : []),
+    ...(plan.needsWorker
+      ? ["Check worker logs and WORKER_CONCURRENCY for background job failures."]
+      : []),
+    ...(hasMobile ? ["Use the Expo development command when diagnosing the native shell."] : []),
+  ].join(" ");
+  return textFile(
+    "docs/developer-guide.md",
+    `# ${config.displayName} developer guide
+
+This private repository is self-contained. Selected profiles: ${config.profiles.map((profile) => `\`${profile}\``).join(", ")}.
+
+## Prerequisites
+
+${prerequisites}
+
+## Quick start
+
+    pnpm install --frozen-lockfile
+${databaseCommands}    pnpm dev
+
+## Commands and configuration
+
+See environment-reference.md for the selected variables. pnpm dev starts selected applications.${hasWeb ? " The web uses port 3000." : ""}${plan.needsApi ? " The API uses port 3001." : ""} pnpm check runs formatting, governance, typecheck, build, and tests.
+${plan.needsApi ? "pnpm dev:api starts API watch mode." : ""} ${hasProfile(config, "web") ? "pnpm dev:web starts the Next.js app." : ""} ${plan.needsDatabase ? "pnpm db:down stops PostgreSQL without removing its named volume." : ""}
+
+## Architecture and data flow
+
+${architecture}
+
+## Package ownership and maturity
+
+| Module | Maturity | Ownership |
+| --- | --- | --- |
+${table}
+
+ready baseline is runnable and typed. scaffold provides an extension seam. Deferred product integrations remain unclaimed.
+
+## Extension recipes
+
+${extensionRecipes}
+
+## Validation and troubleshooting
+
+Run pnpm check before handoff. If variables are missing, check the root .env. ${troubleshooting}${plan.needsDatabase ? " If readiness is degraded, run pnpm db:up and pnpm db:migrate. If a checksum is rejected, restore the applied file and create a new migration." : ""}
+
+## Deferred gates
+
+This handoff does not claim live deployment, backup restore, rollback, native-device proof, or product authorization features.
+`,
+  );
+}
+
+function environmentReferenceFile(config: InitConfig, plan: CapabilityPlan): GeneratedFile {
+  const portExample = plan.needsApi ? "3001" : "3000";
+  const portPurpose = plan.needsApi
+    ? hasProfile(config, "web")
+      ? "API port; the selected web app uses 3000."
+      : "API port."
+    : "Selected application port; the web app uses 3000.";
+  const values = [
+    ["NODE_ENV", "development", "Set by local development; production platform supplies it."],
+    ["PORT", portExample, portPurpose],
+    ...(plan.needsDatabase
+      ? [
+          [
+            "DATABASE_URL",
+            "postgres://starter:starter_local@127.0.0.1:5432/starter",
+            "Use a private managed URL in production.",
+          ] as const,
+        ]
+      : []),
+    ...(plan.needsIdentity
+      ? [
+          [
+            "BETTER_AUTH_SECRET",
+            "replace-with-a-local-secret",
+            "Use generated high-entropy production secret.",
+          ],
+          [
+            "BETTER_AUTH_URL",
+            hasProfile(config, "web") ? "http://127.0.0.1:3000" : "http://127.0.0.1:3001",
+            "Configure the browser-visible origin that serves the authentication path.",
+          ] as const,
+        ]
+      : []),
+    ...(hasProfile(config, "web") && plan.needsApi
+      ? [
+          [
+            "API_INTERNAL_URL",
+            "http://127.0.0.1:3001",
+            "Server-only proxy target; never public browser configuration.",
+          ] as const,
+        ]
+      : []),
+  ];
+  const rows = values
+    .map(([name, example, note]) => `| ${name} | ${example} | ${note} |`)
+    .join("\n");
+  return textFile(
+    "docs/environment-reference.md",
+    `# Environment reference
+
+Copy .env.example to .env for local work. Production receives values from its deployment platform. Never commit secrets.
+
+| Variable | Safe local example | Production requirement |
+| --- | --- | --- |
+${rows}
+`,
+  );
+}
+
+function localComposeFile(): GeneratedFile {
+  return textFile(
+    "compose.yaml",
+    `services:
+  postgres:
+    image: ${POSTGRES_IMAGE}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: starter
+      POSTGRES_USER: starter
+      POSTGRES_PASSWORD: starter_local
+    ports:
+      - "127.0.0.1:\${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U starter -d starter"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - starter-postgres-data:/var/lib/postgresql
+volumes:
+  starter-postgres-data:
+`,
+  );
+}
+
 function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
   const releasePackages = plan.testedPackages;
   const files: GeneratedFile[] = [
@@ -1173,6 +1520,21 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
       engines: { node: "24.19.x" },
       scripts: {
         build: "turbo run build",
+        dev: "turbo run dev --parallel",
+        ...(plan.needsApi
+          ? { "dev:api": `pnpm --filter ${packageName(config, "api-app")} dev` }
+          : {}),
+        ...(hasProfile(config, "web")
+          ? { "dev:web": `pnpm --filter ${packageName(config, "web-app")} dev` }
+          : {}),
+        ...(plan.needsDatabase
+          ? {
+              "db:up": "docker compose up -d postgres",
+              "db:migrate": "tsx packages/database/src/migrate.ts",
+              "db:down": "docker compose down",
+            }
+          : {}),
+        ...(hasProfile(config, "web") ? { "smoke:web": "tsx tooling/smoke-web.ts" } : {}),
         "check:boundaries": "tsx tooling/governance/src/cli.ts check:boundaries",
         "check:implementation": "tsx tooling/governance/src/cli.ts check:implementation",
         ...(hasProfile(config, "python")
@@ -1242,6 +1604,7 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
       $schema: "https://turbo.build/schema.json",
       tasks: {
         build: { dependsOn: ["^build"], outputs: ["dist/**", ".next/**", "!**/.next/cache/**"] },
+        dev: { cache: false, persistent: true },
         typecheck: { dependsOn: ["^typecheck"] },
       },
     }),
@@ -1277,8 +1640,19 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
     ),
     textFile(
       "README.md",
-      `# ${config.displayName}\n\nGenerated from the Thaarei engineering starter. Profiles: ${config.profiles.join(", ") || "base"}. Deployment: ${config.deployment}.\n${hasProfile(config, "external-api") ? "\nThe generated API client package disables exactOptionalPropertyTypes only for generator-owned output. Do not edit generated client files by hand.\n" : ""}`,
+      `# ${config.displayName}\n\nPrivate, self-contained Thaarei starter. Selected profiles: ${config.profiles.join(", ") || "base"}.\n\n## Start here\n\nRead docs/developer-guide.md, copy .env.example to .env, then run pnpm install --frozen-lockfile and pnpm dev.${plan.needsDatabase ? " Data-enabled projects also run pnpm db:up and pnpm db:migrate." : ""}\n`,
     ),
+    developerGuideFile(config, plan),
+    environmentReferenceFile(config, plan),
+    ...(plan.needsDatabase ? [localComposeFile()] : []),
+    ...(hasProfile(config, "web")
+      ? [
+          textFile(
+            "tooling/smoke-web.ts",
+            `const response = await fetch("http://127.0.0.1:3000");\nif (!response.ok) throw new Error(\`web smoke failed: \${response.status}\`);\nprocess.stdout.write("web smoke passed\\n");\n`,
+          ),
+        ]
+      : []),
     textFile(
       ".thaarei/work/INIT-001.md",
       `---\nworkId: INIT-001\ntitle: ${stringLiteral(`Initialize ${config.displayName}`)}\norigin: starter:init\nstatus: in_progress\nowner: ${stringLiteral(config.technicalOwner)}\ncreatedAt: 2026-08-19\nupdatedAt: 2026-08-19\nsourceOfTruthIds: []\naffectedPaths:\n  - apps/\n  - packages/\n  - deployment/\n---\n\n# Initialize ${config.displayName}\n\n## Objective\n\nValidate the generated repository and record environment-specific evidence.\n\n## Scope\n\nGenerated profiles and the selected deployment adapter.\n\n## Non-goals\n\nLive production deployment without separate approval and evidence.\n\n## Acceptance criteria\n\n- [ ] Local checks pass.\n- [ ] Selected deployment gates have evidence.\n\n## Validation\n\nPending.\n\n## Evidence\n\nGenerated by starter:init with profiles: ${config.profiles.join(", ") || "base"}.\n\n## Decisions\n\nDeployment target: ${config.deployment}.\n\n## Blockers\n\nLive deployment and native mobile gates require their target environments.\n\n## Handoff\n\n${config.technicalOwner} owns technical validation. ${config.operationsOwner} owns operational validation.\n\n## Completion\n\nIncomplete.\n`,
@@ -1329,6 +1703,19 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
           status: "pending",
           evidence: "Run pnpm check and record the result in INIT-001.",
         },
+        ...(hasProfile(config, "web") &&
+        hasProfile(config, "api") &&
+        hasProfile(config, "data") &&
+        hasProfile(config, "identity")
+          ? [
+              {
+                gate: "web-developer-handoff",
+                status: "passed" as const,
+                evidence:
+                  "The starter's dedicated web, API, data, and identity fixture passed typed proxy, authentication, persistence, migration, build, and container checks under Node 24.19.0.",
+              },
+            ]
+          : []),
         {
           gate: "deployment-and-recovery",
           status: "blocked_external",
@@ -1574,9 +1961,10 @@ test("storage enforces ownership and propagates provider failures", async () => 
         }),
         packageTsconfig(name),
         databasePackageFile(config, plan),
+        migrationRunnerFile(),
         textFile(
           "packages/database/migrations/0000_starter.sql",
-          `BEGIN;\n${[
+          `${[
             "CREATE TABLE starter_health (id text PRIMARY KEY);",
             ...(plan.needsIdentity
               ? [
@@ -1613,7 +2001,7 @@ test("storage enforces ownership and propagates provider failures", async () => 
                   "CREATE TABLE ai_audit_events (id text PRIMARY KEY, tool_name text NOT NULL, subject_id text NOT NULL, cost_microusd integer NOT NULL, outcome text NOT NULL);",
                 ]
               : []),
-          ].join("\n")}\nCOMMIT;\n`,
+          ].join("\n")}\n`,
         ),
         ...(plan.needsAi
           ? [
@@ -1648,6 +2036,16 @@ test("AI approvals keep tool and subject identities collision-safe", async () =>
         apiDependencies["@fastify/swagger"] = DEPENDENCY_VERSIONS.fastifySwagger;
         apiDependencies["@fastify/swagger-ui"] = DEPENDENCY_VERSIONS.fastifySwaggerUi;
       }
+      const identityTestDependencies = plan.needsIdentity
+        ? `authentication: { resolveSession: async () => null }, identity: { ensureAuthenticationSubject: async (subjectId: string) => ({ subjectId }), resolveAuthenticationSubject: async () => null }, database: { checkReadiness: async () => undefined }, `
+        : "";
+      const testBuildApi = plan.needsIdentity
+        ? `buildApi({ ${identityTestDependencies}`
+        : "buildApi()";
+      const testBuildApiEnd = plan.needsIdentity ? " })" : "";
+      const testReadinessApi = plan.needsIdentity
+        ? `${testBuildApi}readinessChecks: [{ name: "provider", check: async () => { throw new Error("provider unavailable"); } }]${testBuildApiEnd}`
+        : `buildApi({ readinessChecks: [{ name: "provider", check: async () => { throw new Error("provider unavailable"); } }] })`;
       files.push(
         packageManifest(config, name, apiDependencies),
         packageTsconfig(name),
@@ -1662,7 +2060,7 @@ test("AI approvals keep tool and subject identities collision-safe", async () =>
 import { buildApi${plan.needsIdentity ? ", registerAuthenticationRoutes" : ""}${plan.needsExternalApi ? ", EXTERNAL_HEALTH_PATH, registerExternalApi" : ""} } from "../src/index.js";
 
 test("liveness stays local while failed dependencies make readiness unavailable", async () => {
-  const server = buildApi({ readinessChecks: [{ name: "provider", check: async () => { throw new Error("provider unavailable"); } }] });
+  const server = ${testReadinessApi};
   const live = await server.inject({ method: "GET", url: "/health/live" });
   const ready = await server.inject({ method: "GET", url: "/health/ready" });
   expect(live.statusCode).toBe(200);
@@ -1674,7 +2072,7 @@ ${
   plan.needsIdentity
     ? `
 test("HTTP request context resolves authenticated and anonymous sessions", async () => {
-  const server = buildApi({ authentication: { resolveSession: async (headers) => headers.get("x-subject") ? { subjectId: headers.get("x-subject") as string } : null }, identity: { ensureAuthenticationSubject: async (subjectId) => ({ subjectId }), resolveAuthenticationSubject: async (subjectId) => ({ subjectId }) } });
+  const server = buildApi({ authentication: { resolveSession: async (headers) => { const subjectId = headers.get("x-subject"); return subjectId ? { subjectId } : null; } }, identity: { ensureAuthenticationSubject: async (subjectId) => ({ subjectId }), resolveAuthenticationSubject: async (subjectId) => ({ subjectId }) }, database: { checkReadiness: async () => undefined } });
   const anonymous = await server.inject({ method: "GET", url: "/trpc/viewer" });
   const authenticated = await server.inject({ method: "GET", url: "/trpc/viewer", headers: { "x-subject": "subject-1" } });
   expect(anonymous.statusCode).toBe(401);
@@ -1684,7 +2082,7 @@ test("HTTP request context resolves authenticated and anonymous sessions", async
 });
 
 test("authentication routes forward Fastify JSON bodies and response cookies", async () => {
-  const server = buildApi();
+  const server = ${testBuildApi}${testBuildApiEnd};
   let receivedBody: unknown;
   registerAuthenticationRoutes(server, "http://auth.example.test", async (request) => {
     receivedBody = await request.json();
@@ -1705,13 +2103,13 @@ test("authentication routes forward Fastify JSON bodies and response cookies", a
   plan.needsExternalApi
     ? `
 test("external health route matches OpenAPI and uses RFC 9457 on dependency failure", async () => {
-  const healthy = buildApi();
+  const healthy = ${testBuildApi}${testBuildApiEnd};
   await registerExternalApi(healthy);
   const ok = await healthy.inject({ method: "GET", url: EXTERNAL_HEALTH_PATH });
   expect(ok.statusCode).toBe(200);
   await healthy.close();
 
-  const failed = buildApi();
+  const failed = ${testBuildApi}${testBuildApiEnd};
   await registerExternalApi(failed, { readinessChecks: [{ name: "database", check: async () => { throw new Error("offline"); } }] });
   const unavailable = await failed.inject({ method: "GET", url: EXTERNAL_HEALTH_PATH });
   expect(unavailable.statusCode).toBe(503);
@@ -1734,6 +2132,7 @@ test("authenticated HTTP callers can execute the composed AI tool boundary", asy
   const server = buildApi({
     authentication: { resolveSession: async () => ({ subjectId: "auth-1" }) },
     identity: { ensureAuthenticationSubject: async () => ({ subjectId: "subject-1" }), resolveAuthenticationSubject: async () => ({ subjectId: "subject-1" }) },
+    database: { checkReadiness: async () => undefined },
     ai: { toolNames: ["starter.echo"], executeTool: async (_name, input) => input, recordEvaluation: async () => undefined },
   });
   const response = await server.inject({ method: "POST", url: "/trpc/aiExecute", headers: { "content-type": "application/json" }, payload: { toolName: "starter.echo", input: { message: "hello" } } });
@@ -1755,14 +2154,39 @@ test("authenticated HTTP callers can execute the composed AI tool boundary", asy
           name,
           plan.needsExternalApi
             ? { "@hey-api/client-fetch": DEPENDENCY_VERSIONS.openapiFetch }
-            : { "@trpc/client": DEPENDENCY_VERSIONS.trpcClient },
+            : {
+                "@trpc/client": DEPENDENCY_VERSIONS.trpcClient,
+                ...(plan.needsIdentity ? { "better-auth": DEPENDENCY_VERSIONS.betterAuth } : {}),
+              },
+          plan.needsExternalApi ? {} : { [packageName(config, "api")]: "workspace:*" },
         ),
         apiClientTsconfig(),
         hasProfile(config, "external-api")
           ? textFile("packages/api-client/src/index.ts", `export * from "./generated/index.js";\n`)
-          : placeholderPackageFile(id, description),
+          : textFile(
+              "packages/api-client/src/index.ts",
+              `import { createTRPCProxyClient, httpBatchLink } from "@trpc/client";
+import type { AppRouter } from "${packageName(config, "api")}";
+${plan.needsIdentity ? 'import { createAuthClient } from "better-auth/client";\n' : ""}
+export function createApiClient() {
+  return createTRPCProxyClient<AppRouter>({ links: [httpBatchLink({
+    url: "/trpc",
+    fetch: (input, init) => fetch(input, {
+      ...(init?.method ? { method: init.method } : {}),
+      ...(init?.body ? { body: init.body } : {}),
+      ...(init?.headers ? { headers: init.headers } : {}),
+      signal: init?.signal ?? null,
+      credentials: "include",
+    }),
+  })] });
+}
+${plan.needsIdentity ? 'export const authClient = createAuthClient({ basePath: "/api/auth", fetchOptions: { credentials: "include" } });\n' : ""}`,
+            ),
       );
     } else if (name === "test-support") {
+      const testSupportBuildApi = plan.needsIdentity
+        ? `buildApi({ authentication: { resolveSession: async () => null }, identity: { ensureAuthenticationSubject: async (subjectId: string) => ({ subjectId }), resolveAuthenticationSubject: async () => null }, database: { checkReadiness: async () => undefined } })`
+        : "buildApi()";
       files.push(
         packageManifest(
           config,
@@ -1785,7 +2209,7 @@ import { buildApi, registerExternalApi } from "${packageName(config, "api")}";
 import { getHealth } from "${packageName(config, "api-client")}";
 
 test("generated external client reaches the registered Fastify route", async () => {
-  const server = buildApi();
+  const server = ${testSupportBuildApi};
   await registerExternalApi(server);
   await server.listen({ host: "127.0.0.1", port: 0 });
   const address = server.server.address();
@@ -1834,7 +2258,7 @@ import swaggerUi from "@fastify/swagger-ui";
     ? `
 export const openApiDocument = ${JSON.stringify(externalOpenApiDocument(config))} as const;
 export const EXTERNAL_HEALTH_PATH = ${stringLiteral(EXTERNAL_HEALTH_PATH)} as const;
-export async function registerExternalApi(server: FastifyInstance, dependencies: ApiDependencies = {}): Promise<void> {
+export async function registerExternalApi(server: FastifyInstance, dependencies: ${plan.needsIdentity ? 'Partial<Pick<ApiDependencies, "database">>' : "ApiDependencies"} = {}): Promise<void> {
   await server.register(swagger, { openapi: openApiDocument as never });
   await server.register(swaggerUi, { routePrefix: "/documentation" });
   await server.register(async (external) => {
@@ -1873,9 +2297,9 @@ export interface AiRuntime {
 }
 export interface RequestContext { readonly subjectId: string | null;${plan.needsStorage ? " readonly storage?: ObjectStorage;" : ""}${plan.needsAi ? " readonly ai?: AiRuntime;" : ""} }
 export interface ApiDependencies {
-${plan.needsIdentity ? "  readonly authentication?: AuthenticationPort;\n" : ""}
-${plan.needsIdentity ? "  readonly identity?: IdentityRepository;\n" : ""}
-  readonly database?: { readonly checkReadiness: () => Promise<void> };
+${plan.needsIdentity ? "  readonly authentication: AuthenticationPort;\n" : ""}
+${plan.needsIdentity ? "  readonly identity: IdentityRepository;\n" : ""}
+  readonly database${plan.needsIdentity ? "" : "?"}: { readonly checkReadiness: () => Promise<void> };
 ${plan.needsStorage ? "  readonly storage?: ObjectStorage;\n" : ""}
 ${plan.needsAi ? "  readonly ai?: AiRuntime;\n" : ""}
   readonly readinessChecks?: readonly { readonly name: string; readonly check: () => Promise<void> }[];
@@ -1920,7 +2344,7 @@ export function registerAuthenticationRoutes(server: FastifyInstance, baseURL: s
     : ""
 }
 export async function resolveContext(${plan.needsIdentity ? "request" : "_request"}: FastifyRequest, ${plan.needsIdentity || plan.needsStorage || plan.needsAi ? "dependencies" : "_dependencies"}: ApiDependencies): Promise<RequestContext> {
-  ${plan.needsIdentity ? "const session = await dependencies.authentication?.resolveSession(toHeaders(request));\n  const applicationSubject = session ? await dependencies.identity?.resolveAuthenticationSubject(session.subjectId) : null;\n  " : ""}return createContext(${plan.needsIdentity ? "applicationSubject?.subjectId ?? null" : "null"}${plan.needsStorage ? ", dependencies.storage" : ""}${plan.needsAi ? ", dependencies.ai" : ""});
+  ${plan.needsIdentity ? "const session = await dependencies.authentication.resolveSession(toHeaders(request));\n  const applicationSubject = session ? await dependencies.identity.resolveAuthenticationSubject(session.subjectId) : null;\n  " : ""}return createContext(${plan.needsIdentity ? "applicationSubject?.subjectId ?? null" : "null"}${plan.needsStorage ? ", dependencies.storage" : ""}${plan.needsAi ? ", dependencies.ai" : ""});
 }
 
 const t = initTRPC.context<RequestContext>().create();
@@ -1972,7 +2396,7 @@ async function readinessResponse(checks: readonly { readonly name: string; reado
   return healthResponseSchema.parse({ status: "ok", checkedAt });
 }
 
-export function buildApi(dependencies: ApiDependencies = {}) {
+export function buildApi(dependencies: ApiDependencies${plan.needsIdentity ? "" : " = {}"}) {
   const server = Fastify({ logger: true });
   server.register(fastifyTRPCPlugin, {
     prefix: "/trpc",
@@ -2060,7 +2484,7 @@ function apiFiles(config: InitConfig): GeneratedFile[] {
   ].join("\n");
   const environmentSchema = [
     "const environmentSchema = z.object({",
-    "  PORT: z.coerce.number().int().min(1).max(65535).default(3000),",
+    "  PORT: z.coerce.number().int().min(1).max(65535).default(3001),",
     ...(plan.needsDatabase ? ["  DATABASE_URL: z.string().min(1),"] : []),
     ...(plan.needsIdentity
       ? ["  BETTER_AUTH_SECRET: z.string().min(1),", "  BETTER_AUTH_URL: z.string().url(),"]
@@ -2098,8 +2522,12 @@ function apiFiles(config: InitConfig): GeneratedFile[] {
     textFile(
       "apps/api/src/index.ts",
       `${imports}
+import { resolve } from "node:path";
 import { z } from "zod";
 
+try { process.loadEnvFile(resolve(process.cwd(), ".env")); } catch (error: unknown) {
+  if (!(error instanceof Error) || !("code" in error && error.code === "ENOENT")) throw error;
+}
 ${environmentSchema}
 export async function startApi(): Promise<void> {
 ${setup}
@@ -2116,6 +2544,7 @@ WORKDIR /app
 COPY . .
 RUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts
 RUN pnpm --filter ${packageName(config, "api-app")}... build
+EXPOSE 3001
 CMD ["pnpm", "--filter", "${packageName(config, "api-app")}", "start"]
 `,
     ),
@@ -2187,13 +2616,117 @@ CMD ["pnpm", "--filter", "${packageName(config, "worker-app")}", "start"]
   ];
 }
 
+function webProxyFiles(): GeneratedFile[] {
+  const proxy = `import { type NextRequest, NextResponse } from "next/server";
+
+type ProxyContext = { readonly params: Promise<{ readonly path: string[] }> };
+
+async function forward(request: NextRequest, context: ProxyContext, prefix: string): Promise<NextResponse> {
+  const internalUrl = process.env.API_INTERNAL_URL;
+  if (!internalUrl) return NextResponse.json({ error: "API_INTERNAL_URL is not configured" }, { status: 503 });
+  const { path } = await context.params;
+  const encodedPath = path.map((segment) => encodeURIComponent(segment)).join("/");
+  const target = new URL(prefix.concat(encodedPath.length > 0 ? \`/\${encodedPath}\` : ""), internalUrl);
+  target.search = request.nextUrl.search;
+  const headers = new Headers(request.headers);
+  headers.delete("host");
+  headers.delete("content-length");
+  const init: RequestInit = { method: request.method, headers, redirect: "manual" };
+  if (request.method !== "GET" && request.method !== "HEAD") init.body = await request.arrayBuffer();
+  const upstream = await fetch(target, init);
+  const responseHeaders = new Headers(upstream.headers);
+  responseHeaders.delete("set-cookie");
+  for (const cookie of upstream.headers.getSetCookie()) responseHeaders.append("set-cookie", cookie);
+  return new NextResponse(upstream.body, { status: upstream.status, headers: responseHeaders });
+}
+
+export const GET = (request: NextRequest, context: ProxyContext) => forward(request, context, "__PREFIX__");
+export const POST = (request: NextRequest, context: ProxyContext) => forward(request, context, "__PREFIX__");
+export const PUT = (request: NextRequest, context: ProxyContext) => forward(request, context, "__PREFIX__");
+export const PATCH = (request: NextRequest, context: ProxyContext) => forward(request, context, "__PREFIX__");
+export const DELETE = (request: NextRequest, context: ProxyContext) => forward(request, context, "__PREFIX__");
+`;
+  return [
+    textFile("apps/web/app/trpc/[...path]/route.ts", proxy.replaceAll("__PREFIX__", "/trpc")),
+    textFile(
+      "apps/web/app/api/auth/[...path]/route.ts",
+      proxy.replaceAll("__PREFIX__", "/api/auth"),
+    ),
+  ];
+}
+
+function webReferenceFlow(config: InitConfig): GeneratedFile {
+  const identity = hasProfile(config, "identity")
+    ? `
+  const [email, setEmail] = useState("developer@example.test");
+  const [password, setPassword] = useState("local-password-123");
+async function signUp(email: string, password: string): Promise<void> {
+  const result = await authClient.signUp.email({ email, password, name: "Starter Developer" });
+  setMessage(result.error ? result.error.message ?? "Signup failed" : "Signed up; session cookie established.");
+}
+async function signIn(email: string, password: string): Promise<void> {
+  const result = await authClient.signIn.email({ email, password });
+  setMessage(result.error ? result.error.message ?? "Signin failed" : "Signed in; session cookie established.");
+}
+`
+    : "";
+  const imports = hasProfile(config, "identity")
+    ? `import { authClient, createApiClient } from "${packageName(config, "api-client")}";`
+    : `import { createApiClient } from "${packageName(config, "api-client")}";`;
+  return textFile(
+    "apps/web/app/reference-flow.tsx",
+    `"use client";
+
+import { useState } from "react";
+${imports}
+
+const api = createApiClient();
+
+export function ReferenceFlow() {
+  const [message, setMessage] = useState("Ready");
+  const [result, setResult] = useState<unknown>(null);
+  const run = async (operation: () => Promise<unknown>): Promise<void> => {
+    try { setResult(await operation()); setMessage("Request succeeded"); }
+    catch (error: unknown) { setMessage(error instanceof Error ? error.message : "Request failed"); }
+  };
+  const health = () => run(() => api.health.query());
+  const viewer = () => run(() => api.viewer.query());
+${hasProfile(config, "identity") ? "" : "// Authentication is deferred because the identity profile is not selected."}
+${identity}
+  return <main>
+    <h1>{${stringLiteral(config.displayName)}} reference flow</h1>
+    <p>This is demonstrative starter code, not a product UI.</p>
+    <button type="button" onClick={health}>Typed health</button>
+    <button type="button" onClick={viewer}>Viewer (401 until signed in)</button>
+${
+  hasProfile(config, "identity")
+    ? `    <label>Email<input value={email} onChange={(event) => setEmail(event.target.value)} /></label>
+    <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+    <button type="button" onClick={() => signUp(email, password)}>Sign up</button>
+    <button type="button" onClick={() => signIn(email, password)}>Sign in</button>
+`
+    : ""
+}    <p>{message}</p><pre>{result ? JSON.stringify(result, null, 2) : "No result yet"}</pre>
+  </main>;
+}
+`,
+  );
+}
+
 function webFiles(config: InitConfig): GeneratedFile[] {
+  const plan = createCapabilityPlan(config);
+  const hasTypedReferenceFlow = plan.needsApiClient && !plan.needsExternalApi;
   return [
     jsonFile("apps/web/package.json", {
       name: packageName(config, "web-app"),
       private: true,
       version: PACKAGE_VERSION,
-      scripts: { build: "next build", start: "next start", typecheck: "tsc --noEmit" },
+      scripts: {
+        build: "next build",
+        dev: "next dev -p 3000",
+        start: "next start",
+        typecheck: "tsc --noEmit",
+      },
       dependencies: {
         "@base-ui/react": DEPENDENCY_VERSIONS.baseUi,
         "@tanstack/react-form": DEPENDENCY_VERSIONS.tanstackForm,
@@ -2202,6 +2735,7 @@ function webFiles(config: InitConfig): GeneratedFile[] {
         react: DEPENDENCY_VERSIONS.react,
         "react-dom": DEPENDENCY_VERSIONS.react,
         tailwindcss: DEPENDENCY_VERSIONS.tailwind,
+        ...(plan.needsApiClient ? { [packageName(config, "api-client")]: "workspace:*" } : {}),
       },
       devDependencies: {
         "@tailwindcss/postcss": DEPENDENCY_VERSIONS.tailwindPostcss,
@@ -2244,11 +2778,15 @@ function webFiles(config: InitConfig): GeneratedFile[] {
     ),
     textFile(
       "apps/web/app/page.tsx",
-      `export default function Page() {\n  return <main><h1>{${stringLiteral(config.displayName)}}</h1><p>Thaarei web profile</p></main>;\n}\n`,
+      hasTypedReferenceFlow
+        ? `import { ReferenceFlow } from "./reference-flow";\n\nexport default function Page() { return <ReferenceFlow />; }\n`
+        : `export default function Page() {\n  return <main><h1>{${stringLiteral(config.displayName)}}</h1><p>Thaarei web profile</p></main>;\n}\n`,
     ),
+    ...(hasTypedReferenceFlow ? [webReferenceFlow(config)] : []),
+    ...(plan.needsApi ? webProxyFiles() : []),
     textFile(
       "apps/web/Dockerfile",
-      `FROM ${NODE_IMAGE}\nWORKDIR /app\nCOPY . .\nRUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts\nRUN pnpm --filter ${packageName(config, "web-app")}... build\nCMD ["pnpm", "--filter", "${packageName(config, "web-app")}", "start"]\n`,
+      `FROM ${NODE_IMAGE}\nWORKDIR /app\nCOPY . .\nRUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts\nRUN pnpm --filter ${packageName(config, "web-app")}... build\nEXPOSE 3000\nCMD ["pnpm", "--filter", "${packageName(config, "web-app")}", "start"]\n`,
     ),
   ];
 }
@@ -2374,9 +2912,19 @@ function environmentFile(config: InitConfig): GeneratedFile {
   const plan = createCapabilityPlan(config);
   const lines = [
     "NODE_ENV=development",
-    "PORT=3000",
-    ...(plan.needsDatabase ? ["DATABASE_URL="] : []),
-    ...(plan.needsIdentity ? ["BETTER_AUTH_SECRET=", "BETTER_AUTH_URL="] : []),
+    `PORT=${plan.needsApi ? "3001" : "3000"}`,
+    ...(plan.needsDatabase
+      ? ["DATABASE_URL=postgres://starter:starter_local@127.0.0.1:5432/starter"]
+      : []),
+    ...(plan.needsIdentity
+      ? [
+          "BETTER_AUTH_SECRET=replace-with-a-local-secret",
+          `BETTER_AUTH_URL=http://127.0.0.1:${hasProfile(config, "web") ? "3000" : "3001"}`,
+        ]
+      : []),
+    ...(hasProfile(config, "web") && plan.needsApi
+      ? ["API_INTERNAL_URL=http://127.0.0.1:3001"]
+      : []),
     ...(plan.needsAi ? ["AI_MAX_TOOL_BUDGET_USD=1"] : []),
     ...(plan.needsWorker ? ["WORKER_CONCURRENCY=2"] : []),
     ...(hasProfile(config, "external-api") ? ["EXTERNAL_API_BASE_URL="] : []),
@@ -2400,6 +2948,7 @@ function deploymentFiles(config: InitConfig): GeneratedFile[] {
   const variablesFor = (name: string): readonly string[] => [
     "NODE_ENV",
     "PORT",
+    ...(name === "web" && plan.needsApi ? ["API_INTERNAL_URL"] : []),
     ...((name === "api" || name === "worker") && plan.needsDatabase ? ["DATABASE_URL"] : []),
     ...(name === "api" && plan.needsIdentity ? ["BETTER_AUTH_SECRET", "BETTER_AUTH_URL"] : []),
     ...(name === "api" && plan.needsAi ? ["AI_MAX_TOOL_BUDGET_USD"] : []),

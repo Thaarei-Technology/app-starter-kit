@@ -66,10 +66,10 @@
     "ai": "7.0.68",
     "better-auth": "1.7.1",
     "drizzle-orm": "0.45.2",
-    "expo": "57.0.14",
-    "expo-notifications": "57.0.12",
-    "expo-router": "57.0.14",
-    "expo-secure-store": "57.0.1",
+    "expo": "57.0.17",
+    "expo-notifications": "57.0.15",
+    "expo-router": "57.0.17",
+    "expo-secure-store": "57.0.2",
     "fastify": "5.12.1",
     "graphile-worker": "0.17.3",
     "js-yaml": "4.3.1",
@@ -109,7 +109,12 @@
     {
       "gate": "source-template-validation",
       "status": "passed",
-      "evidence": "Pinned Node 24.19.0 source validation and the seven-fixture matrix are recorded in .thaarei/work/STARTER-001.md and .thaarei/work/STARTER-002.md."
+      "evidence": "Pinned Node 24.19.0 source validation and the eight-fixture matrix are recorded in .thaarei/work/STARTER-001.md, .thaarei/work/STARTER-002.md, and .thaarei/work/STARTER-003.md."
+    },
+    {
+      "gate": "web-developer-handoff",
+      "status": "passed",
+      "evidence": "The dedicated web, API, data, and identity fixture passed generated checks, typed proxy health, anonymous rejection, Better Auth session establishment, application identity persistence, two migration runs, and web/API container health under Node 24.19.0. Evidence is recorded in .thaarei/work/STARTER-003.md."
     },
     {
       "gate": "better-auth-expo-sdk-57-native-build",

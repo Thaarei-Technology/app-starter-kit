@@ -68,6 +68,12 @@ function generatedJson(generated: ReturnType<typeof generateProject>, path: stri
   return JSON.parse(file.content);
 }
 
+function jsonRecord(value: unknown, label: string): Readonly<Record<string, unknown>> {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new Error(`${label} is not a JSON object`);
+  return Object.fromEntries(Object.entries(value));
+}
+
 function dependencyNames(value: unknown): readonly string[] {
   if (typeof value !== "object" || value === null || !("dependencies" in value)) return [];
   const dependencies = value.dependencies;
@@ -203,14 +209,201 @@ describe("starter profile generation", () => {
     expect(web.files.some((file) => file.path === ".thaarei/security-waivers.json")).toBe(false);
   });
 
-  test("generates transactional migrations without a custom outbox", () => {
+  test("generates database-owned transactional migrations without a custom outbox", () => {
     const generated = generateProject(config(["api", "data", "jobs"]));
     const migration = generated.files.find(
       (file) => file.path === "packages/database/migrations/0000_starter.sql",
     );
-    expect(migration?.content).toMatch(/^BEGIN;/u);
-    expect(migration?.content).toMatch(/COMMIT;\n$/u);
+    const runner = generated.files.find((file) => file.path === "packages/database/src/migrate.ts");
+    expect(runner?.content).toContain('createHash("sha256")');
+    expect(runner?.content).toContain("thaarei_migrations");
+    expect(runner?.content).toMatch(/\.begin\(/u);
+    expect(runner?.content).toMatch(/checksum/iu);
+    expect(migration?.content).not.toMatch(/^BEGIN;/u);
+    expect(migration?.content).not.toMatch(/COMMIT;\n$/u);
     expect(migration?.content).not.toMatch(/outbox/iu);
+  });
+
+  test("generates the web handoff contract only for selected profiles", () => {
+    const generated = generateProject(config(["web", "api", "data", "identity"]));
+    const paths = generated.files.map((file) => file.path);
+    const rootManifest = JSON.stringify(generatedJson(generated, "package.json"));
+    const apiManifest = JSON.stringify(generatedJson(generated, "apps/api/package.json"));
+    const webManifest = JSON.stringify(generatedJson(generated, "apps/web/package.json"));
+    const turbo = JSON.stringify(generatedJson(generated, "turbo.json"));
+    const release = JSON.stringify(generatedJson(generated, "starter-release.json"));
+    const readme = generated.files.find((file) => file.path === "README.md")?.content ?? "";
+    const guide =
+      generated.files.find((file) => file.path === "docs/developer-guide.md")?.content ?? "";
+    const environment = generated.files.find((file) => file.path === ".env.example")?.content ?? "";
+    const compose = generated.files.find((file) => file.path === "compose.yaml")?.content ?? "";
+    const apiClient =
+      generated.files.find((file) => file.path === "packages/api-client/src/index.ts")?.content ??
+      "";
+    const api =
+      generated.files.find((file) => file.path === "packages/api/src/index.ts")?.content ?? "";
+    const web = generated.files
+      .filter((file) => file.path.startsWith("apps/web/"))
+      .map((file) => file.content)
+      .join("\n");
+
+    expect(paths).toEqual(
+      expect.arrayContaining([
+        "compose.yaml",
+        "docs/developer-guide.md",
+        "packages/database/src/migrate.ts",
+        "apps/web/app/api/auth/[...path]/route.ts",
+        "apps/web/app/trpc/[...path]/route.ts",
+      ]),
+    );
+    for (const command of ["dev", "db:up", "db:migrate", "db:down", "smoke:web"])
+      expect(rootManifest).toContain(`"${command}"`);
+    expect(apiManifest).toContain("tsx --env-file=../../.env watch src/index.ts");
+    expect(webManifest).toContain("next dev -p 3000");
+    expect(turbo).toContain('"persistent":true');
+    expect(compose).toMatch(/127\.0\.0\.1:\$\{POSTGRES_PORT:-5432\}:5432/u);
+    expect(compose).toContain("starter-postgres-data:/var/lib/postgresql");
+    expect(readme).toContain("pnpm dev");
+    for (const profile of ["web", "api", "data", "identity"])
+      expect(guide).toContain(`\`${profile}\``);
+    for (const maturity of ["ready baseline", "scaffold", "deferred integration"])
+      expect(guide).toContain(maturity);
+    for (const moduleName of ["identity", "test-support", "design-tokens"])
+      expect(guide).toContain(`| ${moduleName} |`);
+    for (const variable of [
+      "DATABASE_URL",
+      "BETTER_AUTH_SECRET",
+      "BETTER_AUTH_URL",
+      "API_INTERNAL_URL",
+      "PORT",
+    ])
+      expect(environment).toContain(variable);
+    expect(apiClient).toContain("createApiClient");
+    expect(apiClient).toContain('credentials: "include"');
+    expect(apiClient).toMatch(/import type \{ AppRouter \}/u);
+    expect(apiClient).not.toMatch(/import \{[^}]*AppRouter/u);
+    expect(apiClient).toContain("createAuthClient");
+    expect(api).toMatch(/export type AppRouter = typeof appRouter/u);
+    expect(api).not.toContain("readonly authentication?:");
+    expect(api).not.toContain("readonly identity?:");
+    expect(release).toContain('"gate":"web-developer-handoff"');
+    expect(release).toContain('"status":"passed"');
+    expect(web).toContain("API_INTERNAL_URL");
+    expect(web).toContain("path.map((segment) => encodeURIComponent(segment))");
+    expect(web).toContain("signUp.email");
+    expect(web).toContain("signIn.email");
+  });
+
+  test("keeps the web-only handoff free of server capability artifacts", () => {
+    const generated = generateProject(config(["web"]));
+    const paths = generated.files.map((file) => file.path);
+    const content = generated.files.map((file) => file.content).join("\n");
+    const guide =
+      generated.files.find((file) => file.path === "docs/developer-guide.md")?.content ?? "";
+    const environment =
+      generated.files.find((file) => file.path === "docs/environment-reference.md")?.content ?? "";
+    expect(paths).not.toContain("compose.yaml");
+    expect(paths.some((path) => path.startsWith("packages/database/"))).toBe(false);
+    expect(paths.some((path) => path.startsWith("packages/api-client/"))).toBe(false);
+    expect(content).not.toMatch(
+      /db:up|db:migrate|db:down|DATABASE_URL|BETTER_AUTH|API_INTERNAL_URL/u,
+    );
+    expect(guide).toContain("`web`");
+    for (const profile of ["`api`", "`data`", "`identity`", "`mobile`"])
+      expect(guide).not.toContain(profile);
+    expect(guide).not.toContain("authentication transport");
+    expect(environment).toContain("| PORT | 3000 |");
+    expect(environment).not.toContain("3001");
+  });
+
+  test("derives health types and keeps OpenAPI readiness fields in parity", () => {
+    const generated = generateProject(config(["api", "external-api"]));
+    const contracts =
+      generated.files.find((file) => file.path === "packages/contracts/src/index.ts")?.content ??
+      "";
+    const openApi = generatedJson(generated, "openapi.json");
+    expect(contracts).toContain(
+      "export type HealthResponse = z.infer<typeof healthResponseSchema>",
+    );
+    expect(contracts).toContain(
+      "export type ProblemDetails = z.infer<typeof problemDetailsSchema>",
+    );
+    const components = jsonRecord(jsonRecord(openApi, "OpenAPI document").components, "components");
+    const schemas = jsonRecord(components.schemas, "schemas");
+    expect(schemas.HealthResponse).toEqual({
+      type: "object",
+      required: ["status", "checkedAt"],
+      properties: {
+        status: { type: "string", enum: ["ok", "degraded"] },
+        checkedAt: { type: "string", format: "date-time" },
+        detail: { type: "string" },
+        failedDependency: { type: "string" },
+      },
+    });
+    expect(schemas.ProblemDetails).toEqual({
+      type: "object",
+      required: ["type", "title", "status"],
+      properties: {
+        type: { type: "string" },
+        title: { type: "string" },
+        status: { type: "integer" },
+        detail: { type: "string" },
+      },
+    });
+  });
+
+  test("keeps the external API web profile internally consistent", () => {
+    const generated = generateProject(config(["web", "api", "external-api"]));
+    const paths = generated.files.map((file) => file.path);
+    const page = generated.files.find((file) => file.path === "apps/web/app/page.tsx")?.content;
+
+    expect(page).not.toContain("ReferenceFlow");
+    expect(paths).not.toContain("apps/web/app/reference-flow.tsx");
+    expect(paths).toEqual(
+      expect.arrayContaining([
+        "apps/web/app/trpc/[...path]/route.ts",
+        "apps/web/app/api/auth/[...path]/route.ts",
+      ]),
+    );
+  });
+
+  test("keeps non-web developer guidance profile accurate", () => {
+    const generated = generateProject(config(["api", "data"]));
+    const guide =
+      generated.files.find((file) => file.path === "docs/developer-guide.md")?.content ?? "";
+    const environment =
+      generated.files.find((file) => file.path === "docs/environment-reference.md")?.content ?? "";
+
+    expect(guide).toContain("| database |");
+    expect(guide).toContain("| api |");
+    expect(guide).not.toMatch(/browser|Next\.js|API_INTERNAL_URL|dev:web|port 3000/iu);
+    expect(environment).toContain("| PORT | 3001 | API port. |");
+    expect(environment).not.toContain("web app");
+  });
+
+  test("documents selected storage modules without claiming product completion", () => {
+    const generated = generateProject(config(["api", "data", "identity", "storage"]));
+    const guide =
+      generated.files.find((file) => file.path === "docs/developer-guide.md")?.content ?? "";
+
+    expect(guide).toContain("| identity | ready baseline |");
+    expect(guide).toContain("| storage | scaffold |");
+    expect(guide).toContain("deferred integration");
+    expect(guide).not.toMatch(/browser|Next\.js|API_INTERNAL_URL|dev:web|port 3000/iu);
+  });
+
+  test("does not emit unsafe assertions in generated production web stack", () => {
+    const generated = generateProject(config(["web", "api", "data", "identity"]));
+    const production = generated.files
+      .filter(
+        (file) =>
+          /^(?:apps\/(?:api|web)|packages\/(?:api|api-client|contracts|database|adapters))\/src\//u.test(
+            file.path,
+          ) || file.path.startsWith("apps/web/app/"),
+      )
+      .map((file) => file.content)
+      .join("\n");
+    expect(production).not.toMatch(/:\s*any\b|<any>|\bas\s+unknown\s+as\b|\bas\s+any\b/u);
   });
 
   test("does not leak Graphile Worker into data without jobs", () => {

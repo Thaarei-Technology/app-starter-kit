@@ -22,6 +22,7 @@
     "release:check": "tsx tooling/release/check-release.ts",
     "starter:init": "tsx tooling/starter-init/src/index.ts",
     "validate:starter": "pnpm release:check && pnpm check:source-of-truth && pnpm check:boundaries && pnpm check:implementation && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm check:fixtures",
+    "validate:web-handoff": "tsx tooling/starter-init/src/validate-web-handoff.ts",
     "check": "pnpm validate:starter",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
