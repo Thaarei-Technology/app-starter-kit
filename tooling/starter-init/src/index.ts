@@ -10,6 +10,7 @@ import {
   readAgentTemplate,
   writeGeneratedProject,
 } from "./generator.js";
+import { canonicalizeProfiles } from "./capabilities.js";
 import { InitValidationError, validateInitOptions } from "./validation.js";
 
 const VALUE_FLAGS = new Set([
@@ -27,6 +28,11 @@ const VALUE_FLAGS = new Set([
   "output",
   "output-dir",
   "agent-template",
+  "payment-providers",
+  "ai-providers",
+  "email-provider",
+  "cache-provider",
+  "observability-exporters",
 ]);
 const execFileAsync = promisify(execFile);
 const sourceRoot = resolve(import.meta.dirname, "../../..");
@@ -47,7 +53,8 @@ Usage:
     --package-scope <scope> --profiles <list> --deployment <dokploy|railway> \\
     --technical-owner <name> --operations-owner <name>
 
-Profiles: web,mobile,api,data,identity,jobs,ai,durable-ai,external-api,storage,python
+Profiles: web,mobile,api,data,identity,jobs,events,ai,agentic-ai,durable-ai,external-api,storage,python,tenancy,payments,notifications,cache,rate-limit,search,rag,observability,feature-flags
+Provider options: --payment-providers stripe,razorpay --ai-providers openai,anthropic --email-provider resend --cache-provider valkey --observability-exporters otlp,sentry
 Mobile-only options: --mobile-scheme --ios-bundle-id --android-application-id
 Output defaults to .thaarei/generated/<client-id>.
 Test/automation options: --output <directory> --agent-template <path>
@@ -115,9 +122,10 @@ function refreshMarker(
   ]
     .filter((path) => path !== ".thaarei/starter-init.json")
     .sort();
+  const normalizedProfiles = canonicalizeProfiles(config.profiles).profiles;
   const marker: GeneratedFile = {
     path: ".thaarei/starter-init.json",
-    content: `${JSON.stringify({ schemaVersion: 1, initializedAt: "deterministic", productId: config.productId, clientId: config.clientId, displayName: config.displayName, packageScope: config.packageScope, profiles: config.profiles, deployment: config.deployment, owners: { technical: config.technicalOwner, operations: config.operationsOwner }, generatedFiles }, null, 2)}\n`,
+    content: `${JSON.stringify({ schemaVersion: 2, initializedAt: "deterministic", productId: config.productId, clientId: config.clientId, displayName: config.displayName, packageScope: config.packageScope, profiles: normalizedProfiles, deprecatedAliases: canonicalizeProfiles(config.profiles).deprecatedAliases, providers: config.providers, deployment: config.deployment, owners: { technical: config.technicalOwner, operations: config.operationsOwner }, generatedFiles }, null, 2)}\n`,
   };
   return [...files.filter((file) => file.path !== marker.path), marker].sort((left, right) =>
     left.path.localeCompare(right.path),
@@ -128,6 +136,10 @@ export async function runInitializer(argv: readonly string[]): Promise<string> {
   const options = parseArguments(argv);
   if (options.has("help")) return HELP;
   const config = validateInitOptions(options);
+  if (config.profiles.includes("durable-ai"))
+    process.stderr.write(
+      "starter:init: --profiles durable-ai is deprecated; use agentic-ai in V2.\n",
+    );
   const generated = generateProject(config);
   const bundledFiles = await addAgentTemplate(config, generated.files);
   const result = { config, files: refreshMarker(config, bundledFiles) };

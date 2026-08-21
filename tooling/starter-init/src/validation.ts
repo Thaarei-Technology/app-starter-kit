@@ -4,7 +4,9 @@ import {
   type MobileSettings,
   PROFILE_NAMES,
   type Profile,
+  type ProviderSelection,
 } from "./generator.js";
+import { canonicalProfile } from "./capabilities.js";
 
 export class InitValidationError extends Error {
   constructor(message: string) {
@@ -79,6 +81,68 @@ function profileList(raw: string): Profile[] {
   return PROFILE_NAMES.filter((profile) => selected.has(profile));
 }
 
+function csv<T extends string>(
+  options: ReadonlyMap<string, string>,
+  name: string,
+  allowed: readonly T[],
+): T[] {
+  const raw = options.get(name)?.trim();
+  if (!raw) return [];
+  const values = raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const result: T[] = [];
+  for (const value of values) {
+    if (!allowed.includes(value as T))
+      throw new InitValidationError(
+        `Unknown ${name}: ${value}. Supported values: ${allowed.join(", ")}`,
+      );
+    if (result.includes(value as T)) throw new InitValidationError(`Duplicate ${name}: ${value}`);
+    result.push(value as T);
+  }
+  return result;
+}
+
+function providers(
+  options: ReadonlyMap<string, string>,
+  profiles: readonly Profile[],
+): ProviderSelection {
+  const paymentProviders = csv(options, "payment-providers", ["stripe", "razorpay"] as const);
+  const aiProviders = csv(options, "ai-providers", ["openai", "anthropic"] as const);
+  const observabilityExporters = csv(options, "observability-exporters", [
+    "otlp",
+    "sentry",
+  ] as const);
+  const emailProvider = options.get("email-provider")?.trim() || null;
+  const cacheProvider = options.get("cache-provider")?.trim() || null;
+  if (emailProvider !== null && emailProvider !== "resend")
+    throw new InitValidationError("Unknown email-provider: expected resend");
+  if (cacheProvider !== null && cacheProvider !== "valkey")
+    throw new InitValidationError("Unknown cache-provider: expected valkey");
+  const selected = new Set(profiles.map(canonicalProfile));
+  const choices: readonly [string, boolean, string][] = [
+    ["payment-providers", paymentProviders.length > 0, "payments"],
+    ["ai-providers", aiProviders.length > 0, "ai"],
+    ["email-provider", emailProvider !== null, "notifications"],
+    ["cache-provider", cacheProvider !== null, "cache"],
+    ["observability-exporters", observabilityExporters.length > 0, "observability"],
+  ];
+  for (const [name, supplied, requiredProfile] of choices) {
+    if (supplied && !selected.has(canonicalProfile(requiredProfile as Profile)))
+      throw new InitValidationError(
+        `--${name} is only valid when --profiles includes ${requiredProfile}`,
+      );
+  }
+  return {
+    paymentProviders,
+    aiProviders,
+    emailProvider: emailProvider as "resend" | null,
+    cacheProvider: cacheProvider as "valkey" | null,
+    observabilityExporters,
+  };
+}
+
 function deployment(value: string): Deployment {
   if (value !== "dokploy" && value !== "railway")
     throw new InitValidationError("--deployment must be dokploy or railway");
@@ -151,6 +215,40 @@ export function validateInitOptions(options: ReadonlyMap<string, string>): InitC
   }
   if (profiles.includes("durable-ai"))
     requireProfiles(profiles, ["ai", "jobs"], "durable-ai requires ai and jobs");
+  if (profiles.includes("tenancy"))
+    requireProfiles(
+      profiles,
+      ["identity", "api", "data"],
+      "tenancy requires identity, api, and data",
+    );
+  if (profiles.includes("events"))
+    requireProfiles(profiles, ["data", "jobs"], "events requires data and jobs");
+  if (profiles.includes("agentic-ai"))
+    requireProfiles(profiles, ["ai", "jobs", "events"], "agentic-ai requires ai, jobs, and events");
+  if (profiles.includes("payments"))
+    requireProfiles(
+      profiles,
+      ["api", "data", "jobs", "events", "external-api"],
+      "payments requires api, data, jobs, events, and external-api",
+    );
+  if (profiles.includes("notifications"))
+    requireProfiles(
+      profiles,
+      ["data", "jobs", "events"],
+      "notifications requires data, jobs, and events",
+    );
+  if (profiles.includes("rate-limit"))
+    requireProfiles(profiles, ["api", "cache"], "rate-limit requires api and cache");
+  if (profiles.includes("search"))
+    requireProfiles(profiles, ["data", "jobs", "events"], "search requires data, jobs, and events");
+  if (profiles.includes("rag"))
+    requireProfiles(
+      profiles,
+      ["ai", "search", "storage", "python", "jobs", "events"],
+      "rag requires ai, search, storage, python, jobs, and events",
+    );
+  if (profiles.includes("feature-flags"))
+    requireProfiles(profiles, ["api", "data"], "feature-flags requires api and data");
   const agentTemplate = options.get("agent-template")?.trim();
   const config: InitConfig = {
     productId,
@@ -163,6 +261,7 @@ export function validateInitOptions(options: ReadonlyMap<string, string>): InitC
     operationsOwner: owner(required(options, "operations-owner"), "operations-owner"),
     outputDir: options.get("output-dir")?.trim() || `.thaarei/generated/${clientId}`,
     mobile: mobileSettings(options, profiles),
+    providers: providers(options, profiles),
   };
   if (agentTemplate) return { ...config, agentTemplate };
   return config;

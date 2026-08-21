@@ -1,32 +1,16 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
+import {
+  DEPENDENCY_VERSIONS,
+  IMAGE_CATALOG,
+  canonicalizeProfiles,
+  resolveCapabilities,
+  type Profile,
+  type ProviderSelection,
+} from "./capabilities.js";
 
-export const PROFILE_NAMES: readonly [
-  "web",
-  "mobile",
-  "api",
-  "data",
-  "identity",
-  "jobs",
-  "ai",
-  "durable-ai",
-  "external-api",
-  "storage",
-  "python",
-] = [
-  "web",
-  "mobile",
-  "api",
-  "data",
-  "identity",
-  "jobs",
-  "ai",
-  "durable-ai",
-  "external-api",
-  "storage",
-  "python",
-];
-export type Profile = (typeof PROFILE_NAMES)[number];
+export { PROFILE_NAMES } from "./capabilities.js";
+export type { Profile, ProviderSelection } from "./capabilities.js";
 export type Deployment = "dokploy" | "railway";
 
 export interface MobileSettings {
@@ -46,6 +30,7 @@ export interface InitConfig {
   readonly operationsOwner: string;
   readonly outputDir: string;
   readonly mobile: MobileSettings | null;
+  readonly providers?: ProviderSelection;
   readonly agentTemplate?: string;
 }
 
@@ -65,55 +50,12 @@ export interface WriteResult {
 const PACKAGE_VERSION = "0.1.0";
 const NODE_VERSION = "24.19.0";
 const PNPM_VERSION = "11.22.0";
-const NODE_IMAGE =
-  "node:24.19.0-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03";
+const NODE_IMAGE = `${IMAGE_CATALOG.node.reference}@${IMAGE_CATALOG.node.digest}`;
 const PYTHON_VERSION = "3.12.13";
-const PYTHON_IMAGE =
-  "python:3.12.13-slim-bookworm@sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b";
-const POSTGRES_IMAGE =
-  "postgres:18.3-bookworm@sha256:80630f83606d8db77d30b3851b16a9f78be2d0d4dda6f7b82a1fdca5ebe3acba";
-const DEPENDENCY_VERSIONS = {
-  nodeTypes: "24.13.3",
-  typescript: "6.0.3",
-  trpcServer: "11.18.0",
-  fastify: "5.12.1",
-  next: "16.3.1",
-  expo: "57.0.14",
-  react: "19.2.3",
-  drizzle: "0.45.2",
-  postgres: "3.4.9",
-  graphileWorker: "0.17.3",
-  ai: "7.0.68",
-  betterAuth: "1.7.1",
-  zod: "4.4.3",
-  biome: "2.5.9",
-  turbo: "2.10.10",
-  tsx: "4.23.12",
-  vitest: "4.1.11",
-  tailwind: "4.3.3",
-  tailwindPostcss: "4.3.3",
-  baseUi: "1.7.0",
-  tanstackQuery: "5.101.4",
-  tanstackForm: "1.33.5",
-  expoRouter: "57.0.14",
-  reactNative: "0.86.2",
-  unistyles: "3.3.0",
-  reanimated: "4.5.1",
-  gestureHandler: "2.32.0",
-  secureStore: "57.0.1",
-  notifications: "57.0.12",
-  trpcClient: "11.18.0",
-  pino: "10.3.1",
-  fastifySwagger: "9.8.1",
-  fastifySwaggerUi: "6.1.1",
-  openapiClient: "0.99.0",
-  openapiFetch: "0.13.1",
-  jsYaml: "4.3.1",
-  awsS3: "3.1113.0",
-  awsPresigner: "3.1113.0",
-  reactTypes: "19.2.18",
-  reactDomTypes: "19.2.4",
-} as const;
+const PYTHON_IMAGE = `${IMAGE_CATALOG.python.reference}@${IMAGE_CATALOG.python.digest}`;
+const POSTGRES_IMAGE = `${IMAGE_CATALOG.postgresql.reference}@${IMAGE_CATALOG.postgresql.digest}`;
+const MINIO_IMAGE = `${IMAGE_CATALOG.minio.reference}@${IMAGE_CATALOG.minio.digest}`;
+const MINIO_MC_IMAGE = `${IMAGE_CATALOG.minioMc.reference}@${IMAGE_CATALOG.minioMc.digest}`;
 
 /**
  * The profile graph is deliberately computed once.  Generation functions consume this
@@ -122,6 +64,11 @@ const DEPENDENCY_VERSIONS = {
  */
 interface CapabilityPlan {
   readonly profiles: readonly Profile[];
+  readonly canonicalProfiles: readonly string[];
+  readonly deprecatedAliases: readonly Profile[];
+  readonly capabilityFixtures: readonly string[];
+  readonly localServices: readonly string[];
+  readonly providers: ProviderSelection;
   readonly needsApi: boolean;
   readonly needsApiClient: boolean;
   readonly needsDatabase: boolean;
@@ -138,12 +85,18 @@ interface CapabilityPlan {
 }
 
 function hasProfile(config: InitConfig, profile: Profile): boolean {
-  return config.profiles.includes(profile);
+  const canonical = canonicalizeProfiles(config.profiles).profiles;
+  return canonical.includes(profile === "durable-ai" ? "agentic-ai" : profile);
 }
 
 function createCapabilityPlan(config: InitConfig): CapabilityPlan {
-  const selected = new Set(config.profiles);
-  const has = (profile: Profile): boolean => selected.has(profile);
+  // The current generator still supports V1 standalone web fixtures. The V2
+  // registry is strict for initializer validation, while generation consumes
+  // the requested set so existing generated repositories remain independent.
+  const manifest = resolveCapabilities(config.profiles, config.providers, { strict: false });
+  const selected = new Set(manifest.profiles);
+  const has = (profile: Profile): boolean =>
+    selected.has(profile === "durable-ai" ? "agentic-ai" : profile);
   const needsIdentity = has("identity");
   const needsAi = has("ai");
   const needsStorage = has("storage");
@@ -178,15 +131,26 @@ function createCapabilityPlan(config: InitConfig): CapabilityPlan {
         ]
       : []),
     ...(has("python") ? ["PYTHON_SERVICE_URL"] : []),
+    ...(has("payments") ? ["PAYMENT_WEBHOOK_SECRET", "PAYMENT_PROVIDER"] : []),
+    ...(has("notifications") ? ["RESEND_API_KEY", "MAILPIT_URL"] : []),
+    ...(has("cache") ? ["VALKEY_URL"] : []),
+    ...(has("observability") ? ["OTEL_EXPORTER_OTLP_ENDPOINT", "SENTRY_DSN"] : []),
   ];
   const workerEnvironment = [
     "NODE_ENV",
-    "PORT",
+    "WORKER_PORT",
     ...(needsDatabase ? ["DATABASE_URL"] : []),
     "WORKER_CONCURRENCY",
+    ...(has("cache") ? ["VALKEY_URL"] : []),
+    ...(has("observability") ? ["OTEL_EXPORTER_OTLP_ENDPOINT"] : []),
   ];
   return {
     profiles: config.profiles,
+    canonicalProfiles: manifest.profiles,
+    deprecatedAliases: manifest.deprecatedAliases,
+    capabilityFixtures: manifest.fixtures,
+    localServices: manifest.localServices.map((service) => service.name),
+    providers: manifest.providers,
     needsApi,
     needsApiClient,
     needsDatabase,
@@ -239,14 +203,22 @@ function packageManifest(
   name: string,
   dependencies: Readonly<Record<string, string>> = {},
   extraDevDependencies: Readonly<Record<string, string>> = {},
+  options: {
+    readonly scripts?: Readonly<Record<string, string>>;
+    readonly exports?: Readonly<Record<string, unknown>>;
+  } = {},
 ): GeneratedFile {
   return jsonFile(`packages/${name}/package.json`, {
     name: packageName(config, name),
     private: true,
     version: PACKAGE_VERSION,
     type: "module",
-    exports: { ".": { types: "./src/index.ts", import: "./dist/index.js" } },
-    scripts: { build: "tsc -p tsconfig.json", typecheck: "tsc -p tsconfig.json --noEmit" },
+    exports: options.exports ?? { ".": { types: "./src/index.ts", import: "./dist/index.js" } },
+    scripts: {
+      build: "tsc -p tsconfig.json",
+      typecheck: "tsc -p tsconfig.json --noEmit",
+      ...options.scripts,
+    },
     dependencies,
     devDependencies: {
       "@types/node": DEPENDENCY_VERSIONS.nodeTypes,
@@ -268,6 +240,7 @@ function apiClientTsconfig(): GeneratedFile {
     compilerOptions: {
       exactOptionalPropertyTypes: false,
       noEmit: false,
+      declaration: true,
       outDir: "dist",
       rootDir: "src",
     },
@@ -288,7 +261,9 @@ function appManifest(
     scripts: {
       build: "tsc -p tsconfig.json",
       dev:
-        name === "api" ? "tsx --env-file=../../.env watch src/index.ts" : "tsx watch src/index.ts",
+        name === "api" || name === "worker"
+          ? `pnpm --filter ${packageName(config, `${name}-app`)}... build && node --env-file=../../.env --import tsx --watch src/index.ts`
+          : "tsx watch src/index.ts",
       typecheck: "tsc -p tsconfig.json --noEmit",
       start: "node dist/index.js",
     },
@@ -1299,7 +1274,11 @@ function developerGuideFile(config: InitConfig, plan: CapabilityPlan): Generated
   const table = modules
     .map(([name, maturity, purpose]) => `| ${name} | ${maturity} | ${purpose} |`)
     .join("\n");
-  const databaseCommands = plan.needsDatabase ? "    pnpm db:up\n    pnpm db:migrate\n" : "";
+  const databaseCommands = plan.needsDatabase
+    ? `    pnpm db:up
+    pnpm db:migrate
+${plan.needsStorage ? "    pnpm storage:up\n" : ""}`
+    : "";
   const prerequisites = plan.needsDatabase
     ? `Use Node ${NODE_VERSION}, pnpm ${PNPM_VERSION}, and Docker. Copy .env.example to .env and never commit secrets.`
     : `Use Node ${NODE_VERSION} and pnpm ${PNPM_VERSION}. Copy .env.example to .env and never commit secrets.`;
@@ -1394,7 +1373,7 @@ ${databaseCommands}    pnpm dev
 ## Commands and configuration
 
 See environment-reference.md for the selected variables. pnpm dev starts selected applications.${hasWeb ? " The web uses port 3000." : ""}${plan.needsApi ? " The API uses port 3001." : ""} pnpm check runs formatting, governance, typecheck, build, and tests.
-${plan.needsApi ? "pnpm dev:api starts API watch mode." : ""} ${hasProfile(config, "web") ? "pnpm dev:web starts the Next.js app." : ""} ${plan.needsDatabase ? "pnpm db:down stops PostgreSQL without removing its named volume." : ""}
+${plan.needsApi ? "pnpm dev:api starts API watch mode." : ""} ${hasProfile(config, "web") ? "pnpm dev:web starts the Next.js app." : ""} ${plan.needsWorker ? "pnpm dev:worker starts the worker on port 3002." : ""} ${hasProfile(config, "python") ? "pnpm dev:python starts the Python service on port 8000." : ""} ${plan.needsDatabase ? "pnpm db:down stops local containers." : ""} ${plan.needsStorage ? "pnpm storage:init creates the local object-storage bucket." : ""}
 
 ## Architecture and data flow
 
@@ -1465,6 +1444,66 @@ function environmentReferenceFile(config: InitConfig, plan: CapabilityPlan): Gen
           ] as const,
         ]
       : []),
+    ...(plan.needsWorker
+      ? [["WORKER_PORT", "3002", "Worker health port; separate from the API port."] as const]
+      : []),
+    ...(plan.needsStorage
+      ? [
+          [
+            "STORAGE_BUCKET",
+            "starter",
+            "Local MinIO bucket; use a managed bucket in production.",
+          ] as const,
+          ["STORAGE_REGION", "us-east-1", "S3-compatible region."] as const,
+          [
+            "STORAGE_ENDPOINT",
+            "http://127.0.0.1:9000",
+            "Local MinIO endpoint; omit for managed S3.",
+          ] as const,
+          [
+            "STORAGE_ACCESS_KEY_ID",
+            "starter_local",
+            "Local-only credential; use a secret in production.",
+          ] as const,
+          [
+            "STORAGE_SECRET_ACCESS_KEY",
+            "starter_local_secret",
+            "Local-only credential; use a secret in production.",
+          ] as const,
+        ]
+      : []),
+    ...(hasProfile(config, "python")
+      ? [
+          [
+            "PYTHON_SERVICE_URL",
+            "http://127.0.0.1:8000",
+            "Optional Python service boundary.",
+          ] as const,
+        ]
+      : []),
+    ...(hasProfile(config, "payments")
+      ? ([
+          ["PAYMENT_PROVIDER", "fixture", "Select a configured payment adapter in production."],
+          ["PAYMENT_WEBHOOK_SECRET", "replace-with-a-local-secret", "Never log webhook secrets."],
+        ] as const)
+      : []),
+    ...(hasProfile(config, "notifications")
+      ? ([
+          ["RESEND_API_KEY", "fixture-only", "Required only for the configured Resend adapter."],
+          ["MAILPIT_URL", "http://127.0.0.1:8025", "Local Mailpit inspection endpoint."],
+        ] as const)
+      : []),
+    ...(hasProfile(config, "cache")
+      ? ([
+          ["VALKEY_URL", "redis://127.0.0.1:6379", "Valkey is a cache, never authoritative state."],
+        ] as const)
+      : []),
+    ...(hasProfile(config, "observability")
+      ? ([
+          ["OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318", "Local collector endpoint."],
+          ["SENTRY_DSN", "", "Optional Sentry adapter DSN; do not commit a value."],
+        ] as const)
+      : []),
   ];
   const rows = values
     .map(([name, example, note]) => `| ${name} | ${example} | ${note} |`)
@@ -1482,12 +1521,86 @@ ${rows}
   );
 }
 
-function localComposeFile(): GeneratedFile {
+function localComposeFile(plan: CapabilityPlan): GeneratedFile {
+  const selected = new Set(plan.canonicalProfiles);
+  const selectedProfile = (profile: Profile): boolean =>
+    selected.has(profile === "durable-ai" ? "agentic-ai" : profile);
+  const includeStorage = plan.needsStorage;
+  const storageServices = includeStorage
+    ? `
+  object-storage:
+    image: ${MINIO_IMAGE}
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: starter_local
+      MINIO_ROOT_PASSWORD: starter_local_secret
+    ports:
+      - "127.0.0.1:\${STORAGE_PORT:-9000}:9000"
+      - "127.0.0.1:\${STORAGE_CONSOLE_PORT:-9001}:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - starter-object-storage:/data
+  object-storage-init:
+    image: ${MINIO_MC_IMAGE}
+    depends_on:
+      object-storage:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: >-
+      "mc alias set local http://object-storage:9000 starter_local starter_local_secret
+      && mc mb --ignore-existing local/starter"
+    restart: "no"
+`
+    : "";
+  const cacheServices = selectedProfile("cache")
+    ? `
+  valkey:
+    image: ${IMAGE_CATALOG.valkey.reference}@${IMAGE_CATALOG.valkey.digest}
+    ports:
+      - "127.0.0.1:\${VALKEY_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - starter-valkey-data:/data
+`
+    : "";
+  const notificationServices = selectedProfile("notifications")
+    ? `
+  mailpit:
+    image: ${IMAGE_CATALOG.mailpit.reference}@${IMAGE_CATALOG.mailpit.digest}
+    ports:
+      - "127.0.0.1:\${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "127.0.0.1:\${MAILPIT_UI_PORT:-8025}:8025"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8025/api/v1/info"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+`
+    : "";
+  const observabilityServices = selectedProfile("observability")
+    ? `
+  otel-collector:
+    image: ${IMAGE_CATALOG.otelCollector.reference}@${IMAGE_CATALOG.otelCollector.digest}
+    ports:
+      - "127.0.0.1:\${OTEL_HEALTH_PORT:-13133}:13133"
+`
+    : "";
+  const postgresImage = selectedProfile("rag")
+    ? `${IMAGE_CATALOG.pgvectorPostgresql.reference}@${IMAGE_CATALOG.pgvectorPostgresql.digest}`
+    : POSTGRES_IMAGE;
   return textFile(
     "compose.yaml",
     `services:
   postgres:
-    image: ${POSTGRES_IMAGE}
+    image: ${postgresImage}
     restart: unless-stopped
     environment:
       POSTGRES_DB: starter
@@ -1502,8 +1615,10 @@ function localComposeFile(): GeneratedFile {
       retries: 20
     volumes:
       - starter-postgres-data:/var/lib/postgresql
-volumes:
+${storageServices}${cacheServices}${notificationServices}${observabilityServices}volumes:
   starter-postgres-data:
+${includeStorage ? "  starter-object-storage:\n" : ""}
+${selectedProfile("cache") ? "  starter-valkey-data:\n" : ""}
 `,
   );
 }
@@ -1527,11 +1642,24 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
         ...(hasProfile(config, "web")
           ? { "dev:web": `pnpm --filter ${packageName(config, "web-app")} dev` }
           : {}),
+        ...(plan.needsWorker
+          ? { "dev:worker": `pnpm --filter ${packageName(config, "worker-app")} dev` }
+          : {}),
+        ...(hasProfile(config, "python")
+          ? { "dev:python": "python3 services/python/src/main.py" }
+          : {}),
         ...(plan.needsDatabase
           ? {
               "db:up": "docker compose up -d postgres",
               "db:migrate": "tsx packages/database/src/migrate.ts",
               "db:down": "docker compose down",
+            }
+          : {}),
+        ...(plan.needsStorage
+          ? {
+              "storage:up": "docker compose up -d object-storage object-storage-init",
+              "storage:init": "docker compose run --rm object-storage-init",
+              "storage:down": "docker compose stop object-storage object-storage-init",
             }
           : {}),
         ...(hasProfile(config, "web") ? { "smoke:web": "tsx tooling/smoke-web.ts" } : {}),
@@ -1614,8 +1742,8 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
         includes: [
           "**",
           "!!node_modules",
-          "!!dist",
-          "!!.next",
+          "!!**/dist",
+          "!!**/.next",
           "!!.turbo",
           "!!**/.turbo",
           "!!packages/api-client/src/generated",
@@ -1644,7 +1772,7 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
     ),
     developerGuideFile(config, plan),
     environmentReferenceFile(config, plan),
-    ...(plan.needsDatabase ? [localComposeFile()] : []),
+    ...(plan.needsDatabase ? [localComposeFile(plan)] : []),
     ...(hasProfile(config, "web")
       ? [
           textFile(
@@ -1665,6 +1793,15 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
       ".github/workflows/starter-validation.yml",
       `name: Starter validation\n\non:\n  push:\n  pull_request:\n\npermissions:\n  contents: read\n\njobs:\n  validate:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa\n        with:\n          version: ${PNPM_VERSION}\n      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020\n        with:\n          node-version-file: .nvmrc\n          cache: pnpm\n      - run: pnpm install --frozen-lockfile --ignore-scripts\n      - run: pnpm audit --prod --audit-level high${hasProfile(config, "mobile") ? " --ignore GHSA-w3rx-r6r6-pgpr --ignore GHSA-5p2g-fcmc-qvqq" : ""}\n${hasProfile(config, "python") ? "      - run: docker build --file services/python/Dockerfile .\n" : ""}      - run: pnpm validate:starter\n`,
     ),
+    jsonFile(".thaarei/capability-manifest.json", {
+      schemaVersion: 2,
+      requestedProfiles: config.profiles,
+      profiles: plan.canonicalProfiles,
+      deprecatedAliases: plan.deprecatedAliases,
+      providers: plan.providers,
+      fixtures: plan.capabilityFixtures,
+      localServices: plan.localServices,
+    }),
     jsonFile("starter-release.json", {
       $schema: "./tooling/release/starter-release.schema.json",
       schemaVersion: 1,
@@ -1676,27 +1813,43 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
       testedPackages: releasePackages,
       containerImages: {
         node: {
-          reference: "node:24.19.0-bookworm-slim",
-          digest: "sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03",
+          reference: IMAGE_CATALOG.node.reference,
+          digest: IMAGE_CATALOG.node.digest,
         },
         ...(plan.needsDatabase
           ? {
               postgresql: {
-                reference: "postgres:18.3-bookworm",
-                digest: "sha256:80630f83606d8db77d30b3851b16a9f78be2d0d4dda6f7b82a1fdca5ebe3acba",
+                reference: hasProfile(config, "rag")
+                  ? IMAGE_CATALOG.pgvectorPostgresql.reference
+                  : IMAGE_CATALOG.postgresql.reference,
+                digest: hasProfile(config, "rag")
+                  ? IMAGE_CATALOG.pgvectorPostgresql.digest
+                  : IMAGE_CATALOG.postgresql.digest,
               },
             }
           : {}),
         ...(hasProfile(config, "python")
           ? {
               python: {
-                reference: `python:${PYTHON_VERSION}-slim-bookworm`,
-                digest: "sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b",
+                reference: IMAGE_CATALOG.python.reference,
+                digest: IMAGE_CATALOG.python.digest,
+              },
+            }
+          : {}),
+        ...(plan.needsStorage
+          ? {
+              minio: {
+                reference: IMAGE_CATALOG.minio.reference,
+                digest: IMAGE_CATALOG.minio.digest,
+              },
+              minioClient: {
+                reference: IMAGE_CATALOG.minioMc.reference,
+                digest: IMAGE_CATALOG.minioMc.digest,
               },
             }
           : {}),
       },
-      enabledProfiles: config.profiles,
+      enabledProfiles: plan.canonicalProfiles,
       compatibilityEvidence: [
         {
           gate: "generated-fixture-validation",
@@ -2148,24 +2301,37 @@ test("authenticated HTTP callers can execute the composed AI tool boundary", asy
           : []),
       );
     } else if (name === "api-client") {
+      const firstPartyClient =
+        plan.needsApi && (hasProfile(config, "web") || hasProfile(config, "mobile"));
+      const clientDependencies = {
+        ...(plan.needsExternalApi
+          ? { "@hey-api/client-fetch": DEPENDENCY_VERSIONS.openapiFetch }
+          : {}),
+        ...(firstPartyClient
+          ? {
+              "@trpc/client": DEPENDENCY_VERSIONS.trpcClient,
+              [packageName(config, "api")]: "workspace:*",
+            }
+          : {}),
+        ...(plan.needsIdentity ? { "better-auth": DEPENDENCY_VERSIONS.betterAuth } : {}),
+      };
       files.push(
         packageManifest(
           config,
           name,
-          plan.needsExternalApi
-            ? { "@hey-api/client-fetch": DEPENDENCY_VERSIONS.openapiFetch }
-            : {
-                "@trpc/client": DEPENDENCY_VERSIONS.trpcClient,
-                ...(plan.needsIdentity ? { "better-auth": DEPENDENCY_VERSIONS.betterAuth } : {}),
-              },
-          plan.needsExternalApi ? {} : { [packageName(config, "api")]: "workspace:*" },
+          clientDependencies,
+          {},
+          {
+            scripts: { typecheck: "tsc -p tsconfig.json" },
+            exports: { ".": { types: "./dist/index.d.ts", import: "./dist/index.js" } },
+          },
         ),
         apiClientTsconfig(),
-        hasProfile(config, "external-api")
-          ? textFile("packages/api-client/src/index.ts", `export * from "./generated/index.js";\n`)
-          : textFile(
-              "packages/api-client/src/index.ts",
-              `import { createTRPCProxyClient, httpBatchLink } from "@trpc/client";
+        textFile(
+          "packages/api-client/src/index.ts",
+          `${
+            firstPartyClient
+              ? `import { createTRPCProxyClient, httpBatchLink } from "@trpc/client";
 import type { AppRouter } from "${packageName(config, "api")}";
 ${plan.needsIdentity ? 'import { createAuthClient } from "better-auth/client";\n' : ""}
 export function createApiClient() {
@@ -2180,8 +2346,10 @@ export function createApiClient() {
     }),
   })] });
 }
-${plan.needsIdentity ? 'export const authClient = createAuthClient({ basePath: "/api/auth", fetchOptions: { credentials: "include" } });\n' : ""}`,
-            ),
+${plan.needsIdentity ? 'export const authClient = createAuthClient({ basePath: "/api/auth", fetchOptions: { credentials: "include" } });\n' : ""}`
+              : ""
+          }${plan.needsExternalApi ? 'export * as externalApi from "./generated/index.js";\n' : ""}`,
+        ),
       );
     } else if (name === "test-support") {
       const testSupportBuildApi = plan.needsIdentity
@@ -2206,7 +2374,7 @@ ${plan.needsIdentity ? 'export const authClient = createAuthClient({ basePath: "
                 "packages/test-support/tests/external-client.test.ts",
                 `import { expect, test } from "vitest";
 import { buildApi, registerExternalApi } from "${packageName(config, "api")}";
-import { getHealth } from "${packageName(config, "api-client")}";
+import { externalApi } from "${packageName(config, "api-client")}";
 
 test("generated external client reaches the registered Fastify route", async () => {
   const server = ${testSupportBuildApi};
@@ -2214,7 +2382,7 @@ test("generated external client reaches the registered Fastify route", async () 
   await server.listen({ host: "127.0.0.1", port: 0 });
   const address = server.server.address();
   if (!address || typeof address === "string") throw new Error("Expected a TCP test address");
-  const response = await getHealth({ baseUrl: \`http://127.0.0.1:\${address.port}\` });
+  const response = await externalApi.getHealth({ baseUrl: \`http://127.0.0.1:\${address.port}\` });
   expect(response.response.status).toBe(200);
   expect(response.data).toMatchObject({ status: "ok" });
   await server.close();
@@ -2258,7 +2426,7 @@ import swaggerUi from "@fastify/swagger-ui";
     ? `
 export const openApiDocument = ${JSON.stringify(externalOpenApiDocument(config))} as const;
 export const EXTERNAL_HEALTH_PATH = ${stringLiteral(EXTERNAL_HEALTH_PATH)} as const;
-export async function registerExternalApi(server: FastifyInstance, dependencies: ${plan.needsIdentity ? 'Partial<Pick<ApiDependencies, "database">>' : "ApiDependencies"} = {}): Promise<void> {
+export async function registerExternalApi(server: FastifyInstance, dependencies: ${plan.needsIdentity ? 'Partial<Pick<ApiDependencies, "database" | "readinessChecks">>' : "ApiDependencies"} = {}): Promise<void> {
   await server.register(swagger, { openapi: openApiDocument as never });
   await server.register(swaggerUi, { routePrefix: "/documentation" });
   await server.register(async (external) => {
@@ -2576,7 +2744,7 @@ import { z } from "zod";
 
 const environment = z.object({
   DATABASE_URL: z.string().min(1),
-  PORT: z.coerce.number().int().min(1).max(65535).default(3001),
+  WORKER_PORT: z.coerce.number().int().min(1).max(65535).default(3002),
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(50).default(2),
 }).parse(process.env);
 export async function startWorker(): Promise<void> {
@@ -2596,7 +2764,7 @@ export async function startWorker(): Promise<void> {
     try { await database.checkReadiness(); response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ status: "ok", checkedAt: new Date().toISOString() })); }
     catch { response.writeHead(503, { "content-type": "application/json" }).end(JSON.stringify({ status: "degraded", checkedAt: new Date().toISOString() })); }
   });
-  healthServer.listen(environment.PORT, "0.0.0.0");
+  healthServer.listen(environment.WORKER_PORT, "0.0.0.0");
   try { await runner.promise; } finally { healthServer.close(); await database.close(); }
 }
 
@@ -2616,7 +2784,7 @@ CMD ["pnpm", "--filter", "${packageName(config, "worker-app")}", "start"]
   ];
 }
 
-function webProxyFiles(): GeneratedFile[] {
+function webProxyFiles(includeExternalApi = false): GeneratedFile[] {
   const proxy = `import { type NextRequest, NextResponse } from "next/server";
 
 type ProxyContext = { readonly params: Promise<{ readonly path: string[] }> };
@@ -2636,7 +2804,8 @@ async function forward(request: NextRequest, context: ProxyContext, prefix: stri
   const upstream = await fetch(target, init);
   const responseHeaders = new Headers(upstream.headers);
   responseHeaders.delete("set-cookie");
-  for (const cookie of upstream.headers.getSetCookie()) responseHeaders.append("set-cookie", cookie);
+  for (const cookie of upstream.headers.getSetCookie())
+    responseHeaders.append("set-cookie", cookie);
   return new NextResponse(upstream.body, { status: upstream.status, headers: responseHeaders });
 }
 
@@ -2652,6 +2821,9 @@ export const DELETE = (request: NextRequest, context: ProxyContext) => forward(r
       "apps/web/app/api/auth/[...path]/route.ts",
       proxy.replaceAll("__PREFIX__", "/api/auth"),
     ),
+    ...(includeExternalApi
+      ? [textFile("apps/web/app/v1/[...path]/route.ts", proxy.replaceAll("__PREFIX__", "/v1"))]
+      : []),
   ];
 }
 
@@ -2715,7 +2887,7 @@ ${
 
 function webFiles(config: InitConfig): GeneratedFile[] {
   const plan = createCapabilityPlan(config);
-  const hasTypedReferenceFlow = plan.needsApiClient && !plan.needsExternalApi;
+  const hasTypedReferenceFlow = plan.needsApiClient && plan.needsApi;
   return [
     jsonFile("apps/web/package.json", {
       name: packageName(config, "web-app"),
@@ -2783,7 +2955,7 @@ function webFiles(config: InitConfig): GeneratedFile[] {
         : `export default function Page() {\n  return <main><h1>{${stringLiteral(config.displayName)}}</h1><p>Thaarei web profile</p></main>;\n}\n`,
     ),
     ...(hasTypedReferenceFlow ? [webReferenceFlow(config)] : []),
-    ...(plan.needsApi ? webProxyFiles() : []),
+    ...(plan.needsApi ? webProxyFiles(plan.needsExternalApi) : []),
     textFile(
       "apps/web/Dockerfile",
       `FROM ${NODE_IMAGE}\nWORKDIR /app\nCOPY . .\nRUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts\nRUN pnpm --filter ${packageName(config, "web-app")}... build\nEXPOSE 3000\nCMD ["pnpm", "--filter", "${packageName(config, "web-app")}", "start"]\n`,
@@ -2926,18 +3098,28 @@ function environmentFile(config: InitConfig): GeneratedFile {
       ? ["API_INTERNAL_URL=http://127.0.0.1:3001"]
       : []),
     ...(plan.needsAi ? ["AI_MAX_TOOL_BUDGET_USD=1"] : []),
-    ...(plan.needsWorker ? ["WORKER_CONCURRENCY=2"] : []),
+    ...(plan.needsWorker ? ["WORKER_PORT=3002", "WORKER_CONCURRENCY=2"] : []),
     ...(hasProfile(config, "external-api") ? ["EXTERNAL_API_BASE_URL="] : []),
     ...(plan.needsStorage
       ? [
-          "STORAGE_BUCKET=",
-          "STORAGE_REGION=",
-          "STORAGE_ENDPOINT=",
-          "STORAGE_ACCESS_KEY_ID=",
-          "STORAGE_SECRET_ACCESS_KEY=",
+          "STORAGE_BUCKET=starter",
+          "STORAGE_REGION=us-east-1",
+          "STORAGE_ENDPOINT=http://127.0.0.1:9000",
+          "STORAGE_ACCESS_KEY_ID=starter_local",
+          "STORAGE_SECRET_ACCESS_KEY=starter_local_secret",
         ]
       : []),
-    ...(hasProfile(config, "python") ? ["PYTHON_SERVICE_URL="] : []),
+    ...(hasProfile(config, "python") ? ["PYTHON_SERVICE_URL=http://127.0.0.1:8000"] : []),
+    ...(hasProfile(config, "payments")
+      ? ["PAYMENT_PROVIDER=fixture", "PAYMENT_WEBHOOK_SECRET=replace-with-a-local-secret"]
+      : []),
+    ...(hasProfile(config, "notifications")
+      ? ["RESEND_API_KEY=fixture-only", "MAILPIT_URL=http://127.0.0.1:8025"]
+      : []),
+    ...(hasProfile(config, "cache") ? ["VALKEY_URL=redis://127.0.0.1:6379"] : []),
+    ...(hasProfile(config, "observability")
+      ? ["OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318", "SENTRY_DSN="]
+      : []),
   ];
   return textFile(".env.example", `${lines.join("\n")}\n`);
 }
@@ -2947,7 +3129,7 @@ function deploymentFiles(config: InitConfig): GeneratedFile[] {
   const deployableApps = plan.deployableApps;
   const variablesFor = (name: string): readonly string[] => [
     "NODE_ENV",
-    "PORT",
+    name === "worker" ? "WORKER_PORT" : "PORT",
     ...(name === "web" && plan.needsApi ? ["API_INTERNAL_URL"] : []),
     ...((name === "api" || name === "worker") && plan.needsDatabase ? ["DATABASE_URL"] : []),
     ...(name === "api" && plan.needsIdentity ? ["BETTER_AUTH_SECRET", "BETTER_AUTH_URL"] : []),
@@ -2963,6 +3145,16 @@ function deploymentFiles(config: InitConfig): GeneratedFile[] {
       : []),
     ...(name === "worker" ? ["WORKER_CONCURRENCY"] : []),
     ...(name !== "python" && hasProfile(config, "python") ? ["PYTHON_SERVICE_URL"] : []),
+    ...(name === "api" && hasProfile(config, "payments")
+      ? ["PAYMENT_PROVIDER", "PAYMENT_WEBHOOK_SECRET"]
+      : []),
+    ...(name === "api" && hasProfile(config, "notifications")
+      ? ["RESEND_API_KEY", "MAILPIT_URL"]
+      : []),
+    ...((name === "api" || name === "worker") && hasProfile(config, "cache") ? ["VALKEY_URL"] : []),
+    ...(name !== "python" && hasProfile(config, "observability")
+      ? ["OTEL_EXPORTER_OTLP_ENDPOINT"]
+      : []),
   ];
   const services = deployableApps.map((name) => ({
     name,

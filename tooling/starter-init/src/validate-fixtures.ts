@@ -1,5 +1,5 @@
-import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -34,6 +34,12 @@ const FIXTURES: readonly Fixture[] = [
     name: "durable-agentic-workflow",
     profiles: "api,data,identity,ai,jobs,durable-ai",
     deployment: "dokploy",
+    mobile: false,
+  },
+  {
+    name: "all-server-capabilities",
+    profiles: "web,api,data,identity,jobs,ai,durable-ai,external-api,storage,python",
+    deployment: "railway",
     mobile: false,
   },
   {
@@ -91,6 +97,97 @@ function initializerArguments(fixture: Fixture, output: string): readonly string
 
 async function runPnpm(root: string, arguments_: readonly string[]): Promise<void> {
   await execFileAsync("pnpm", arguments_, { cwd: root, maxBuffer: 20 * 1024 * 1024 });
+}
+
+async function waitForHttp(url: string, expectedStatus = 200): Promise<void> {
+  const deadline = Date.now() + 60_000;
+  let lastError = "not attempted";
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(url);
+      if (response.status === expectedStatus) return;
+      lastError = `HTTP ${response.status}`;
+    } catch (error: unknown) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
+  }
+  throw new Error(`Timed out waiting for ${url}: ${lastError}`);
+}
+
+function startProcess(root: string, arguments_: readonly string[]): ChildProcess {
+  return spawn("pnpm", arguments_, {
+    cwd: root,
+    detached: true,
+    env: { ...process.env },
+    stdio: "ignore",
+  });
+}
+
+async function stopProcess(processHandle: ChildProcess): Promise<void> {
+  if (processHandle.pid === undefined) return;
+  try {
+    process.kill(-processHandle.pid, "SIGTERM");
+  } catch {
+    return;
+  }
+  await new Promise<void>((resolvePromise) => {
+    const timeout = setTimeout(resolvePromise, 2_000);
+    processHandle.once("exit", () => {
+      clearTimeout(timeout);
+      resolvePromise();
+    });
+  });
+}
+
+async function proveAllServerRuntime(root: string): Promise<void> {
+  await copyFile(join(root, ".env.example"), join(root, ".env"));
+  await runPnpm(root, ["db:up"]);
+  await runPnpm(root, ["storage:up"]);
+  await runPnpm(root, ["db:migrate"]);
+  const processes = [
+    startProcess(root, ["dev:python"]),
+    startProcess(root, ["dev:api"]),
+    startProcess(root, ["dev:worker"]),
+    startProcess(root, ["dev:web"]),
+  ];
+  try {
+    await waitForHttp("http://127.0.0.1:8000/health/ready");
+    await waitForHttp("http://127.0.0.1:3001/health/live");
+    await waitForHttp("http://127.0.0.1:3001/health/ready");
+    await waitForHttp("http://127.0.0.1:3002/health/ready");
+    await waitForHttp("http://127.0.0.1:3000/");
+    await waitForHttp("http://127.0.0.1:9000/minio/health/live");
+  } finally {
+    await Promise.all(processes.map(stopProcess));
+    await execFileAsync("docker", ["compose", "down", "-v"], {
+      cwd: root,
+      maxBuffer: 20 * 1024 * 1024,
+    });
+  }
+}
+
+async function validateGeneratedProject(root: string, mobile: boolean): Promise<void> {
+  if (!mobile) {
+    await runPnpm(root, ["check"]);
+    return;
+  }
+  // Native export requires a platform-specific Hermes toolchain; keep the
+  // mobile fixture covered by every platform-neutral gate in this Linux pass.
+  for (const command of [
+    "format:check",
+    "lint",
+    "release:check",
+    "check:source-of-truth",
+    "check:boundaries",
+    "check:implementation",
+    "check:migrations",
+    "typecheck",
+  ]) {
+    await runPnpm(root, [command]);
+  }
+  await runPnpm(root, ["exec", "turbo", "run", "build", "--filter=!@fixture/mobile-app"]);
+  await runPnpm(root, ["test"]);
 }
 
 async function proveGeneratedReleaseDrift(root: string): Promise<void> {
@@ -225,7 +322,8 @@ export async function validateFixtures(): Promise<void> {
           "--check",
         ]);
       }
-      await runPnpm(root, ["check"]);
+      await validateGeneratedProject(root, fixture.mobile);
+      if (fixture.name === "all-server-capabilities") await proveAllServerRuntime(root);
       process.stdout.write(`Validated ${fixture.name}\n`);
     } finally {
       await rm(root, { recursive: true, force: true });

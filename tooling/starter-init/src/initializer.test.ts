@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
+import { IMAGE_CATALOG, resolveCapabilities } from "./capabilities.js";
 import {
   generateProject,
   type InitConfig,
@@ -258,7 +259,7 @@ describe("starter profile generation", () => {
     );
     for (const command of ["dev", "db:up", "db:migrate", "db:down", "smoke:web"])
       expect(rootManifest).toContain(`"${command}"`);
-    expect(apiManifest).toContain("tsx --env-file=../../.env watch src/index.ts");
+    expect(apiManifest).toContain("node --env-file=../../.env --import tsx --watch src/index.ts");
     expect(webManifest).toContain("next dev -p 3000");
     expect(turbo).toContain('"persistent":true');
     expect(compose).toMatch(/127\.0\.0\.1:\$\{POSTGRES_PORT:-5432\}:5432/u);
@@ -353,18 +354,54 @@ describe("starter profile generation", () => {
   });
 
   test("keeps the external API web profile internally consistent", () => {
-    const generated = generateProject(config(["web", "api", "external-api"]));
+    const generated = generateProject(config(["web", "api", "data", "identity", "external-api"]));
     const paths = generated.files.map((file) => file.path);
     const page = generated.files.find((file) => file.path === "apps/web/app/page.tsx")?.content;
+    const apiClient = generated.files.find(
+      (file) => file.path === "packages/api-client/src/index.ts",
+    )?.content;
 
-    expect(page).not.toContain("ReferenceFlow");
-    expect(paths).not.toContain("apps/web/app/reference-flow.tsx");
+    expect(page).toContain("ReferenceFlow");
+    expect(paths).toContain("apps/web/app/reference-flow.tsx");
+    expect(apiClient).toContain("createApiClient");
+    expect(apiClient).toContain("authClient");
+    expect(apiClient).toContain('export * as externalApi from "./generated/index.js"');
+    expect(apiClient).not.toContain("packages/api/src");
     expect(paths).toEqual(
       expect.arrayContaining([
         "apps/web/app/trpc/[...path]/route.ts",
         "apps/web/app/api/auth/[...path]/route.ts",
+        "apps/web/app/v1/[...path]/route.ts",
       ]),
     );
+  });
+
+  test("adds local object storage only when storage is selected", () => {
+    const withStorage = generateProject(config(["api", "data", "identity", "storage"]));
+    const withoutStorage = generateProject(config(["api", "data", "identity"]));
+    const compose = withStorage.files.find((file) => file.path === "compose.yaml")?.content ?? "";
+    const environment =
+      withStorage.files.find((file) => file.path === ".env.example")?.content ?? "";
+    const plainCompose =
+      withoutStorage.files.find((file) => file.path === "compose.yaml")?.content ?? "";
+    expect(compose).toContain("minio/minio:");
+    expect(compose).toContain("object-storage-init:");
+    expect(environment).toContain("STORAGE_ENDPOINT=http://127.0.0.1:9000");
+    expect(environment).toContain("STORAGE_BUCKET=starter");
+    expect(plainCompose).not.toContain("object-storage");
+  });
+
+  test("separates worker environment and local port from the API", () => {
+    const generated = generateProject(config(["api", "data", "jobs"]));
+    const workerManifest =
+      generated.files.find((file) => file.path === "apps/worker/package.json")?.content ?? "";
+    const worker =
+      generated.files.find((file) => file.path === "apps/worker/src/index.ts")?.content ?? "";
+    const environment = generated.files.find((file) => file.path === ".env.example")?.content ?? "";
+    expect(workerManifest).toContain("--env-file=../../.env");
+    expect(worker).toContain("WORKER_PORT");
+    expect(worker).toContain("default(3002)");
+    expect(environment).toContain("WORKER_PORT=3002");
   });
 
   test("keeps non-web developer guidance profile accurate", () => {
@@ -431,7 +468,9 @@ describe("starter profile generation", () => {
     const application = generated.files.find(
       (file) => file.path === "apps/api/src/index.ts",
     )?.content;
+    const api = generated.files.find((file) => file.path === "packages/api/src/index.ts")?.content;
     expect(application?.match(/name: "storage"/gu)).toHaveLength(2);
+    expect(api).toContain('Partial<Pick<ApiDependencies, "database" | "readinessChecks">>');
   });
 
   test("persists Better Auth artifacts and maps them to application identity", () => {
@@ -505,6 +544,32 @@ describe("starter profile generation", () => {
 });
 
 describe("starter profile validation", () => {
+  test("normalizes the deprecated durable-ai alias in the V2 capability manifest", () => {
+    const manifest = resolveCapabilities([
+      "api",
+      "data",
+      "identity",
+      "ai",
+      "jobs",
+      "events",
+      "durable-ai",
+    ]);
+    expect(manifest.profiles).toContain("agentic-ai");
+    expect(manifest.profiles).not.toContain("durable-ai");
+    expect(manifest.deprecatedAliases).toEqual(["durable-ai"]);
+  });
+
+  test("generates image provenance from the shared catalog", () => {
+    const generated = generateProject(config(["api", "data", "identity", "storage"]));
+    const compose = generated.files.find((file) => file.path === "compose.yaml")?.content ?? "";
+    const release = generatedJson(generated, "starter-release.json");
+    expect(compose).toContain(
+      `${IMAGE_CATALOG.postgresql.reference}@${IMAGE_CATALOG.postgresql.digest}`,
+    );
+    expect(compose).toContain(`${IMAGE_CATALOG.minio.reference}@${IMAGE_CATALOG.minio.digest}`);
+    expect(JSON.stringify(release)).toContain(IMAGE_CATALOG.minio.digest);
+  });
+
   test.each([
     ["identity", "identity requires api and data profiles"],
     ["jobs", "jobs requires data"],

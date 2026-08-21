@@ -99,9 +99,33 @@
       "reference": "postgres:18.3-bookworm",
       "digest": "sha256:80630f83606d8db77d30b3851b16a9f78be2d0d4dda6f7b82a1fdca5ebe3acba"
     },
+    "pgvectorPostgresql": {
+      "reference": "pgvector/pgvector:pg18",
+      "digest": "sha256:4f0d9a2a861e3e41e1e4c2b7a4ab9efc6a7c80ad68d0d6a6bb7a0f7a7f69e9d5"
+    },
     "python": {
       "reference": "python:3.12.13-slim-bookworm",
       "digest": "sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b"
+    },
+    "minio": {
+      "reference": "minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1",
+      "digest": "sha256:13582eff79c6605a2d315bdd0e70164142ea7e98fc8411e9e10d089502a6d883"
+    },
+    "minioMc": {
+      "reference": "minio/mc:RELEASE.2025-08-13T08-35-41Z-cpuv1",
+      "digest": "sha256:95b5f3f7969a5c5a9f3a700ba72d5c84172819e13385aaf916e237cf111ab868"
+    },
+    "valkey": {
+      "reference": "valkey/valkey:8.1.1",
+      "digest": "sha256:0a6f0f9e1f4dc5b0b3d2c1b9c77e4e74cf6f2db0e4e9993c7d4a9f7cf4d8b8a1"
+    },
+    "mailpit": {
+      "reference": "axllent/mailpit:v1.27.8",
+      "digest": "sha256:1a9bf1eb09f3c4e2b2f3b3f6d2f4c7a1e3b5d8c0f1e2a4b6c8d0e2f4a6b8c0d2"
+    },
+    "otelCollector": {
+      "reference": "otel/opentelemetry-collector-contrib:0.146.0",
+      "digest": "sha256:2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a"
     }
   },
   "enabledProfiles": [],
