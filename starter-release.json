@@ -11,6 +11,9 @@
   "approvedMajors": {
     "@biomejs/biome": 2,
     "@base-ui/react": 1,
+    "@aws-sdk/client-s3": 3,
+    "@aws-sdk/s3-presigned-post": 3,
+    "@aws-sdk/s3-request-presigner": 3,
     "@fastify/swagger": 9,
     "@fastify/swagger-ui": 6,
     "@hey-api/openapi-ts": 0,
@@ -52,6 +55,9 @@
   "testedPackages": {
     "@biomejs/biome": "2.5.9",
     "@base-ui/react": "1.7.0",
+    "@aws-sdk/client-s3": "3.1113.0",
+    "@aws-sdk/s3-presigned-post": "3.1113.0",
+    "@aws-sdk/s3-request-presigner": "3.1113.0",
     "@fastify/swagger": "9.8.1",
     "@fastify/swagger-ui": "6.1.1",
     "@hey-api/openapi-ts": "0.99.0",
@@ -101,11 +107,11 @@
     },
     "pgvectorPostgresql": {
       "reference": "pgvector/pgvector:pg18",
-      "digest": "sha256:4f0d9a2a861e3e41e1e4c2b7a4ab9efc6a7c80ad68d0d6a6bb7a0f7a7f69e9d5"
+      "digest": "sha256:2ba9ca5f2e7daa0f0e7723cba1ee9167bab54efd3640516a44ac1a928dd67e7a"
     },
     "python": {
       "reference": "python:3.12.13-slim-bookworm",
-      "digest": "sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b"
+      "digest": "sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2"
     },
     "minio": {
       "reference": "minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1",
@@ -117,15 +123,15 @@
     },
     "valkey": {
       "reference": "valkey/valkey:8.1.1",
-      "digest": "sha256:0a6f0f9e1f4dc5b0b3d2c1b9c77e4e74cf6f2db0e4e9993c7d4a9f7cf4d8b8a1"
+      "digest": "sha256:a19bebed6a91bd5e6e2106fef015f9602a3392deeb7c9ed47548378dcee3dfc2"
     },
     "mailpit": {
       "reference": "axllent/mailpit:v1.27.8",
-      "digest": "sha256:1a9bf1eb09f3c4e2b2f3b3f6d2f4c7a1e3b5d8c0f1e2a4b6c8d0e2f4a6b8c0d2"
+      "digest": "sha256:6abc8e633df15eaf785cfcf38bae48e66f64beecdc03121e249d0f9ec15f0707"
     },
     "otelCollector": {
       "reference": "otel/opentelemetry-collector-contrib:0.146.0",
-      "digest": "sha256:2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a"
+      "digest": "sha256:9742116fb9441d82900be0f35be168e14714fa64ff1f0f7aa182cfcf676832b1"
     }
   },
   "enabledProfiles": [],

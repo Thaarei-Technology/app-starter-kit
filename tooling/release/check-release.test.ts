@@ -47,6 +47,19 @@ describe("checkRelease", () => {
     }
   });
 
+  it("rejects an unpinned or latest container image tag", async () => {
+    const fixture = await createFixture();
+    const manifestPath = resolve(fixture, "starter-release.json");
+    const manifest = await readFile(manifestPath, "utf8");
+    await writeFile(manifestPath, manifest.replace("node:24.19.0-bookworm-slim", "node:latest"));
+
+    const result = await checkRelease(fixture);
+    expect(result.kind).toBe("invalid");
+    if (result.kind === "invalid") {
+      expect(result.errors).toContain("container image node must use a non-latest tag");
+    }
+  });
+
   it("accepts generated-style workspaces without a catalog when workspace pins match", async () => {
     const fixture = await createFixture();
     const workspacePath = resolve(fixture, "pnpm-workspace.yaml");

@@ -41,6 +41,35 @@ listed in the project configuration.
 | `storage` | An S3-compatible object-storage adapter with application-owned metadata and access policy | `api`, `data`, `identity` |
 | `python` | An isolated Python 3.12 service for work that TypeScript cannot meet cleanly | `api` or `jobs` |
 
+The remaining V2 profiles complete the reusable foundation:
+
+| Profile | Generated owner and local proof | Required profiles |
+| --- | --- | --- |
+| `tenancy` | Organization control-plane contracts, membership authorization, transaction-local PostgreSQL RLS, invitations, grants, and audit evidence; tenant-isolation and RLS fixtures | `identity`, `api`, `data` |
+| `events` | Versioned Zod events, transactional outbox, inbox receipts, leases, fencing, retries, dead letters, replay, and SQL claim/delivery ports | `data`, `jobs` |
+| `agentic-ai` | Fenced generic agent continuation and risk-tiered tool loop; application teams provide domain tools | `ai`, `jobs`, `events` |
+| `payments` | Provider-neutral payment/refund/webhook ports plus Stripe/Razorpay signature adapters and recorded fixtures | `api`, `data`, `jobs`, `events`, `external-api` |
+| `notifications` | Versioned templates, quiet-hour suppression, durable delivery contracts, Resend/Mailpit/Expo payload adapters | `data`, `jobs`, `events` |
+| `cache` | Tenant-namespaced typed cache policy and Valkey contract with bounded TTL/invalidation | None |
+| `rate-limit` | Risk-tiered distributed limiter policy and fail-closed middleware contract | `api`, `cache` |
+| `search` | Tenant-filtered PostgreSQL FTS/trigram documents, indexes, tombstones, and authorization-aware retrieval | `data`, `jobs`, `events` |
+| `rag` | pgvector 1536-dimension chunks, versioned provenance, ACL filtering, and citation verification | `ai`, `search`, `storage`, `python`, `jobs`, `events` |
+| `observability` | Redacted correlation/telemetry contract, OTLP collector and injectable Sentry exporter | None |
+| `feature-flags` | Typed, audited rollout evaluation that cannot grant permissions | `api`, `data` |
+
+`durable-ai` is retained as a tested, deprecated alias for `agentic-ai` for
+one release. New projects should select `agentic-ai` directly.
+
+Provider selections are explicit and affect generated environment schemas,
+adapter dependencies, deployment variables, readiness fixtures, and release
+metadata. Supported selections are Stripe/Razorpay, OpenAI/Anthropic,
+Resend, Valkey, and OTLP/Sentry. RAG requires OpenAI because
+`embedding.default` is pinned to `text-embedding-3-small` with 1536 dimensions;
+Anthropic remains available for chat roles. Local proof uses deterministic AI,
+Mailpit, MinIO, Valkey, PostgreSQL/pgvector, and an OpenTelemetry collector.
+It does not claim paid-provider, live deployment, restore/rollback, or native
+iOS/Android runtime evidence.
+
 Durable agent workflows select both `ai` and `jobs`. A REST adapter does not
 duplicate a tRPC operation unless it has an explicit external boundary.
 

@@ -93,6 +93,14 @@ export interface CapabilityManifest {
   readonly fixtures: readonly string[];
 }
 
+const environment = (
+  name: string,
+  owner: EnvironmentVariableDefinition["owner"],
+  required: boolean,
+  secret: boolean,
+  description: string,
+): EnvironmentVariableDefinition => ({ name, owner, required, secret, description });
+
 export const IMAGE_CATALOG = {
   node: {
     reference: "node:24.19.0-bookworm-slim",
@@ -104,11 +112,11 @@ export const IMAGE_CATALOG = {
   },
   pgvectorPostgresql: {
     reference: "pgvector/pgvector:pg18",
-    digest: "sha256:4f0d9a2a861e3e41e1e4c2b7a4ab9efc6a7c80ad68d0d6a6bb7a0f7a7f69e9d5",
+    digest: "sha256:2ba9ca5f2e7daa0f0e7723cba1ee9167bab54efd3640516a44ac1a928dd67e7a",
   },
   python: {
     reference: "python:3.12.13-slim-bookworm",
-    digest: "sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b",
+    digest: "sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2",
   },
   minio: {
     reference: "minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1",
@@ -120,15 +128,15 @@ export const IMAGE_CATALOG = {
   },
   valkey: {
     reference: "valkey/valkey:8.1.1",
-    digest: "sha256:0a6f0f9e1f4dc5b0b3d2c1b9c77e4e74cf6f2db0e4e9993c7d4a9f7cf4d8b8a1",
+    digest: "sha256:a19bebed6a91bd5e6e2106fef015f9602a3392deeb7c9ed47548378dcee3dfc2",
   },
   mailpit: {
     reference: "axllent/mailpit:v1.27.8",
-    digest: "sha256:1a9bf1eb09f3c4e2b2f3b3f6d2f4c7a1e3b5d8c0f1e2a4b6c8d0e2f4a6b8c0d2",
+    digest: "sha256:6abc8e633df15eaf785cfcf38bae48e66f64beecdc03121e249d0f9ec15f0707",
   },
   otelCollector: {
     reference: "otel/opentelemetry-collector-contrib:0.146.0",
-    digest: "sha256:2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a",
+    digest: "sha256:9742116fb9441d82900be0f35be168e14714fa64ff1f0f7aa182cfcf676832b1",
   },
 } as const;
 
@@ -172,6 +180,7 @@ export const DEPENDENCY_VERSIONS = {
   jsYaml: "4.3.1",
   awsS3: "3.1113.0",
   awsPresigner: "3.1113.0",
+  awsPresignedPost: "3.1113.0",
   reactTypes: "19.2.18",
   reactDomTypes: "19.2.4",
 } as const;
@@ -226,35 +235,81 @@ export const CAPABILITY_REGISTRY: Readonly<Record<CanonicalProfile, CapabilityDe
       service("minio", "minio", "curl -fsS http://localhost:9000/minio/health/live", "storage"),
     ],
   }),
-  python: definition("python", [], { apps: ["python"], fixtures: ["python-health"] }),
+  python: definition("python", [], {
+    apps: ["python"],
+    fixtures: ["python-health", "document-extraction"],
+    environment: [
+      environment(
+        "PYTHON_SERVICE_TOKEN",
+        "python",
+        true,
+        true,
+        "Worker-to-Python extraction service token.",
+      ),
+    ],
+  }),
   ai: definition("ai", ["api", "data", "identity"], { fixtures: ["ai-policy", "ai-evidence"] }),
   "agentic-ai": definition("agentic-ai", ["ai", "jobs", "events"], {
     fixtures: ["agent-leases", "tool-loop"],
   }),
   payments: definition("payments", ["api", "data", "jobs", "events", "external-api"], {
     fixtures: ["signed-webhooks", "payment-state-machine", "reconciliation"],
+    environment: [
+      environment("PAYMENT_PROVIDER", "api", true, false, "Configured payment adapter name."),
+      environment("PAYMENT_WEBHOOK_SECRET", "api", true, true, "Webhook verification secret."),
+    ],
+    documentation: ["payments-and-webhooks"],
   }),
   notifications: definition("notifications", ["data", "jobs", "events"], {
     fixtures: ["mailpit", "in-app-notifications"],
+    environment: [
+      environment(
+        "RESEND_API_KEY",
+        "worker",
+        false,
+        true,
+        "Resend API key; fixture mode does not require it.",
+      ),
+      environment("MAILPIT_URL", "worker", false, false, "Local Mailpit inspection endpoint."),
+    ],
+    documentation: ["notifications"],
     localServices: [
       service("mailpit", "mailpit", "wget -qO- http://localhost:8025/api/v1/info", "notifications"),
     ],
   }),
   cache: definition("cache", [], {
     fixtures: ["cache-ttl", "cache-invalidation"],
+    environment: [
+      environment("VALKEY_URL", "api", true, false, "Redis-compatible Valkey endpoint."),
+    ],
+    documentation: ["cache-and-rate-limit"],
     localServices: [service("valkey", "valkey", "valkey-cli ping", "cache")],
   }),
   "rate-limit": definition("rate-limit", ["api", "cache"], {
     fixtures: ["distributed-rate-limit"],
+    documentation: ["cache-and-rate-limit"],
   }),
   search: definition("search", ["data", "jobs", "events"], {
     fixtures: ["fts", "trigram", "search-tombstone"],
+    documentation: ["search-and-rag"],
   }),
   rag: definition("rag", ["ai", "search", "storage", "python", "jobs", "events"], {
     fixtures: ["rag-ingestion", "rag-acl", "citation-integrity"],
+    documentation: ["search-and-rag"],
   }),
   observability: definition("observability", [], {
     fixtures: ["otel-redaction", "alert-syntax"],
+    environment: [
+      environment(
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "api",
+        false,
+        false,
+        "OpenTelemetry Collector endpoint.",
+      ),
+      environment("SENTRY_DSN", "api", false, true, "Optional Sentry adapter DSN."),
+    ],
+    documentation: ["observability"],
     localServices: [
       service(
         "otel-collector",
@@ -266,6 +321,7 @@ export const CAPABILITY_REGISTRY: Readonly<Record<CanonicalProfile, CapabilityDe
   }),
   "feature-flags": definition("feature-flags", ["api", "data"], {
     fixtures: ["typed-flags", "flag-audit"],
+    documentation: ["feature-flags"],
   }),
 };
 
@@ -307,8 +363,44 @@ export function resolveCapabilities(
   providers: ProviderSelection = defaultProviders(),
   options: { readonly strict?: boolean } = {},
 ): CapabilityManifest {
+  const canonicalRequested = requested.map(canonicalProfile);
+  if (new Set(canonicalRequested).size !== canonicalRequested.length) {
+    throw new Error("Duplicate capability selection after canonicalization");
+  }
   const canonical = canonicalizeProfiles(requested);
   const selected = new Set<CanonicalProfile>(canonical.profiles);
+  const providerProfileRequirements: readonly [string, CanonicalProfile, boolean][] = [
+    ["payment provider", "payments", providers.paymentProviders.length > 0],
+    ["AI provider", "ai", providers.aiProviders.length > 0],
+    ["email provider", "notifications", providers.emailProvider !== null],
+    ["cache provider", "cache", providers.cacheProvider !== null],
+    ["observability exporter", "observability", providers.observabilityExporters.length > 0],
+  ];
+  for (const [label, profile, configured] of providerProfileRequirements) {
+    if (configured && !selected.has(profile)) throw new Error(`${label} requires ${profile}`);
+  }
+  const knownProviders = {
+    payment: new Set(["stripe", "razorpay"]),
+    ai: new Set(["openai", "anthropic"]),
+    email: new Set(["resend", null]),
+    cache: new Set(["valkey", null]),
+    observability: new Set(["otlp", "sentry"]),
+  } as const;
+  if (providers.paymentProviders.some((provider) => !knownProviders.payment.has(provider))) {
+    throw new Error("Unsupported payment provider");
+  }
+  if (providers.aiProviders.some((provider) => !knownProviders.ai.has(provider))) {
+    throw new Error("Unsupported AI provider");
+  }
+  if (!knownProviders.email.has(providers.emailProvider))
+    throw new Error("Unsupported email provider");
+  if (!knownProviders.cache.has(providers.cacheProvider))
+    throw new Error("Unsupported cache provider");
+  if (
+    providers.observabilityExporters.some((provider) => !knownProviders.observability.has(provider))
+  ) {
+    throw new Error("Unsupported observability exporter");
+  }
   const visiting = new Set<CanonicalProfile>();
   const resolved = new Set<CanonicalProfile>();
   const visit = (profile: CanonicalProfile): void => {

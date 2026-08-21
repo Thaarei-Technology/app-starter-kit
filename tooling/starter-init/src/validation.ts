@@ -249,6 +249,11 @@ export function validateInitOptions(options: ReadonlyMap<string, string>): InitC
     );
   if (profiles.includes("feature-flags"))
     requireProfiles(profiles, ["api", "data"], "feature-flags requires api and data");
+  const selectedProviders = providers(options, profiles);
+  if (profiles.includes("rag") && !selectedProviders.aiProviders.includes("openai"))
+    throw new InitValidationError(
+      "rag requires --ai-providers to include openai for embedding.default",
+    );
   const agentTemplate = options.get("agent-template")?.trim();
   const config: InitConfig = {
     productId,
@@ -261,7 +266,7 @@ export function validateInitOptions(options: ReadonlyMap<string, string>): InitC
     operationsOwner: owner(required(options, "operations-owner"), "operations-owner"),
     outputDir: options.get("output-dir")?.trim() || `.thaarei/generated/${clientId}`,
     mobile: mobileSettings(options, profiles),
-    providers: providers(options, profiles),
+    providers: selectedProviders,
   };
   if (agentTemplate) return { ...config, agentTemplate };
   return config;

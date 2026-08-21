@@ -30,6 +30,16 @@ selection, and allowed write scope are known.
 - Keep AI tools typed, authorized, risk-classified, observable, auditable, and budgeted.
 - Add only the profiles and infrastructure that the product needs.
 
+V2 profile names are `web`, `mobile`, `api`, `data`, `identity`, `tenancy`,
+`jobs`, `events`, `ai`, `agentic-ai`, `external-api`, `storage`, `python`,
+`payments`, `notifications`, `cache`, `rate-limit`, `search`, `rag`,
+`observability`, and `feature-flags`. `durable-ai` is a deprecated alias only.
+Provider selections (Stripe/Razorpay, OpenAI/Anthropic, Resend, Valkey,
+OTLP/Sentry) must be reflected in generated dependencies, environment schemas,
+adapters, readiness checks, and tests. Local fixtures are deterministic and do
+not prove paid-provider, live deployment, restore/rollback, or native mobile
+runtime behavior.
+
 ## Inline ownership metadata
 
 Add a source-of-truth block only to an architectural owner: a schema, domain

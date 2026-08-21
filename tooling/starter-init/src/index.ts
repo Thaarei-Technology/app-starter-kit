@@ -158,6 +158,14 @@ export async function runInitializer(argv: readonly string[]): Promise<string> {
     });
     await execFileAsync("pnpm", ["generate:api-client"], { cwd: written.outputDir });
   }
+  // Dependency installation and generated OpenAPI output can add files after
+  // the first formatting pass. Re-run the pinned formatter so every generated
+  // repository starts in the same state validated by its own format gate.
+  await execFileAsync(
+    resolve(sourceRoot, "node_modules", ".bin", "biome"),
+    ["format", "--write", "."],
+    { cwd: written.outputDir },
+  );
   return `Initialized ${config.displayName} in ${written.outputDir} (${written.files.length} files).`;
 }
 

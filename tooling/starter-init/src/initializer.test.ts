@@ -625,6 +625,10 @@ describe("starter profile validation", () => {
     expect(tenantMigration).toContain("FORCE ROW LEVEL SECURITY");
     expect(tenantMigration).toContain("app_current_organization_id()");
     expect(tenantMigration).toContain("protect_last_organization_owner");
+    const tenantDatabase =
+      tenant.files.find((file) => file.path === "packages/database/src/index.ts")?.content ?? "";
+    expect(tenantDatabase).toContain("callback(transaction)");
+    expect(tenantDatabase).toContain("postgres.TransactionSql");
   });
 
   test("generates transactional outbox, dead-letter, and inbox persistence only for events", () => {
@@ -648,6 +652,22 @@ describe("starter profile validation", () => {
     expect(eventMigration).toContain("fencing_token bigint");
     expect(eventMigration).toContain("UNIQUE (destination, idempotency_key)");
     expect(eventMigration).toContain("UNIQUE (consumer, event_id)");
+    const core =
+      events.files.find((file) => file.path === "packages/core/src/index.ts")?.content ?? "";
+    expect(core).toContain("export const domainEventSchema = z.object");
+  });
+
+  test("records Zod for a jobs-only contract package in release provenance", () => {
+    const generated = generateProject(config(["data", "jobs"]));
+    const contracts = jsonRecord(
+      generatedJson(generated, "packages/contracts/package.json"),
+      "contracts",
+    );
+    const dependencies = jsonRecord(contracts.dependencies, "contract dependencies");
+    expect(dependencies.zod).toBe(DEPENDENCY_VERSIONS.zod);
+    const release = jsonRecord(generatedJson(generated, "starter-release.json"), "release");
+    const testedPackages = jsonRecord(release.testedPackages, "tested packages");
+    expect(testedPackages.zod).toBe(DEPENDENCY_VERSIONS.zod);
   });
 
   test("generates logical AI models and durable run evidence", () => {
@@ -680,6 +700,79 @@ describe("starter profile validation", () => {
     }
     expect(migration).toContain("UNIQUE (organization_id, idempotency_key)");
     expect(migration).toContain("fencing_token bigint");
+  });
+
+  test("generates platform policy owners only for selected capabilities", () => {
+    const platform = generateProject(
+      config([
+        "api",
+        "data",
+        "identity",
+        "tenancy",
+        "jobs",
+        "events",
+        "ai",
+        "payments",
+        "notifications",
+        "cache",
+        "rate-limit",
+        "search",
+        "rag",
+        "storage",
+        "python",
+        "observability",
+        "feature-flags",
+      ]),
+    );
+    const core =
+      platform.files.find((file) => file.path === "packages/core/src/index.ts")?.content ?? "";
+    expect(core).toContain("DefaultAuthorizationService");
+    expect(core).toContain("redactSensitive");
+    expect(core).toContain("verifySignedWebhook");
+    expect(core).toContain("evaluateRateLimit");
+    expect(core).toContain("evaluateFeatureFlag");
+    expect(core).toContain("canReadSearchDocument");
+    expect(core).toContain("chunkText");
+    const manifest = generatedJson(platform, ".thaarei/capability-manifest.json");
+    expect(JSON.stringify(manifest)).toContain("PAYMENT_WEBHOOK_SECRET");
+    const release = JSON.stringify(generatedJson(platform, "starter-release.json"));
+    expect(release).toContain(IMAGE_CATALOG.valkey.digest);
+    expect(release).toContain(IMAGE_CATALOG.mailpit.digest);
+    expect(release).toContain(IMAGE_CATALOG.otelCollector.digest);
+    const worker =
+      platform.files.find((file) => file.path === "apps/worker/src/index.ts")?.content ?? "";
+    expect(worker).toContain("RESEND_API_KEY");
+    const railway = JSON.stringify(generatedJson(platform, "deployment/dokploy/services.json"));
+    expect(railway).toContain("RESEND_API_KEY");
+
+    const plain = generateProject(config(["api"]));
+    const plainCore =
+      plain.files.find((file) => file.path === "packages/core/src/index.ts")?.content ?? "";
+    expect(plainCore).not.toContain("verifySignedWebhook");
+    expect(plainCore).not.toContain("chunkText");
+  });
+
+  test("keeps cache-only Compose output free of an unselected database", () => {
+    const cache = generateProject(config(["cache"]));
+    const compose = cache.files.find((file) => file.path === "compose.yaml")?.content ?? "";
+    expect(compose).toContain(`${IMAGE_CATALOG.valkey.reference}@${IMAGE_CATALOG.valkey.digest}`);
+    expect(compose).not.toContain("postgres:");
+    expect(compose).not.toContain("starter-postgres-data");
+  });
+
+  test("rejects selecting a canonical profile and its deprecated alias together", () => {
+    expect(() =>
+      resolveCapabilities([
+        "api",
+        "data",
+        "identity",
+        "ai",
+        "jobs",
+        "events",
+        "agentic-ai",
+        "durable-ai",
+      ]),
+    ).toThrow("Duplicate capability selection after canonicalization");
   });
 
   test.each([

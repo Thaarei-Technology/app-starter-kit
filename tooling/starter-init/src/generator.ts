@@ -7,6 +7,7 @@ import {
   resolveCapabilities,
   type Profile,
   type ProviderSelection,
+  type EnvironmentVariableDefinition,
 } from "./capabilities.js";
 
 export { PROFILE_NAMES } from "./capabilities.js";
@@ -79,10 +80,19 @@ interface CapabilityPlan {
   readonly needsTenancy: boolean;
   readonly needsAi: boolean;
   readonly needsStorage: boolean;
+  readonly needsObservability: boolean;
+  readonly needsCache: boolean;
+  readonly needsRateLimit: boolean;
+  readonly needsFeatureFlags: boolean;
+  readonly needsNotifications: boolean;
+  readonly needsPayments: boolean;
+  readonly needsSearch: boolean;
+  readonly needsRag: boolean;
   readonly needsAdapters: boolean;
   readonly deployableApps: readonly string[];
   readonly apiEnvironment: readonly string[];
   readonly workerEnvironment: readonly string[];
+  readonly capabilityEnvironment: readonly EnvironmentVariableDefinition[];
   readonly testedPackages: Readonly<Record<string, string>>;
 }
 
@@ -106,6 +116,14 @@ function createCapabilityPlan(config: InitConfig): CapabilityPlan {
   const needsExternalApi = has("external-api");
   const needsWorker = has("jobs");
   const needsEvents = has("events");
+  const needsObservability = has("observability");
+  const needsCache = has("cache");
+  const needsRateLimit = has("rate-limit");
+  const needsFeatureFlags = has("feature-flags");
+  const needsNotifications = has("notifications");
+  const needsPayments = has("payments");
+  const needsSearch = has("search");
+  const needsRag = has("rag");
   if (needsAi && (!has("api") || !has("data") || !needsIdentity))
     throw new Error("Invalid capability plan: ai requires api, data, and identity");
   if (needsStorage && (!has("api") || !has("data") || !needsIdentity))
@@ -119,6 +137,80 @@ function createCapabilityPlan(config: InitConfig): CapabilityPlan {
     ...(needsWorker ? ["worker"] : []),
     ...(has("python") ? ["python"] : []),
   ];
+  const providerEnvironment: readonly EnvironmentVariableDefinition[] = [
+    ...(manifest.providers.aiProviders.includes("openai")
+      ? [
+          {
+            name: "OPENAI_API_KEY",
+            owner: "api" as const,
+            required: false,
+            secret: true,
+            description: "OpenAI API key; deterministic fixtures do not require it.",
+          },
+          {
+            name: "OPENAI_BASE_URL",
+            owner: "api" as const,
+            required: false,
+            secret: false,
+            description: "Optional OpenAI-compatible endpoint for contract tests.",
+          },
+        ]
+      : []),
+    ...(manifest.providers.aiProviders.includes("anthropic")
+      ? [
+          {
+            name: "ANTHROPIC_API_KEY",
+            owner: "api" as const,
+            required: false,
+            secret: true,
+            description: "Anthropic API key; deterministic fixtures do not require it.",
+          },
+          {
+            name: "ANTHROPIC_BASE_URL",
+            owner: "api" as const,
+            required: false,
+            secret: false,
+            description: "Optional Anthropic-compatible endpoint for contract tests.",
+          },
+        ]
+      : []),
+    ...(manifest.providers.paymentProviders.includes("stripe")
+      ? [
+          {
+            name: "STRIPE_SECRET_KEY",
+            owner: "api" as const,
+            required: false,
+            secret: true,
+            description: "Stripe secret key; signed fixtures do not require it.",
+          },
+        ]
+      : []),
+    ...(manifest.providers.paymentProviders.includes("razorpay")
+      ? [
+          {
+            name: "RAZORPAY_KEY_ID",
+            owner: "api" as const,
+            required: false,
+            secret: false,
+            description: "Razorpay key identifier; contract fixtures do not require it.",
+          },
+          {
+            name: "RAZORPAY_KEY_SECRET",
+            owner: "api" as const,
+            required: false,
+            secret: true,
+            description: "Razorpay secret; signed fixtures do not require it.",
+          },
+        ]
+      : []),
+  ];
+  const capabilityEnvironment = [
+    ...new Map(
+      [...manifest.environment, ...providerEnvironment].map((item) => [item.name, item]),
+    ).values(),
+  ];
+  const environmentNames = (owner: EnvironmentVariableDefinition["owner"]): readonly string[] =>
+    capabilityEnvironment.filter((item) => item.owner === owner).map((item) => item.name);
   const apiEnvironment = [
     "NODE_ENV",
     "PORT",
@@ -135,10 +227,7 @@ function createCapabilityPlan(config: InitConfig): CapabilityPlan {
         ]
       : []),
     ...(has("python") ? ["PYTHON_SERVICE_URL"] : []),
-    ...(has("payments") ? ["PAYMENT_WEBHOOK_SECRET", "PAYMENT_PROVIDER"] : []),
-    ...(has("notifications") ? ["RESEND_API_KEY", "MAILPIT_URL"] : []),
-    ...(has("cache") ? ["VALKEY_URL"] : []),
-    ...(has("observability") ? ["OTEL_EXPORTER_OTLP_ENDPOINT", "SENTRY_DSN"] : []),
+    ...environmentNames("api"),
   ];
   const workerEnvironment = [
     "NODE_ENV",
@@ -146,7 +235,9 @@ function createCapabilityPlan(config: InitConfig): CapabilityPlan {
     ...(needsDatabase ? ["DATABASE_URL"] : []),
     "WORKER_CONCURRENCY",
     ...(has("cache") ? ["VALKEY_URL"] : []),
+    ...(has("python") ? ["PYTHON_SERVICE_TOKEN"] : []),
     ...(has("observability") ? ["OTEL_EXPORTER_OTLP_ENDPOINT"] : []),
+    ...environmentNames("worker"),
   ];
   return {
     profiles: config.profiles,
@@ -165,10 +256,20 @@ function createCapabilityPlan(config: InitConfig): CapabilityPlan {
     needsTenancy,
     needsAi,
     needsStorage,
-    needsAdapters: needsIdentity || needsAi || needsStorage,
+    needsObservability,
+    needsCache,
+    needsRateLimit,
+    needsFeatureFlags,
+    needsNotifications,
+    needsPayments,
+    needsSearch,
+    needsRag,
+    needsAdapters:
+      needsIdentity || needsAi || needsStorage || needsPayments || needsNotifications || needsCache,
     deployableApps,
     apiEnvironment,
     workerEnvironment,
+    capabilityEnvironment,
     testedPackages: testedPackages(config),
   };
 }
@@ -314,6 +415,9 @@ function testedPackages(config: InitConfig): Readonly<Record<string, string>> {
       zod: DEPENDENCY_VERSIONS.zod,
     });
   }
+  if (hasProfile(config, "jobs") && !hasProfile(config, "api")) {
+    packages.zod = DEPENDENCY_VERSIONS.zod;
+  }
   if (hasProfile(config, "data") || hasProfile(config, "storage")) {
     Object.assign(packages, {
       "drizzle-orm": DEPENDENCY_VERSIONS.drizzle,
@@ -336,6 +440,7 @@ function testedPackages(config: InitConfig): Readonly<Record<string, string>> {
     Object.assign(packages, {
       "@aws-sdk/client-s3": DEPENDENCY_VERSIONS.awsS3,
       "@aws-sdk/s3-request-presigner": DEPENDENCY_VERSIONS.awsPresigner,
+      "@aws-sdk/s3-presigned-post": DEPENDENCY_VERSIONS.awsPresignedPost,
     });
   }
   if (hasProfile(config, "web")) {
@@ -529,6 +634,11 @@ type JsonRecord = Record<string, unknown>;
 const isRecord = (value: unknown): value is JsonRecord => typeof value === "object" && value !== null && !Array.isArray(value);
 const isStringRecord = (value: unknown): value is Record<string, string> => isRecord(value) && Object.values(value).every((item) => typeof item === "string" && item.length > 0);
 const isDateTime = (value: unknown): value is string => typeof value === "string" && /^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$/u.test(value) && !Number.isNaN(Date.parse(value));
+const hasNonLatestImageTag = (reference: string): boolean => {
+  const lastSlash = reference.lastIndexOf("/");
+  const tagSeparator = reference.lastIndexOf(":");
+  return tagSeparator > lastSlash && reference.slice(tagSeparator + 1) !== "latest";
+};
 const unknownKeys = (value: unknown, allowed: readonly string[], label: string): void => {
   if (!isRecord(value)) return;
   for (const key of Object.keys(value)) if (!allowed.includes(key)) errors.push(\`\${label} has unknown property \${key}\`);
@@ -592,6 +702,7 @@ if (isRecord(release)) {
   if (isRecord(release.containerImages)) for (const [name, image] of Object.entries(release.containerImages)) {
     unknownKeys(image, ["reference", "digest"], \`container image \${name}\`);
     if (!isRecord(image) || typeof image.reference !== "string" || image.reference.length === 0 || typeof image.digest !== "string" || !/^sha256:[a-f0-9]{64}$/u.test(image.digest)) errors.push(\`container image \${name} must contain a non-empty reference and sha256 digest\`);
+    else if (!hasNonLatestImageTag(image.reference)) errors.push(\`container image \${name} must use a non-latest tag\`);
   }
   if (!Array.isArray(release.enabledProfiles) || !release.enabledProfiles.every((value) => typeof value === "string" && value.length > 0) || new Set(release.enabledProfiles).size !== release.enabledProfiles.length) errors.push("enabledProfiles must be a unique non-empty string array");
   if (!Array.isArray(release.compatibilityEvidence) || !release.compatibilityEvidence.every((item) => isRecord(item) && typeof item.gate === "string" && item.gate.length > 0 && ["passed", "failed", "pending", "blocked_external"].includes(String(item.status)) && typeof item.evidence === "string" && item.evidence.length > 0)) errors.push("compatibilityEvidence is invalid");
@@ -654,6 +765,7 @@ function contractsPackageFile(plan: CapabilityPlan): GeneratedFile {
 export const healthResponseSchema = z.object({
   status: z.enum(["ok", "degraded"]),
   checkedAt: z.string().datetime(),
+  instanceId: z.string().min(1),
   detail: z.string().optional(),
   failedDependency: z.string().optional(),
 });
@@ -684,6 +796,7 @@ export type JobPayload = z.infer<typeof jobPayloadSchema>;
 }
 
 function corePackageFile(plan: CapabilityPlan): GeneratedFile {
+  const zodImport = plan.needsEvents ? 'import { z } from "zod";\n\n' : "";
   const applicationBoundary =
     plan.needsApi || plan.needsWorker
       ? `export type GovernanceRole = "owner" | "admin" | "member";
@@ -783,25 +896,84 @@ export async function runIdempotentWorkflow(
 export interface OutboxPort {
   append<TPayload>(event: DomainEvent<TPayload>, destination: string, idempotencyKey: string): Promise<void>;
 }
+export interface OutboxDeliveryPort {
+  claim(eventId: string, leaseOwner: string, now: Date, leaseMilliseconds: number): Promise<{ readonly fencingToken: number } | null>;
+  recordAttempt(eventId: string, fencingToken: number, outcome: "delivered" | "retry" | "dead_letter", failure?: string): Promise<void>;
+  markDelivered(eventId: string, fencingToken: number): Promise<void>;
+  replay(eventId: string, actorSubjectId: string): Promise<void>;
+}
+export const domainEventSchema = z.object({
+  id: z.string().min(1),
+  organizationId: z.string().min(1).optional(),
+  type: z.string().min(1),
+  schemaVersion: z.number().int().positive(),
+  aggregateType: z.string().min(1),
+  aggregateId: z.string().min(1),
+  payload: z.record(z.string(), z.unknown()),
+  occurredAt: z.string().datetime(),
+  correlationId: z.string().min(1),
+  causationId: z.string().min(1).optional(),
+}).strict();
+export function retryDelayMilliseconds(attemptNumber: number, randomValue = 0.5): number {
+  if (!Number.isSafeInteger(attemptNumber) || attemptNumber < 1 || !Number.isFinite(randomValue) || randomValue < 0 || randomValue > 1) throw new Error("Invalid outbox retry input");
+  const exponential = Math.min(15 * 60 * 1000, 1000 * 2 ** Math.min(attemptNumber - 1, 10));
+  return Math.min(15 * 60 * 1000, Math.floor(exponential * (0.5 + randomValue)));
+}
+export function isCurrentFencingToken(expected: number, actual: number): boolean {
+  return Number.isSafeInteger(expected) && expected > 0 && actual === expected;
+}
+export function validateDomainEvent(value: unknown): DomainEvent<Record<string, unknown>> {
+  return domainEventSchema.parse(value) as DomainEvent<Record<string, unknown>>;
+}
 `
     : "";
   const storage = plan.needsStorage
-    ? `export interface ObjectStorage {
+    ? `export interface StorageUploadRequest {
+  readonly key: string;
+  readonly contentType: string;
+  readonly byteLength: number;
+  readonly subjectId: string;
+  readonly organizationId?: string;
+}
+export interface PresignedUpload {
+  readonly url: string;
+  readonly fields: Readonly<Record<string, string>>;
+  readonly key: string;
+  readonly expiresAt: string;
+}
+export interface StorageMetadata {
+  readonly key: string;
+  readonly contentType: string;
+  readonly byteLength: number;
+  readonly subjectId: string;
+  readonly organizationId?: string;
+  readonly status: "pending" | "available" | "quarantined";
+}
+export interface ObjectStorage {
+  createUpload(input: StorageUploadRequest): Promise<PresignedUpload>;
+  completeUpload(input: { readonly key: string; readonly subjectId: string }): Promise<StorageMetadata>;
   put(input: { readonly key: string; readonly contentType: string; readonly body: Uint8Array; readonly subjectId: string }): Promise<void>;
   getUrl(input: { readonly key: string; readonly subjectId: string }): Promise<string>;
 }
 export interface StorageMetadataStore {
-  record(input: { readonly key: string; readonly contentType: string; readonly byteLength: number; readonly subjectId: string }): Promise<void>;
-  find(key: string): Promise<{ readonly subjectId: string } | null>;
+  record(input: { readonly key: string; readonly contentType: string; readonly byteLength: number; readonly subjectId: string; readonly organizationId?: string; readonly status?: "pending" | "available" | "quarantined" }): Promise<void>;
+  find(key: string): Promise<StorageMetadata | null>;
 }
 export interface StoragePolicy {
-  authorize(operation: "put" | "get", key: string, subjectId: string): boolean;
+  authorize(operation: "create-upload" | "complete-upload" | "put" | "get", key: string, subjectId: string): boolean;
   readonly maximumBytes: number;
+  readonly allowedContentTypes: readonly string[];
 }
 export const defaultStoragePolicy: StoragePolicy = {
   maximumBytes: 50 * 1024 * 1024,
-  authorize: (_operation, key, subjectId) => subjectId.length > 0 && key.startsWith(subjectId + "/") && !key.includes("..") && !key.startsWith("/"),
+  allowedContentTypes: ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "image/png", "image/jpeg", "text/plain"],
+  authorize: (_operation, key, subjectId) => subjectId.length > 0 && key.startsWith(subjectId.concat("/")) && !key.includes("..") && !key.startsWith("/"),
 };
+export function validateStorageUpload(input: StorageUploadRequest, policy = defaultStoragePolicy): void {
+  if (!policy.authorize("create-upload", input.key, input.subjectId)) throw new Error("Storage policy denied upload authorization");
+  if (!Number.isSafeInteger(input.byteLength) || input.byteLength <= 0 || input.byteLength > policy.maximumBytes) throw new Error("Storage policy denied upload size");
+  if (!policy.allowedContentTypes.includes(input.contentType)) throw new Error("Storage policy denied content type");
+}
 `
     : "";
   const ai = plan.needsAi
@@ -809,12 +981,13 @@ export const defaultStoragePolicy: StoragePolicy = {
 export type ToolRisk = "low" | "medium" | "high";
 export type AiOutcome = "success" | "invalid_tool" | "invalid_input" | "unauthorized" | "approval_required" | "cost_limit" | "provider_error" | "invalid_output";
 export interface AiEvent { readonly toolName: string; readonly subjectId: string; readonly costUsd: number; readonly outcome: AiOutcome; }
-export interface AiApprovalStore { isApproved(toolName: string, subjectId: string): Promise<boolean>; }
+export interface ApprovalScope { readonly organizationId?: string; readonly runId?: string; readonly toolName: string; readonly subjectId: string; readonly inputHash?: string; readonly maximumCostUsd?: number; }
+export interface AiApprovalStore { isApproved(toolName: string, subjectId: string): Promise<boolean>; consumeApproval?(scope: ApprovalScope): Promise<boolean>; }
 export interface AiAuditStore { recordAudit(event: AiEvent): Promise<void>; }
 export interface AiTelemetryStore { recordTelemetry(event: AiEvent): Promise<void>; }
 export interface AiEvaluationStore { recordEvaluation(input: { readonly name: string; readonly score: number; readonly subjectId: string }): Promise<void>; }
 export interface AiPersistence extends AiApprovalStore, AiAuditStore, AiTelemetryStore, AiEvaluationStore {
-  approve(toolName: string, subjectId: string): Promise<void>;
+  approve(toolName: string, subjectId: string, scope?: Omit<ApprovalScope, "toolName" | "subjectId">): Promise<void>;
 }
 export type LogicalModel = "chat.fast" | "chat.quality" | "structured.default" | "embedding.default";
 export interface ModelGeneration { readonly text: string; readonly inputTokens: number; readonly outputTokens: number; }
@@ -845,8 +1018,18 @@ export interface AiCompletionTransaction {
     readonly event: { readonly id: string; readonly type: string; readonly payload: Readonly<Record<string, unknown>>; readonly correlationId: string };
   }): Promise<void>;
 }
+export async function completeAiRun(transaction: AiCompletionTransaction, input: Parameters<AiCompletionTransaction["complete"]>[0]): Promise<void> {
+  if (!input.runId || !input.organizationId || !input.leaseToken || Object.keys(input.artifact).length === 0) throw new AiPolicyError("INVALID_INPUT", "AI completion evidence is incomplete");
+  if (!Number.isSafeInteger(input.usage.inputTokens) || input.usage.inputTokens < 0 || !Number.isSafeInteger(input.usage.outputTokens) || input.usage.outputTokens < 0 || !Number.isSafeInteger(input.usage.costMicrousd) || input.usage.costMicrousd < 0) throw new AiPolicyError("INVALID_INPUT", "AI usage evidence is invalid");
+  if (!input.evaluation.name || !Number.isSafeInteger(input.evaluation.scoreMillionths) || input.evaluation.scoreMillionths < 0 || input.evaluation.scoreMillionths > 1_000_000) throw new AiPolicyError("INVALID_INPUT", "AI evaluation evidence is invalid");
+  if (!input.event.id || !input.event.type || !input.event.correlationId || Object.keys(input.event.payload).length === 0) throw new AiPolicyError("INVALID_INPUT", "AI event evidence is incomplete");
+  await transaction.complete(input);
+}
 export interface AiExecutionContext {
   readonly subjectId: string;
+  readonly organizationId?: string;
+  readonly runId?: string;
+  readonly inputHash?: string;
   readonly budgetUsd: number;
   readonly approvals: AiApprovalStore;
   readonly audit: AiAuditStore;
@@ -880,6 +1063,16 @@ export class ModelRegistry {
     return model;
   }
 }
+export function createDefaultModelRegistry(): ModelRegistry {
+  const registry = new ModelRegistry();
+  const provider = '${plan.providers.aiProviders[0] ?? "deterministic"}';
+  const descriptor = (modelId: string, useCases: readonly string[], structuredOutput = false): ModelDescriptor => ({ provider, modelId, allowedUseCases: useCases, maximumInputTokens: 8_000, maximumOutputTokens: 2_000, timeoutMilliseconds: 15_000, maximumRetries: 2, inputMicrousdPerMillionTokens: 0, outputMicrousdPerMillionTokens: 0, structuredOutput, tools: true, streaming: false, environments: ["development", "test", "staging", "production"], generate: async (prompt) => ({ text: prompt, inputTokens: Math.ceil(prompt.length / 4), outputTokens: 0 }) });
+  registry.register("chat.fast", descriptor("gpt-4o-mini", ["triage", "classification"]));
+  registry.register("chat.quality", descriptor("claude-3-5-sonnet-latest", ["drafting", "reasoning"]));
+  registry.register("structured.default", descriptor("gpt-4o-mini", ["structured-output"], true));
+  registry.register("embedding.default", descriptor("text-embedding-3-small", ["embedding"]));
+  return registry;
+}
 ${sourceOfTruthBlock({ id: "starter.ai.tool-registry", keywords: "ai, tool, authorization, approval, cost", what: "Fail-closed AI tool registration and execution policy.", why: "Model-selected actions require application authorization, approval, validation, audit, telemetry, and cost enforcement.", when: "Execute typed AI tools after constructing an application-owned execution context.", how: "ToolRegistry", boundaries: "Provider adapters generate model output but cannot bypass application policy." })}
 export class ToolRegistry {
   readonly #tools = new Map<string, AgentTool<unknown, unknown>>();
@@ -904,7 +1097,11 @@ export class ToolRegistry {
       await record("unauthorized");
       throw new AiPolicyError("UNAUTHORIZED", "AI tool authorization denied");
     }
-    if (tool.requiresApproval && !(await context.approvals.isApproved(name, context.subjectId))) { await record("approval_required"); throw new AiPolicyError("APPROVAL_REQUIRED", "AI tool approval is required"); }
+    if (tool.requiresApproval) {
+      const scope = { toolName: name, subjectId: context.subjectId, ...(context.organizationId ? { organizationId: context.organizationId } : {}), ...(context.runId ? { runId: context.runId } : {}), ...(context.inputHash ? { inputHash: context.inputHash } : {}), maximumCostUsd: tool.maximumCostUsd };
+      const approved = context.approvals.consumeApproval ? await context.approvals.consumeApproval(scope) : await context.approvals.isApproved(name, context.subjectId);
+      if (!approved) { await record("approval_required"); throw new AiPolicyError("APPROVAL_REQUIRED", "AI tool approval is required"); }
+    }
     if (tool.maximumCostUsd > context.budgetUsd) { await record("cost_limit"); throw new AiPolicyError("COST_LIMIT", "AI tool cost exceeds the configured application budget"); }
     let providerOutput: unknown;
     try { providerOutput = await tool.execute(input, context.subjectId); }
@@ -918,16 +1115,178 @@ export class ToolRegistry {
 }
 `
     : "";
+  const tenancy = plan.needsTenancy
+    ? `${sourceOfTruthBlock({ id: "starter.tenancy.authorization-policy", keywords: "tenancy, authorization, organization, permission, deny-by-default", what: "Organization-scoped authorization policy that separates governance roles from product permissions.", why: "Tenant isolation and server-side authorization must remain authoritative even when a client sends a guessed resource identifier.", when: "Every organization-scoped application service authorizes an actor before loading or mutating a resource.", how: "DefaultAuthorizationService", boundaries: "The policy owns decisions only; database repositories enforce persistence constraints and transports only map the result." })}
+export class DefaultAuthorizationService implements AuthorizationService {
+  async authorize(actor: ActorContext, permission: Permission, resource: ResourceDescriptor): Promise<AuthorizationDecision> {
+    if (!actor.subjectId || !actor.organizationId) return { allowed: false, reason: "organization-context-required" };
+    if (resource.organizationId !== undefined && resource.organizationId !== actor.organizationId) return { allowed: false, reason: "organization-mismatch" };
+    if (actor.governanceRole === "owner") return { allowed: true };
+    if (actor.governanceRole === "admin" && permission !== ("organization.owner.manage" as Permission)) return { allowed: true };
+    return actor.permissions.includes(permission) ? { allowed: true } : { allowed: false, reason: "permission-required" };
+  }
+}
+export interface InvitationDecision { readonly valid: boolean; readonly reason?: "expired" | "revoked" | "accepted" | "invalid-role"; }
+export function validateInvitation(input: { readonly status: "pending" | "accepted" | "revoked" | "expired"; readonly expiresAt: Date; readonly now: Date; readonly governanceRole: GovernanceRole }): InvitationDecision {
+  if (input.status === "accepted") return { valid: false, reason: "accepted" };
+  if (input.status === "revoked") return { valid: false, reason: "revoked" };
+  if (input.status === "expired" || input.expiresAt.getTime() <= input.now.getTime()) return { valid: false, reason: "expired" };
+  if (!["owner", "admin", "member"].includes(input.governanceRole)) return { valid: false, reason: "invalid-role" };
+  return { valid: true };
+}
+`
+    : "";
+  const observability = plan.needsObservability
+    ? `${sourceOfTruthBlock({ id: "starter.observability.redaction", keywords: "observability, telemetry, redaction, correlation", what: "Portable telemetry redaction and correlation context for application evidence.", why: "Operational evidence must be useful without copying credentials, cookies, authorization headers, or sensitive payloads.", when: "Before exporting logs, traces, audit metadata, or provider diagnostics.", how: "redactSensitive", boundaries: "This helper never emits secrets; exporters and adapters remain outside core." })}
+export interface CorrelationContext { readonly correlationId: string; readonly traceId?: string; readonly organizationId?: string; readonly subjectId?: string; }
+export interface TelemetryEvent { readonly name: string; readonly context: CorrelationContext; readonly attributes: Readonly<Record<string, unknown>>; }
+const isRecordValue = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+const sensitiveKey = /authorization|cookie|password|secret|token|api[-_]?key|signature|prompt|body/iu;
+export function redactSensitive(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactSensitive);
+  if (!isRecordValue(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sensitiveKey.test(key) ? "[REDACTED]" : redactSensitive(item)]));
+}
+`
+    : "";
+  const cache = plan.needsCache
+    ? `${sourceOfTruthBlock({ id: "starter.cache.port", keywords: "cache, ttl, invalidation, typed-value", what: "Provider-neutral cache port with bounded TTL and explicit invalidation semantics.", why: "Cache outages must not change authorization or durable business truth, and cached values require caller validation.", when: "A read model or risk-tolerant computation can be cached without replacing the source of truth.", how: "cacheTtlForRisk", boundaries: "Adapters implement storage; core owns TTL policy and callers own value parsing." })}
+export type CacheRisk = "public" | "authenticated" | "tenant" | "sensitive";
+export interface CachePort { get<T>(key: string, parse: (value: unknown) => T): Promise<T | null>; set<T>(key: string, value: T, ttlSeconds: number): Promise<void>; delete(key: string): Promise<void>; }
+export function cacheTtlForRisk(risk: CacheRisk): number {
+  const values: Record<CacheRisk, number> = { public: 300, authenticated: 60, tenant: 30, sensitive: 0 };
+  return values[risk];
+}
+export function cacheKey(organizationId: string | null, namespace: string, key: string): string {
+  if (!organizationId || !namespace || !key || key.includes("..") || key.startsWith("/")) throw new Error("Invalid cache key");
+  return [namespace, organizationId, key].join(":");
+}
+`
+    : "";
+  const rateLimit = plan.needsRateLimit
+    ? `${sourceOfTruthBlock({ id: "starter.rate-limit.policy", keywords: "rate-limit, risk, distributed, fail-closed", what: "Risk-based rate-limit decision policy independent of the backing counter.", why: "Abuse controls must be stricter for sensitive or mutating actions and cannot be bypassed by a UI-only check.", when: "At the application boundary before an expensive, mutating, or provider-backed operation.", how: "evaluateRateLimit", boundaries: "Adapters provide atomic distributed counters; this policy never grants permissions." })}
+export type RateLimitRisk = "read" | "write" | "auth" | "provider";
+export interface RateLimitDecision { readonly allowed: boolean; readonly remaining: number; readonly retryAfterSeconds: number; }
+export function evaluateRateLimit(input: { readonly risk: RateLimitRisk; readonly count: number; readonly nowEpochSeconds: number; readonly windowSeconds?: number }): RateLimitDecision {
+  const limits: Record<RateLimitRisk, number> = { read: 120, write: 30, auth: 10, provider: 5 };
+  const windowSeconds = input.windowSeconds ?? 60;
+  if (!Number.isSafeInteger(input.count) || input.count < 0 || !Number.isSafeInteger(windowSeconds) || windowSeconds <= 0) throw new Error("Invalid rate-limit counter");
+  const limit = limits[input.risk];
+  return { allowed: input.count < limit, remaining: Math.max(0, limit - input.count - 1), retryAfterSeconds: input.count < limit ? 0 : windowSeconds - (Math.max(0, input.nowEpochSeconds) % windowSeconds) };
+}
+`
+    : "";
+  const featureFlags = plan.needsFeatureFlags
+    ? `${sourceOfTruthBlock({ id: "starter.feature-flags.authorization", keywords: "feature-flags, permission, audit, deny-by-default", what: "Typed feature-flag evaluation that cannot replace authorization.", why: "Flags control rollout and exposure, while permissions remain the authoritative security decision.", when: "A server-side application service evaluates an optional rollout after authorization has passed.", how: "evaluateFeatureFlag", boundaries: "The evaluator fails closed and never grants a permission or governance role." })}
+export interface FeatureFlagDefinition { readonly key: string; readonly enabled: boolean; readonly requiredPermission?: Permission; readonly allowedSubjects?: readonly string[]; }
+export function evaluateFeatureFlag(flag: FeatureFlagDefinition, actor: Pick<ActorContext, "subjectId" | "permissions">): boolean {
+  if (!flag.enabled || !flag.key) return false;
+  if (flag.requiredPermission !== undefined && !actor.permissions.includes(flag.requiredPermission)) return false;
+  return flag.allowedSubjects === undefined || flag.allowedSubjects.includes(actor.subjectId);
+}
+`
+    : "";
+  const notifications = plan.needsNotifications
+    ? `${sourceOfTruthBlock({ id: "starter.notifications.delivery-policy", keywords: "notifications, template, suppression, retry", what: "Versioned notification template and suppression policy for durable delivery.", why: "Notification retries must be safe and user preferences must suppress delivery without deleting durable application facts.", when: "A notification application service creates an in-app or provider delivery request.", how: "shouldSuppressNotification", boundaries: "Adapters deliver messages; this policy never logs message bodies or provider secrets." })}
+export type NotificationChannel = "email" | "in-app";
+export interface NotificationTemplate { readonly key: string; readonly version: number; readonly channel: NotificationChannel; readonly subject: string; readonly body: string; }
+export interface NotificationDelivery { readonly idempotencyKey: string; readonly recipient: string; readonly channel: NotificationChannel; readonly template: NotificationTemplate; readonly variables: Readonly<Record<string, string>>; readonly organizationId?: string; }
+export interface NotificationPort { deliver(input: NotificationDelivery): Promise<{ readonly deliveryId: string; readonly status: "queued" | "delivered" | "suppressed" }>; }
+export function shouldSuppressNotification(input: { readonly disabled: boolean; readonly alreadyDelivered: boolean; readonly quietHours: boolean; }): boolean {
+  return input.disabled || input.alreadyDelivered || input.quietHours;
+}
+export function renderNotificationTemplate(template: NotificationTemplate, variables: Readonly<Record<string, string>>): { readonly subject: string; readonly body: string; } {
+  if (!template.key || template.version <= 0) throw new Error("Invalid notification template");
+  const render = (value: string): string => value.replace(/\\{\\{([a-zA-Z0-9_.-]+)\\}\\}/gu, (_match, name: string) => variables[name] ?? "");
+  return { subject: render(template.subject), body: render(template.body) };
+}
+`
+    : "";
+  const payments = plan.needsPayments
+    ? `import { createHmac, timingSafeEqual } from "node:crypto";
+${sourceOfTruthBlock({ id: "starter.payments.webhook-policy", keywords: "payments, webhook, signature, idempotency, state-machine", what: "Provider-neutral payment webhook verification and monotonic payment state transitions.", why: "Payment state changes must require a verified raw body, resist replay, and remain idempotent across duplicate deliveries.", when: "The payment transport receives a provider webhook before invoking an application service.", how: "verifySignedWebhook", boundaries: "Provider adapters supply secrets and normalized events; this owner never charges or refunds a provider." })}
+export function verifySignedWebhook(rawBody: string, signature: string, secret: string, nowEpochSeconds: number, toleranceSeconds = 300): boolean {
+  if (!rawBody || !signature || !secret || !Number.isSafeInteger(nowEpochSeconds) || toleranceSeconds <= 0) return false;
+  const fields = new Map(signature.split(",").map((part) => part.split("=", 2) as [string, string]));
+  const timestamp = Number(fields.get("t"));
+  const supplied = fields.get("v1");
+  if (!Number.isSafeInteger(timestamp) || !supplied || Math.abs(nowEpochSeconds - timestamp) > toleranceSeconds || !/^[a-f0-9]{64}$/u.test(supplied)) return false;
+  const expected = createHmac("sha256", secret).update(String(timestamp)).update(".").update(rawBody).digest();
+  const actual = Buffer.from(supplied, "hex");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+export function verifyRazorpayWebhook(rawBody: string, signature: string, secret: string): boolean {
+  if (!rawBody || !signature || !secret || !/^[a-f0-9]{64}$/u.test(signature)) return false;
+  const expected = createHmac("sha256", secret).update(rawBody).digest();
+  const actual = Buffer.from(signature, "hex");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+export function verifyPaymentWebhook(provider: "stripe" | "razorpay", rawBody: string, signature: string, secret: string, nowEpochSeconds: number): boolean {
+  return provider === "stripe" ? verifySignedWebhook(rawBody, signature, secret, nowEpochSeconds) : verifyRazorpayWebhook(rawBody, signature, secret);
+}
+export type PaymentState = "created" | "authorized" | "captured" | "refunded" | "failed";
+export function nextPaymentState(current: PaymentState, event: "authorize" | "capture" | "refund" | "fail"): PaymentState {
+  const transitions: Record<PaymentState, Partial<Record<"authorize" | "capture" | "refund" | "fail", PaymentState>>> = { created: { authorize: "authorized", fail: "failed" }, authorized: { capture: "captured", fail: "failed" }, captured: { refund: "refunded" }, refunded: {}, failed: {} };
+  const next = transitions[current][event];
+  if (!next) throw new Error("Invalid payment state transition");
+  return next;
+}
+`
+    : "";
+  const search = plan.needsSearch
+    ? `${sourceOfTruthBlock({ id: "starter.search.authorization", keywords: "search, tenant, authorization, tombstone", what: "Authorization-aware search document contract with tombstone handling.", why: "Search indexes are derived data and must not reveal documents after ownership or visibility changes.", when: "A search application service filters candidate documents before returning results.", how: "canReadSearchDocument", boundaries: "Index adapters may rank candidates but cannot bypass tenant or permission checks." })}
+export interface SearchDocument { readonly id: string; readonly organizationId: string; readonly requiredPermission?: Permission; readonly tombstoned: boolean; readonly text: string; }
+export interface SearchResult { readonly id: string; readonly score: number; readonly snippet: string; readonly sourceVersion: string; }
+export interface SearchPort { search(input: { readonly organizationId: string; readonly query: string; readonly permissions: readonly Permission[]; readonly limit?: number }): Promise<readonly SearchResult[]>; index(input: SearchDocument & { readonly sourceVersion: string }): Promise<void>; tombstone(input: { readonly id: string; readonly organizationId: string }): Promise<void>; }
+export function canReadSearchDocument(actor: Pick<ActorContext, "organizationId" | "permissions">, document: SearchDocument): boolean {
+  return Boolean(actor.organizationId && actor.organizationId === document.organizationId && !document.tombstoned && (document.requiredPermission === undefined || actor.permissions.includes(document.requiredPermission)));
+}
+`
+    : "";
+  const rag = plan.needsRag
+    ? `${sourceOfTruthBlock({ id: "starter.rag.citation-policy", keywords: "rag, chunking, citation, acl, embedding", what: "Deterministic text chunking and citation-integrity policy for ACL-safe retrieval.", why: "Retrieved context must remain traceable to authorized source chunks and deterministic ingestion versions.", when: "An ingestion or retrieval service prepares chunks or validates model citations.", how: "chunkText", boundaries: "Embedding and vector adapters operate on approved chunks; this policy does not fetch unauthorized source content." })}
+export interface RagChunk { readonly id: string; readonly documentId: string; readonly ordinal: number; readonly text: string; readonly version: string; }
+export interface RagRetrievalPort { retrieve(input: { readonly organizationId: string; readonly queryEmbedding: readonly number[]; readonly permissions: readonly Permission[]; readonly limit?: number }): Promise<readonly RagChunk[]>; index(input: RagChunk & { readonly organizationId: string; readonly embedding: readonly number[] }): Promise<void>; }
+export function chunkText(documentId: string, text: string, version: string, maximumCharacters = 1200, overlapCharacters = 100): readonly RagChunk[] {
+  if (!documentId || !version || maximumCharacters <= 0 || overlapCharacters < 0 || overlapCharacters >= maximumCharacters) throw new Error("Invalid RAG chunk policy");
+  const chunks: RagChunk[] = [];
+  let start = 0;
+  let ordinal = 0;
+  while (start < text.length) {
+    const end = Math.min(text.length, start + maximumCharacters);
+    chunks.push({ id: [documentId, version, ordinal].join(":"), documentId, ordinal, text: text.slice(start, end), version });
+    if (end === text.length) break;
+    start = end - overlapCharacters;
+    ordinal += 1;
+  }
+  return chunks;
+}
+export function validateCitations(citations: readonly string[], chunks: readonly RagChunk[]): boolean {
+  const allowed = new Set(chunks.map((chunk) => chunk.id));
+  return citations.length > 0 && citations.every((citation) => allowed.has(citation));
+}
+`
+    : "";
   const owners = [
     ...(plan.needsIdentity ? ["AuthenticationPort", "IdentityRepository"] : []),
     ...(plan.needsWorker ? ["runIdempotentWorkflow"] : []),
     ...(plan.needsEvents ? ["OutboxPort"] : []),
     ...(plan.needsStorage ? ["defaultStoragePolicy"] : []),
     ...(plan.needsAi ? ["ToolRegistry"] : []),
+    ...(plan.needsAi ? ["completeAiRun"] : []),
+    ...(plan.needsTenancy ? ["DefaultAuthorizationService"] : []),
+    ...(plan.needsObservability ? ["redactSensitive"] : []),
+    ...(plan.needsCache ? ["cacheTtlForRisk"] : []),
+    ...(plan.needsRateLimit ? ["evaluateRateLimit"] : []),
+    ...(plan.needsFeatureFlags ? ["evaluateFeatureFlag"] : []),
+    ...(plan.needsNotifications ? ["shouldSuppressNotification"] : []),
+    ...(plan.needsPayments ? ["verifySignedWebhook"] : []),
+    ...(plan.needsSearch ? ["canReadSearchDocument"] : []),
+    ...(plan.needsRag ? ["chunkText"] : []),
   ];
   return textFile(
     "packages/core/src/index.ts",
-    `${owners.length === 0 ? 'export const packageId = "core" as const;\n' : ""}${applicationBoundary}${identity}${jobs}${events}${storage}${ai}`,
+    `${zodImport}${owners.length === 0 ? 'export const packageId = "core" as const;\n' : ""}${applicationBoundary}${identity}${jobs}${events}${storage}${ai}${tenancy}${observability}${cache}${rateLimit}${featureFlags}${notifications}${payments}${search}${rag}`,
   );
 }
 
@@ -996,7 +1355,6 @@ function databasePackageFile(config: InitConfig, plan: CapabilityPlan): Generate
     ...(plan.needsIdentity ? ["index"] : []),
     "pgTable",
     ...(plan.needsEvents ? ["jsonb"] : []),
-    ...(plan.needsAi ? ["primaryKey"] : []),
     "text",
     ...(plan.needsStorage || plan.needsAi || plan.needsEvents ? ["integer"] : []),
     ...(plan.needsIdentity || plan.needsWorker ? ["timestamp"] : []),
@@ -1065,7 +1423,7 @@ export const authorizationAuditEvents = pgTable("authorization_audit_events", { 
     : "";
   const aiTables = plan.needsAi
     ? `
-export const aiApprovals = pgTable("ai_approvals", { toolName: text("tool_name").notNull(), subjectId: text("subject_id").notNull() }, (table) => [primaryKey({ columns: [table.toolName, table.subjectId] })]);
+export const aiApprovals = pgTable("ai_approvals", { id: text("id").primaryKey(), organizationId: text("organization_id"), toolName: text("tool_name").notNull(), subjectId: text("subject_id").notNull(), runId: text("run_id"), toolCallId: text("tool_call_id"), inputHash: text("input_hash"), maximumCostMicrousd: bigint("maximum_cost_microusd", { mode: "number" }).notNull(), expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(), consumedAt: timestamp("consumed_at", { withTimezone: true }) });
 export const aiRuns = pgTable("ai_runs", { id: text("id").primaryKey(), organizationId: text("organization_id").notNull(), subjectId: text("subject_id").notNull(), logicalModel: text("logical_model").notNull(), status: text("status").notNull(), correlationId: text("correlation_id").notNull() });
 export const aiAttempts = pgTable("ai_attempts", { id: text("id").primaryKey(), runId: text("run_id").notNull(), attemptNumber: integer("attempt_number").notNull(), outcome: text("outcome").notNull() });
 export const aiUsage = pgTable("ai_usage", { id: text("id").primaryKey(), runId: text("run_id").notNull(), inputTokens: integer("input_tokens").notNull(), outputTokens: integer("output_tokens").notNull(), costMicrousd: integer("cost_microusd").notNull() });
@@ -1078,7 +1436,7 @@ export const agentRunLeases = pgTable("agent_run_leases", { runId: text("run_id"
     : "";
   const storageTables = plan.needsStorage
     ? `
-export const objectMetadata = pgTable("object_metadata", { key: text("key").primaryKey(), contentType: text("content_type").notNull(), byteLength: integer("byte_length").notNull(), subjectId: text("subject_id").notNull() });
+export const objectMetadata = pgTable("object_metadata", { key: text("key").primaryKey(), contentType: text("content_type").notNull(), byteLength: integer("byte_length").notNull(), subjectId: text("subject_id").notNull(), organizationId: text("organization_id"), status: text("status").notNull().default("available") });
 `
     : "";
   const jobTables = plan.needsWorker
@@ -1098,11 +1456,13 @@ export const inboxReceipts = pgTable("inbox_receipts", { id: text("id").primaryK
     ? `
 export function createInMemoryAiPersistence(): AiPersistence & { readonly evidence: () => readonly AiEvent[]; readonly evaluations: () => readonly { readonly name: string; readonly score: number; readonly subjectId: string }[] } {
   const approvals = new Map<string, Set<string>>();
+  const scopedApprovals = new Map<string, { readonly expiresAt: number; readonly maximumCostUsd?: number }>();
   const events: AiEvent[] = [];
   const evaluations: Array<{ readonly name: string; readonly score: number; readonly subjectId: string }> = [];
   return {
-    approve: async (toolName, subjectId) => { const subjects = approvals.get(toolName) ?? new Set<string>(); subjects.add(subjectId); approvals.set(toolName, subjects); },
+    approve: async (toolName, subjectId, scope) => { const subjects = approvals.get(toolName) ?? new Set<string>(); subjects.add(subjectId); approvals.set(toolName, subjects); if (scope) scopedApprovals.set([scope.organizationId ?? "", scope.runId ?? "", toolName, subjectId, scope.inputHash ?? ""].join("\u0000"), { expiresAt: Date.now() + 15 * 60 * 1000, ...(scope.maximumCostUsd === undefined ? {} : { maximumCostUsd: scope.maximumCostUsd }) }); },
     isApproved: async (toolName, subjectId) => approvals.get(toolName)?.has(subjectId) ?? false,
+    consumeApproval: async (scope) => { const key = [scope.organizationId ?? "", scope.runId ?? "", scope.toolName, scope.subjectId, scope.inputHash ?? ""].join("\u0000"); const approval = scopedApprovals.get(key); if (!approval || approval.expiresAt <= Date.now() || (scope.maximumCostUsd !== undefined && approval.maximumCostUsd !== undefined && scope.maximumCostUsd > approval.maximumCostUsd)) return false; scopedApprovals.delete(key); return true; },
     recordAudit: async (event) => { events.push(event); },
     recordTelemetry: async (event) => { events.push(event); },
     recordEvaluation: async (input) => { evaluations.push(input); },
@@ -1115,6 +1475,7 @@ export function createInMemoryAiPersistence(): AiPersistence & { readonly eviden
   const coreTypes = [
     ...(plan.needsIdentity ? ["IdentityRepository"] : []),
     ...(plan.needsWorker ? ["WorkflowStore"] : []),
+    ...(plan.needsEvents ? ["OutboxPort", "OutboxDeliveryPort"] : []),
     ...(plan.needsStorage ? ["StorageMetadataStore"] : []),
     ...(plan.needsAi ? ["AiEvent", "AiPersistence"] : []),
   ];
@@ -1166,6 +1527,17 @@ export function createInMemoryWorkflowStore(): WorkflowStore {
   };
 `
     : "";
+  const eventDatabase = plan.needsEvents
+    ? `
+  const outbox: OutboxPort & OutboxDeliveryPort = {
+    append: async (event, destination, idempotencyKey) => { await sql.unsafe("INSERT INTO outbox_events (id, organization_id, type, schema_version, aggregate_type, aggregate_id, payload, destination, idempotency_key, status, available_at, attempt_count, fencing_token, correlation_id, causation_id, occurred_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'available', now(), 0, 0, $10, $11, $12) ON CONFLICT (destination, idempotency_key) DO NOTHING", [event.id, event.organizationId ?? null, event.type, event.schemaVersion, event.aggregateType, event.aggregateId, JSON.stringify(event.payload), destination, idempotencyKey, event.correlationId, event.causationId ?? null, event.occurredAt]); },
+    claim: async (eventId, leaseOwner, now, leaseMilliseconds) => { const rows = await sql.unsafe("UPDATE outbox_events SET status = 'processing', lease_owner = $2, lease_expires_at = $3, fencing_token = fencing_token + 1, attempt_count = attempt_count + 1 WHERE id = $1 AND (status = 'available' OR (status = 'processing' AND lease_expires_at <= $4)) RETURNING fencing_token", [eventId, leaseOwner, new Date(now.getTime() + leaseMilliseconds).toISOString(), now.toISOString()]); const token = rows[0]?.fencing_token; return typeof token === 'number' ? { fencingToken: token } : null; },
+    recordAttempt: async (eventId, fencingToken, outcome, failure) => { await sql.unsafe("INSERT INTO outbox_delivery_attempts (id, event_id, attempt_number, fencing_token, outcome, normalized_failure) SELECT $1, id, attempt_count, $2, $3, $4 FROM outbox_events WHERE id = $5 AND fencing_token = $2 ON CONFLICT (event_id, attempt_number) DO NOTHING", [crypto.randomUUID(), fencingToken, outcome, failure ?? null, eventId]); },
+    markDelivered: async (eventId, fencingToken) => { await sql.unsafe("UPDATE outbox_events SET status = 'delivered', lease_owner = NULL, lease_expires_at = NULL WHERE id = $1 AND status = 'processing' AND fencing_token = $2", [eventId, fencingToken]); },
+    replay: async (eventId, actorSubjectId) => { await sql.unsafe("UPDATE outbox_events SET status = 'available', available_at = now(), lease_owner = NULL, lease_expires_at = NULL, last_failure = NULL WHERE id = $1 AND status = 'dead_letter'", [eventId]); await sql.unsafe("UPDATE outbox_dead_letters SET replayed_by_subject_id = $2, replayed_at = now() WHERE event_id = $1", [eventId, actorSubjectId]); },
+  };
+`
+    : "";
   const identityDatabase = plan.needsIdentity
     ? `
   const identity: IdentityRepository = {
@@ -1189,11 +1561,11 @@ export function createInMemoryWorkflowStore(): WorkflowStore {
   const metadataDatabase = plan.needsStorage
     ? `
   const metadata: StorageMetadataStore = {
-    record: async (input) => { await sql.unsafe("INSERT INTO object_metadata (key, content_type, byte_length, subject_id) VALUES ($1, $2, $3, $4) ON CONFLICT (key) DO UPDATE SET content_type = EXCLUDED.content_type, byte_length = EXCLUDED.byte_length, subject_id = EXCLUDED.subject_id", [input.key, input.contentType, input.byteLength, input.subjectId]); },
+    record: async (input) => { await sql.unsafe("INSERT INTO object_metadata (key, content_type, byte_length, subject_id, organization_id, status) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (key) DO UPDATE SET content_type = EXCLUDED.content_type, byte_length = EXCLUDED.byte_length, subject_id = EXCLUDED.subject_id, organization_id = EXCLUDED.organization_id, status = EXCLUDED.status", [input.key, input.contentType, input.byteLength, input.subjectId, input.organizationId ?? null, input.status ?? "available"]); },
     find: async (key) => {
-      const rows = await sql.unsafe("SELECT subject_id FROM object_metadata WHERE key = $1", [key]);
+      const rows = await sql.unsafe("SELECT subject_id, content_type, byte_length, organization_id, status FROM object_metadata WHERE key = $1", [key]);
       const row = rows[0];
-      return row && typeof row.subject_id === "string" ? { subjectId: row.subject_id } : null;
+      return row && typeof row.subject_id === "string" && typeof row.content_type === "string" && typeof row.byte_length === "number" ? { key, subjectId: row.subject_id, contentType: row.content_type, byteLength: row.byte_length, ...(typeof row.organization_id === "string" ? { organizationId: row.organization_id } : {}), status: row.status === "pending" || row.status === "quarantined" ? row.status : "available" } : null;
     },
   };
 `
@@ -1201,11 +1573,34 @@ export function createInMemoryWorkflowStore(): WorkflowStore {
   const aiDatabase = plan.needsAi
     ? `
   const ai: AiPersistence = {
-    approve: async (toolName, subjectId) => { await sql.unsafe("INSERT INTO ai_approvals (id, tool_name, subject_id) VALUES ($1, $2, $3) ON CONFLICT (tool_name, subject_id) DO NOTHING", [crypto.randomUUID(), toolName, subjectId]); },
+    approve: async (toolName, subjectId, scope) => { await sql.unsafe("INSERT INTO ai_approvals (id, organization_id, tool_name, subject_id, input_hash, maximum_cost_microusd, expires_at) VALUES ($1, $2, $3, $4, $5, $6, now() + interval '15 minutes') ON CONFLICT DO NOTHING", [crypto.randomUUID(), scope?.organizationId ?? null, toolName, subjectId, scope?.inputHash ?? null, Math.round((scope?.maximumCostUsd ?? 0) * 1000000)]); },
     isApproved: async (toolName, subjectId) => { const rows = await sql.unsafe("SELECT tool_name FROM ai_approvals WHERE tool_name = $1 AND subject_id = $2", [toolName, subjectId]); return rows.length > 0; },
+    consumeApproval: async (scope) => { const rows = await sql.unsafe("UPDATE ai_approvals SET consumed_at = now() WHERE tool_name = $1 AND subject_id = $2 AND (organization_id IS NULL OR organization_id = $3) AND (input_hash IS NULL OR input_hash = $4) AND consumed_at IS NULL AND expires_at > now() AND maximum_cost_microusd >= $5 RETURNING id", [scope.toolName, scope.subjectId, scope.organizationId ?? null, scope.inputHash ?? null, Math.round((scope.maximumCostUsd ?? 0) * 1000000)]); return rows.length > 0; },
     recordAudit: async (event) => { await sql.unsafe("INSERT INTO ai_audit_events (id, tool_name, subject_id, cost_microusd, outcome) VALUES ($1, $2, $3, $4, $5)", [crypto.randomUUID(), event.toolName, event.subjectId, Math.round(event.costUsd * 1_000_000), event.outcome]); },
     recordTelemetry: async (event) => { await sql.unsafe("INSERT INTO ai_telemetry_events (id, tool_name, subject_id, cost_microusd, outcome) VALUES ($1, $2, $3, $4, $5)", [crypto.randomUUID(), event.toolName, event.subjectId, Math.round(event.costUsd * 1_000_000), event.outcome]); },
     recordEvaluation: async (input) => { await sql.unsafe("INSERT INTO ai_evaluations (id, name, score, subject_id) VALUES ($1, $2, $3, $4)", [crypto.randomUUID(), input.name, Math.round(input.score * 1_000_000), input.subjectId]); },
+  };
+`
+    : "";
+  const tenantRuntime = plan.needsTenancy
+    ? `
+export async function withOrganizationContext<T>(sql: ReturnType<typeof postgres>, organizationId: string, subjectId: string, callback: (transaction: postgres.TransactionSql) => Promise<T>): Promise<T> {
+  if (!organizationId || !subjectId) throw new Error("Tenant context requires organization and subject");
+  const result = await sql.begin(async (transaction) => {
+    await transaction.unsafe("SELECT set_config('app.organization_id', $1, true), set_config('app.subject_id', $2, true)", [organizationId, subjectId]);
+    return callback(transaction);
+  });
+  return result as unknown as T;
+}
+`
+    : "";
+  const organizationDatabase = plan.needsTenancy
+    ? `
+  const organization = {
+    hasMembership: async (subjectId: string, organizationId: string): Promise<boolean> => {
+      const rows = await sql.unsafe("SELECT 1 FROM memberships WHERE user_id = $1 AND organization_id = $2 AND status = 'active' LIMIT 1", [subjectId, organizationId]);
+      return rows.length > 0;
+    },
   };
 `
     : "";
@@ -1221,6 +1616,9 @@ ${identityTables}${tenancyTables}${jobTables}${eventTables}${storageTables}${aiT
 export interface DatabaseRuntime {
   readonly checkReadiness: () => Promise<void>;
   readonly close: () => Promise<void>;
+${plan.needsTenancy ? "  readonly withOrganizationContext: <T>(organizationId: string, subjectId: string, callback: (transaction: postgres.TransactionSql) => Promise<T>) => Promise<T>;\n" : ""}
+${plan.needsTenancy ? "  readonly organization: { readonly hasMembership: (subjectId: string, organizationId: string) => Promise<boolean>; };\n" : ""}
+${plan.needsEvents ? "  readonly outbox: OutboxPort & OutboxDeliveryPort;\n" : ""}
 ${plan.needsIdentity ? "  readonly authentication: { readonly database: ReturnType<typeof drizzle>; readonly schema: typeof authSchema };\n  readonly identity: IdentityRepository;\n" : ""}${plan.needsWorker ? "  readonly workflow: WorkflowStore;\n" : ""}${plan.needsStorage ? "  readonly metadata: StorageMetadataStore;\n" : ""}${plan.needsAi ? "  readonly ai: AiPersistence;\n" : ""}
 }
 export function databaseUrl(): string {
@@ -1229,13 +1627,15 @@ export function databaseUrl(): string {
   return value;
 }
 ${workflowRuntime}
+${tenantRuntime}
 export function createDatabaseRuntime(url = databaseUrl()): DatabaseRuntime {
   const sql = postgres(url, { max: 2 });
-${plan.needsIdentity ? "  const authentication = { database: drizzle(sql, { schema: authSchema }), schema: authSchema };\n  const identityDatabase = drizzle(sql, { schema: { applicationUsers } });\n" : ""}${identityDatabase}${workflowDatabase}${metadataDatabase}${aiDatabase}
+${organizationDatabase}
+${plan.needsIdentity ? "  const authentication = { database: drizzle(sql, { schema: authSchema }), schema: authSchema };\n  const identityDatabase = drizzle(sql, { schema: { applicationUsers } });\n" : ""}${identityDatabase}${workflowDatabase}${eventDatabase}${metadataDatabase}${aiDatabase}
   return {
     checkReadiness: async () => { await sql.unsafe("SELECT 1"); },
     close: async () => { await sql.end({ timeout: 5 }); },
-${plan.needsIdentity ? "    authentication,\n    identity,\n" : ""}${plan.needsWorker ? "    workflow,\n" : ""}${plan.needsStorage ? "    metadata,\n" : ""}${plan.needsAi ? "    ai,\n" : ""}  };
+${plan.needsTenancy ? "    withOrganizationContext: (organizationId, subjectId, callback) => withOrganizationContext(sql, organizationId, subjectId, callback),\n    organization,\n" : ""}${plan.needsIdentity ? "    authentication,\n    identity,\n" : ""}${plan.needsWorker ? "    workflow,\n" : ""}${plan.needsEvents ? "    outbox,\n" : ""}${plan.needsStorage ? "    metadata,\n" : ""}${plan.needsAi ? "    ai,\n" : ""}  };
 }
 ${aiPersistence}
 `,
@@ -1281,26 +1681,45 @@ export function startGraphileWorker(options: Parameters<typeof run>[0]) { return
     : "";
   const storage = plan.needsStorage
     ? `
-import { GetObjectCommand, HeadBucketCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, HeadBucketCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { createPresignedPost } from "@aws-sdk/s3-presigned-post";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 ${sourceOfTruthBlock({ id: "starter.storage.s3-adapter", keywords: "storage, s3, metadata, ownership, signed-url", what: "S3-compatible object operations behind application metadata and access policy.", why: "Bucket access must remain replaceable and subject-owned.", when: "Compose storage for authenticated API use cases.", how: "createS3Storage", boundaries: "Never return an object URL before policy and metadata ownership checks pass." })}
-export function createS3Storage(input: { readonly bucket: string; readonly region: string; readonly endpoint?: string; readonly accessKeyId?: string; readonly secretAccessKey?: string; readonly metadata: StorageMetadataStore; readonly policy?: StoragePolicy; readonly send?: (command: unknown) => Promise<unknown> }): ObjectStorage & { readonly checkReadiness: () => Promise<void> } {
+export function createS3Storage(input: { readonly bucket: string; readonly region: string; readonly endpoint?: string; readonly accessKeyId?: string; readonly secretAccessKey?: string; readonly metadata: StorageMetadataStore; readonly policy?: StoragePolicy; readonly send?: (command: unknown) => Promise<unknown>; readonly presign?: typeof createPresignedPost }): ObjectStorage & { readonly checkReadiness: () => Promise<void> } {
   const client = new S3Client({ region: input.region, ...(input.endpoint ? { endpoint: input.endpoint, forcePathStyle: true } : {}), ...(input.accessKeyId && input.secretAccessKey ? { credentials: { accessKeyId: input.accessKeyId, secretAccessKey: input.secretAccessKey } } : {}) });
   const send = input.send ?? (async (command: unknown) => client.send(command as never));
   const policy = input.policy ?? defaultStoragePolicy;
+  const presign = input.presign ?? createPresignedPost;
   return {
     checkReadiness: async () => { await send(new HeadBucketCommand({ Bucket: input.bucket })); },
+    createUpload: async (value) => {
+      validateStorageUpload(value, policy);
+      const expiresIn = 900;
+      const result = await presign(client, { Bucket: input.bucket, Key: value.key, Expires: expiresIn, Fields: { "Content-Type": value.contentType }, Conditions: [["content-length-range", 1, value.byteLength], ["eq", "$Content-Type", value.contentType]] });
+      await input.metadata.record({ key: value.key, contentType: value.contentType, byteLength: value.byteLength, subjectId: value.subjectId, ...(value.organizationId ? { organizationId: value.organizationId } : {}), status: "pending" });
+      return { url: result.url, fields: result.fields, key: value.key, expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString() };
+    },
+    completeUpload: async (value) => {
+    if (!policy.authorize("complete-upload", value.key, value.subjectId)) throw new Error("Storage policy denied upload completion");
+      const existing = await input.metadata.find(value.key);
+      if (!existing || existing.subjectId !== value.subjectId) throw new Error("Storage upload metadata missing");
+      const head = await send(new HeadObjectCommand({ Bucket: input.bucket, Key: value.key }));
+      const byteLength = typeof (head as { readonly ContentLength?: unknown }).ContentLength === "number" ? (head as { readonly ContentLength: number }).ContentLength : existing.byteLength;
+      if (byteLength > policy.maximumBytes) throw new Error("Storage policy denied upload size");
+      await input.metadata.record({ key: value.key, contentType: existing.contentType, byteLength, subjectId: value.subjectId, ...(existing.organizationId ? { organizationId: existing.organizationId } : {}), status: "available" });
+      return { ...existing, byteLength, status: "available" };
+    },
     put: async (value) => {
-      if (value.body.byteLength > policy.maximumBytes || !policy.authorize("put", value.key, value.subjectId)) throw new Error("Storage policy denied object write");
+      validateStorageUpload({ key: value.key, contentType: value.contentType, byteLength: value.body.byteLength, subjectId: value.subjectId }, policy);
       const existing = await input.metadata.find(value.key);
       if (existing && existing.subjectId !== value.subjectId) throw new Error("Storage object ownership denied");
       await send(new PutObjectCommand({ Bucket: input.bucket, Key: value.key, ContentType: value.contentType, Body: value.body }));
-      await input.metadata.record({ key: value.key, contentType: value.contentType, byteLength: value.body.byteLength, subjectId: value.subjectId });
+      await input.metadata.record({ key: value.key, contentType: value.contentType, byteLength: value.body.byteLength, subjectId: value.subjectId, status: "available" });
     },
     getUrl: async (value) => {
       if (!policy.authorize("get", value.key, value.subjectId)) throw new Error("Storage policy denied object read");
       const metadata = await input.metadata.find(value.key);
-      if (!metadata || metadata.subjectId !== value.subjectId) throw new Error("Storage object ownership denied");
+      if (!metadata || metadata.subjectId !== value.subjectId || metadata.status !== "available") throw new Error("Storage object ownership denied");
       return getSignedUrl(client, new GetObjectCommand({ Bucket: input.bucket, Key: value.key }), { expiresIn: 900 });
     },
   };
@@ -1315,13 +1734,102 @@ export function createAiSdkModel(model: LanguageModel) {
 }
 `
     : "";
+  const platform =
+    plan.needsPayments || plan.needsNotifications || plan.needsCache || plan.needsObservability
+      ? `
+export function createJsonProvider(input: { readonly baseUrl: string; readonly apiKey: string; readonly fetchImpl?: typeof fetch }) {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  return { request: async (path: string, body: Readonly<Record<string, unknown>>) => {
+    const response = await fetchImpl(new URL(path, input.baseUrl), { method: "POST", headers: { "content-type": "application/json", authorization: \`Bearer \${input.apiKey}\` }, body: JSON.stringify(body) });
+    if (!response.ok) throw new Error(\`provider request failed: \${response.status}\`);
+    return response.json() as Promise<unknown>;
+  } };
+}
+${
+  plan.needsCache
+    ? `export function createValkeyCacheAdapter(input: { readonly execute: (command: string, args: readonly string[]) => Promise<unknown>; readonly organizationId: string }) {
+  const prefix = (key: string) => cacheKey(input.organizationId, "starter", key);
+  return {
+    get: async <T>(key: string, parse: (value: unknown) => T): Promise<T | null> => {
+      const value = await input.execute("GET", [prefix(key)]);
+      if (typeof value !== "string") return null;
+      return parse(JSON.parse(value));
+    },
+    set: async <T>(key: string, value: T, ttlSeconds: number): Promise<void> => {
+      if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds <= 0 || ttlSeconds > 86_400) throw new Error("Cache TTL is outside the bounded policy");
+      await input.execute("SETEX", [prefix(key), String(ttlSeconds), JSON.stringify(value)]);
+    },
+    delete: async (key: string): Promise<void> => { await input.execute("DEL", [prefix(key)]); },
+    checkReadiness: async (): Promise<void> => { await input.execute("PING", []); },
+  } satisfies CachePort & { readonly checkReadiness: () => Promise<void> };
+}
+`
+    : ""
+}
+${
+  plan.needsRateLimit
+    ? `export function createValkeyRateLimiter(input: { readonly increment: (key: string, windowSeconds: number) => Promise<number> }) {
+  return { evaluate: async (risk: RateLimitRisk, key: string, nowEpochSeconds = Math.floor(Date.now() / 1000)): Promise<RateLimitDecision> => {
+    try { return evaluateRateLimit({ risk, count: await input.increment(key, 60), nowEpochSeconds }); }
+    catch { return { allowed: false, remaining: 0, retryAfterSeconds: 60 }; }
+  } };
+}
+`
+    : ""
+}
+${
+  plan.needsNotifications
+    ? `export function createResendEmailAdapter(input: { readonly apiKey: string; readonly baseUrl?: string; readonly fetchImpl?: typeof fetch }) {
+  const provider = createJsonProvider({ baseUrl: input.baseUrl ?? "https://api.resend.com", apiKey: input.apiKey, ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}) });
+  return { send: (message: { readonly from: string; readonly to: readonly string[]; readonly subject: string; readonly html: string }) => provider.request("/emails", message as unknown as Readonly<Record<string, unknown>>) };
+}
+`
+    : ""
+}${
+  plan.needsPayments
+    ? `export function createStripePaymentAdapter(input: { readonly secretKey: string; readonly fetchImpl?: typeof fetch }) {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  return { refund: async (paymentId: string, amountMinor?: number) => {
+    const body = amountMinor === undefined ? "" : \`amount=\${amountMinor}\`;
+    const payload = [body, body ? "&" : "", "payment_intent=", encodeURIComponent(paymentId)].join("");
+    const response = await fetchImpl("https://api.stripe.com/v1/refunds", { method: "POST", headers: { authorization: \`Bearer \${input.secretKey}\`, "content-type": "application/x-www-form-urlencoded", "idempotency-key": paymentId }, body: payload });
+    if (!response.ok) throw new Error(\`stripe refund failed: \${response.status}\`);
+    return response.json() as Promise<unknown>;
+  } };
+}
+export function createRazorpayPaymentAdapter(input: { readonly keyId: string; readonly keySecret: string; readonly fetchImpl?: typeof fetch }) {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  return { refund: async (paymentId: string, amountMinor: number) => {
+    const response = await fetchImpl(["https://api.razorpay.com/v1/payments/", encodeURIComponent(paymentId), "/refund"].join(""), { method: "POST", headers: { authorization: \`Basic \${Buffer.from([input.keyId, input.keySecret].join(":")).toString("base64") }\`, "content-type": "application/json", "x-idempotency-key": paymentId }, body: JSON.stringify({ amount: amountMinor }) });
+    if (!response.ok) throw new Error(\`razorpay refund failed: \${response.status}\`);
+    return response.json() as Promise<unknown>;
+  } };
+}
+`
+    : ""
+}${
+  plan.needsObservability
+    ? `export function createRedactedTelemetryExporter(input: { readonly send: (value: unknown) => Promise<void> }) {
+  return { export: async (value: unknown) => input.send(redactSensitive(value)) };
+}
+`
+    : ""
+}
+`
+      : "";
   const storageTypeImport = plan.needsStorage
-    ? `import type { ObjectStorage, StorageMetadataStore, StoragePolicy } from "${packageName(config, "core")}";\nimport { defaultStoragePolicy } from "${packageName(config, "core")}";\n`
+    ? `import type { ObjectStorage, StorageMetadataStore, StoragePolicy } from "${packageName(config, "core")}";\nimport { defaultStoragePolicy, validateStorageUpload } from "${packageName(config, "core")}";\n`
+    : "";
+  const observabilityTypeImport = plan.needsObservability
+    ? `import { redactSensitive } from "${packageName(config, "core")}";\n`
+    : "";
+  const cacheTypeImport = plan.needsCache
+    ? `import type { CachePort${plan.needsRateLimit ? ", RateLimitRisk, RateLimitDecision" : ""} } from "${packageName(config, "core")}";\nimport { cacheKey${plan.needsRateLimit ? ", evaluateRateLimit" : ""} } from "${packageName(config, "core")}";\n`
     : "";
   return textFile(
     "packages/adapters/src/index.ts",
-    `${storageTypeImport}${providerOwners ? "" : 'export const packageId = "adapters" as const;\n'}
-${identity}${jobs}${storage}${ai}
+    `${storageTypeImport}${observabilityTypeImport}${cacheTypeImport}${providerOwners ? "" : 'export const packageId = "adapters" as const;\n'}
+${identity}${jobs}${storage}${ai}${platform}
 `,
   );
 }
@@ -1377,6 +1885,24 @@ function developerGuideFile(config: InitConfig, plan: CapabilityPlan): Generated
     ...(hasMobile ? [["mobile", "scaffold", "native application shell"] as const] : []),
     ...(plan.needsWorker ? [["worker", "scaffold", "Graphile Worker process"] as const] : []),
     ...(plan.needsAi ? [["AI", "scaffold", "AI SDK adapter and tool budget policy"] as const] : []),
+    ...(plan.needsTenancy
+      ? [
+          [
+            "tenancy",
+            "ready baseline",
+            "organization authorization, RLS context, invitations, grants, and audit contracts",
+          ] as const,
+        ]
+      : []),
+    ...(plan.needsEvents
+      ? [
+          [
+            "events",
+            "ready baseline",
+            "versioned outbox, inbox, lease, fencing, retry, and replay contracts",
+          ] as const,
+        ]
+      : []),
     ...(hasProfile(config, "durable-ai")
       ? [["durable AI", "scaffold", "durable job orchestration seam"] as const]
       : []),
@@ -1387,6 +1913,78 @@ function developerGuideFile(config: InitConfig, plan: CapabilityPlan): Generated
       ? [["external API", "ready baseline", "OpenAPI contract and generated client"] as const]
       : []),
     ...(hasPython ? [["python", "scaffold", "optional Python service boundary"] as const] : []),
+    ...(plan.needsPayments
+      ? [
+          [
+            "payments",
+            "contract-validated",
+            "Stripe/Razorpay-neutral signed webhook and state contracts",
+          ] as const,
+        ]
+      : []),
+    ...(plan.needsNotifications
+      ? [
+          [
+            "notifications",
+            "contract-validated",
+            "versioned template, suppression, and delivery contracts",
+          ] as const,
+        ]
+      : []),
+    ...(plan.needsCache
+      ? [
+          [
+            "cache",
+            "contract-validated",
+            "tenant namespacing, TTL, invalidation, and Valkey boundary",
+          ] as const,
+        ]
+      : []),
+    ...(plan.needsRateLimit
+      ? [
+          [
+            "rate-limit",
+            "contract-validated",
+            "risk-tiered distributed fail-closed policy",
+          ] as const,
+        ]
+      : []),
+    ...(plan.needsSearch
+      ? [
+          [
+            "search",
+            "contract-validated",
+            "FTS/trigram tenant filtering and tombstone contract",
+          ] as const,
+        ]
+      : []),
+    ...(plan.needsRag
+      ? [
+          [
+            "rag",
+            "contract-validated",
+            "pgvector chunk provenance and citation verification",
+          ] as const,
+        ]
+      : []),
+    ...(plan.needsObservability
+      ? [
+          [
+            "observability",
+            "contract-validated",
+            "redacted correlation and telemetry boundary",
+          ] as const,
+        ]
+      : []),
+    ...(plan.needsFeatureFlags
+      ? [
+          [
+            "feature-flags",
+            "contract-validated",
+            "typed rollout evaluation downstream of authorization",
+          ] as const,
+        ]
+      : []),
     [
       "product integrations",
       "deferred integration",
@@ -1519,7 +2117,7 @@ Run pnpm check before handoff. If variables are missing, check the root .env. ${
 
 ## Deferred gates
 
-This handoff does not claim live deployment, backup restore, rollback, native-device proof, or product authorization features.
+This handoff does not claim live deployment, backup restore, rollback, paid-provider delivery, or native-device proof. The generic starter contracts do not constitute an OmniDesk product implementation.
 `,
   );
 }
@@ -1601,18 +2199,64 @@ function environmentReferenceFile(config: InitConfig, plan: CapabilityPlan): Gen
             "http://127.0.0.1:8000",
             "Optional Python service boundary.",
           ] as const,
+          [
+            "PYTHON_SERVICE_TOKEN",
+            "fixture-python-token",
+            "Worker-to-Python token; never log it.",
+          ] as const,
         ]
       : []),
     ...(hasProfile(config, "payments")
       ? ([
           ["PAYMENT_PROVIDER", "fixture", "Select a configured payment adapter in production."],
           ["PAYMENT_WEBHOOK_SECRET", "replace-with-a-local-secret", "Never log webhook secrets."],
+          ...(plan.providers.paymentProviders.includes("stripe")
+            ? [
+                [
+                  "STRIPE_SECRET_KEY",
+                  "",
+                  "Optional Stripe contract credential; local fixtures are signed offline.",
+                ],
+              ]
+            : []),
+          ...(plan.providers.paymentProviders.includes("razorpay")
+            ? [["RAZORPAY_KEY_ID", "", "Optional Razorpay key identifier."]]
+            : []),
+          ...(plan.providers.paymentProviders.includes("razorpay")
+            ? [
+                [
+                  "RAZORPAY_KEY_SECRET",
+                  "",
+                  "Optional Razorpay contract credential; local fixtures are signed offline.",
+                ],
+              ]
+            : []),
         ] as const)
       : []),
     ...(hasProfile(config, "notifications")
       ? ([
           ["RESEND_API_KEY", "fixture-only", "Required only for the configured Resend adapter."],
           ["MAILPIT_URL", "http://127.0.0.1:8025", "Local Mailpit inspection endpoint."],
+        ] as const)
+      : []),
+    ...(plan.providers.aiProviders.includes("openai")
+      ? ([
+          [
+            "OPENAI_API_KEY",
+            "",
+            "Optional OpenAI key; deterministic local adapters do not call the provider.",
+          ],
+          ["OPENAI_BASE_URL", "", "Optional OpenAI-compatible contract endpoint."],
+        ] as const)
+      : []),
+    ...(plan.providers.aiProviders.includes("anthropic")
+      ? ([
+          [
+            "ANTHROPIC_API_KEY",
+            "",
+            "Optional Anthropic key; deterministic local adapters do not call the provider.",
+          ],
+          ["ANTHROPIC_BASE_URL", "", "Optional Anthropic-compatible contract endpoint."],
         ] as const)
       : []),
     ...(hasProfile(config, "cache")
@@ -1718,9 +2362,8 @@ function localComposeFile(plan: CapabilityPlan): GeneratedFile {
   const postgresImage = selectedProfile("rag")
     ? `${IMAGE_CATALOG.pgvectorPostgresql.reference}@${IMAGE_CATALOG.pgvectorPostgresql.digest}`
     : POSTGRES_IMAGE;
-  return textFile(
-    "compose.yaml",
-    `services:
+  const postgresService = plan.needsDatabase
+    ? `services:
   postgres:
     image: ${postgresImage}
     restart: unless-stopped
@@ -1737,10 +2380,16 @@ function localComposeFile(plan: CapabilityPlan): GeneratedFile {
       retries: 20
     volumes:
       - starter-postgres-data:/var/lib/postgresql
-${storageServices}${cacheServices}${notificationServices}${observabilityServices}volumes:
-  starter-postgres-data:
-${includeStorage ? "  starter-object-storage:\n" : ""}
-${selectedProfile("cache") ? "  starter-valkey-data:\n" : ""}
+`
+    : "services:\n";
+  const volumes = [
+    ...(plan.needsDatabase ? ["  starter-postgres-data:"] : []),
+    ...(includeStorage ? ["  starter-object-storage:"] : []),
+    ...(selectedProfile("cache") ? ["  starter-valkey-data:"] : []),
+  ];
+  return textFile(
+    "compose.yaml",
+    `${postgresService}${storageServices}${cacheServices}${notificationServices}${observabilityServices}${volumes.length > 0 ? `volumes:\n${volumes.join("\n")}\n` : ""}
 `,
   );
 }
@@ -1756,7 +2405,12 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
       packageManager: `pnpm@${PNPM_VERSION}`,
       engines: { node: "24.19.x" },
       scripts: {
-        build: "turbo run build",
+        build: hasProfile(config, "mobile")
+          ? `turbo run build --filter=!${packageName(config, "mobile-app")}`
+          : "turbo run build",
+        ...(hasProfile(config, "mobile")
+          ? { "build:mobile": `pnpm --filter ${packageName(config, "mobile-app")} build` }
+          : {}),
         dev: "turbo run dev --parallel",
         ...(plan.needsApi
           ? { "dev:api": `pnpm --filter ${packageName(config, "api-app")} dev` }
@@ -1894,7 +2548,7 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
     ),
     developerGuideFile(config, plan),
     environmentReferenceFile(config, plan),
-    ...(plan.needsDatabase ? [localComposeFile(plan)] : []),
+    ...(plan.needsDatabase || plan.localServices.length > 0 ? [localComposeFile(plan)] : []),
     ...(hasProfile(config, "web")
       ? [
           textFile(
@@ -1921,6 +2575,7 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
       profiles: plan.canonicalProfiles,
       deprecatedAliases: plan.deprecatedAliases,
       providers: plan.providers,
+      environment: plan.capabilityEnvironment,
       fixtures: plan.capabilityFixtures,
       localServices: plan.localServices,
     }),
@@ -1967,6 +2622,30 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
               minioClient: {
                 reference: IMAGE_CATALOG.minioMc.reference,
                 digest: IMAGE_CATALOG.minioMc.digest,
+              },
+            }
+          : {}),
+        ...(plan.needsCache
+          ? {
+              valkey: {
+                reference: IMAGE_CATALOG.valkey.reference,
+                digest: IMAGE_CATALOG.valkey.digest,
+              },
+            }
+          : {}),
+        ...(plan.needsNotifications
+          ? {
+              mailpit: {
+                reference: IMAGE_CATALOG.mailpit.reference,
+                digest: IMAGE_CATALOG.mailpit.digest,
+              },
+            }
+          : {}),
+        ...(plan.needsObservability
+          ? {
+              otelCollector: {
+                reference: IMAGE_CATALOG.otelCollector.reference,
+                digest: IMAGE_CATALOG.otelCollector.digest,
               },
             }
           : {}),
@@ -2054,7 +2733,10 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
       files.push(packageManifest(config, name), packageTsconfig(name), foundationPackageFile());
     } else if (name === "core") {
       files.push(
-        packageManifest(config, name, { [packageName(config, "foundation")]: "workspace:*" }),
+        packageManifest(config, name, {
+          [packageName(config, "foundation")]: "workspace:*",
+          ...(plan.needsEvents ? { zod: DEPENDENCY_VERSIONS.zod } : {}),
+        }),
         packageTsconfig(name),
         corePackageFile(plan),
         ...(plan.needsAi
@@ -2098,6 +2780,60 @@ test("AI execution records every denial and provider or schema failure", async (
   providerFailure.register({ name: "provider", risk: "low", requiresApproval: false, maximumCostUsd: 0.25, input: schema, output: schema, authorize: async () => true, execute: async () => { throw new Error("offline"); } });
   await expect(providerFailure.execute("provider", "hello", context(true))).rejects.toMatchObject({ code: "PROVIDER_ERROR" });
   expect(evidence.filter((entry) => entry.startsWith("audit:"))).toEqual(["audit:unauthorized", "audit:cost_limit", "audit:invalid_input", "audit:invalid_output", "audit:provider_error"]);
+});
+`,
+              ),
+            ]
+          : []),
+        ...(plan.needsEvents
+          ? [
+              textFile(
+                "packages/core/tests/outbox-policy.test.ts",
+                `import { expect, test } from "vitest";
+import { isCurrentFencingToken, retryDelayMilliseconds, validateDomainEvent } from "../src/index.js";
+
+test("outbox retry delay is bounded and fencing rejects stale workers", () => {
+  expect(retryDelayMilliseconds(1, 0.5)).toBe(1000);
+  expect(retryDelayMilliseconds(99, 1)).toBe(900000);
+  expect(isCurrentFencingToken(2, 2)).toBe(true);
+  expect(isCurrentFencingToken(2, 1)).toBe(false);
+});
+
+test("domain event validation rejects unversioned or non-object payloads", () => {
+  expect(() => validateDomainEvent({ id: "event-1", type: "example.created", schemaVersion: 1, aggregateType: "example", aggregateId: "example-1", payload: {}, occurredAt: new Date().toISOString(), correlationId: "correlation-1" })).not.toThrow();
+  expect(() => validateDomainEvent({ id: "event-2", type: "example.created", schemaVersion: 0, aggregateType: "example", aggregateId: "example-1", payload: {} })).toThrow();
+});
+`,
+              ),
+            ]
+          : []),
+        ...(plan.needsAi
+          ? [
+              textFile(
+                "packages/core/tests/ai-completion.test.ts",
+                `import { expect, test } from "vitest";
+import { completeAiRun, type AiCompletionTransaction } from "../src/index.js";
+
+const input = {
+  runId: "run-1",
+  organizationId: "org-1",
+  leaseToken: "lease-1",
+  artifact: { answer: "complete" },
+  usage: { inputTokens: 1, outputTokens: 2, costMicrousd: 3 },
+  evaluation: { name: "quality", scoreMillionths: 900000 },
+  event: { id: "event-1", type: "ai.completed", payload: { runId: "run-1" }, correlationId: "correlation-1" },
+};
+
+test("AI completion sends one complete evidence bundle to the transaction port", async () => {
+  const calls: unknown[] = [];
+  const transaction: AiCompletionTransaction = { complete: async (value) => { calls.push(value); } };
+  await expect(completeAiRun(transaction, input)).resolves.toBeUndefined();
+  expect(calls).toHaveLength(1);
+});
+
+test("AI completion rejects incomplete artifacts before persistence", async () => {
+  const transaction: AiCompletionTransaction = { complete: async () => { throw new Error("must not persist"); } };
+  await expect(completeAiRun(transaction, { ...input, artifact: {} })).rejects.toMatchObject({ code: "INVALID_INPUT" });
 });
 `,
               ),
@@ -2193,6 +2929,7 @@ test("storage policy rejects cross-subject, unsafe, anonymous, and oversized wri
       if (plan.needsStorage) {
         adapterDependencies["@aws-sdk/client-s3"] = DEPENDENCY_VERSIONS.awsS3;
         adapterDependencies["@aws-sdk/s3-request-presigner"] = DEPENDENCY_VERSIONS.awsPresigner;
+        adapterDependencies["@aws-sdk/s3-presigned-post"] = DEPENDENCY_VERSIONS.awsPresignedPost;
       }
       if (plan.needsAi) adapterDependencies.ai = DEPENDENCY_VERSIONS.ai;
       files.push(
@@ -2209,7 +2946,7 @@ import { createS3Storage } from "../src/index.js";
 test("storage enforces ownership and propagates provider failures", async () => {
   const metadata = {
     record: async () => undefined,
-    find: async () => ({ subjectId: "owner-1" }),
+    find: async () => ({ subjectId: "owner-1", contentType: "text/plain", byteLength: 1, status: "available" as const }),
   };
   const failing = createS3Storage({ bucket: "test", region: "test", metadata, send: async () => { throw new Error("provider offline"); } });
   await expect(failing.put({ key: "owner-1/file.txt", contentType: "text/plain", body: new Uint8Array([1]), subjectId: "owner-1" })).rejects.toThrow("provider offline");
@@ -2219,7 +2956,7 @@ test("storage enforces ownership and propagates provider failures", async () => 
   const takeover = createS3Storage({ bucket: "test", region: "test", metadata, send: async () => { providerCalls += 1; return {}; } });
   await expect(takeover.put({ key: "owner-1/file.txt", contentType: "text/plain", body: new Uint8Array([1]), subjectId: "other" })).rejects.toThrow("policy denied");
   expect(providerCalls).toBe(0);
-  const bounded = createS3Storage({ bucket: "test", region: "test", metadata, policy: { maximumBytes: 1, authorize: () => true }, send: async () => ({}) });
+  const bounded = createS3Storage({ bucket: "test", region: "test", metadata, policy: { maximumBytes: 1, allowedContentTypes: ["text/plain"], authorize: () => true }, send: async () => ({}) });
   await expect(bounded.put({ key: "owner-1/file.txt", contentType: "text/plain", body: new Uint8Array(2), subjectId: "owner-1" })).rejects.toThrow("policy denied");
 });
 `,
@@ -2314,12 +3051,54 @@ test("storage enforces ownership and propagates provider failures", async () => 
               : []),
             ...(plan.needsStorage
               ? [
-                  "CREATE TABLE object_metadata (key text PRIMARY KEY, content_type text NOT NULL, byte_length integer NOT NULL, subject_id text NOT NULL);",
+                  "CREATE TABLE object_metadata (key text PRIMARY KEY, content_type text NOT NULL, byte_length integer NOT NULL CHECK (byte_length > 0), subject_id text NOT NULL, organization_id text, status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'available', 'quarantined')));",
+                ]
+              : []),
+            ...(plan.needsSearch
+              ? [
+                  "CREATE EXTENSION IF NOT EXISTS pg_trgm;",
+                  "CREATE TABLE search_documents (id text PRIMARY KEY, organization_id text, source_type text NOT NULL, source_id text NOT NULL, source_version text NOT NULL, text_content text NOT NULL, required_permission text, tombstoned boolean NOT NULL DEFAULT false, search_vector tsvector NOT NULL DEFAULT to_tsvector('simple', ''), created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE (organization_id, source_type, source_id, source_version));",
+                  "CREATE INDEX search_documents_fts_idx ON search_documents USING gin (search_vector);",
+                  "CREATE INDEX search_documents_trgm_idx ON search_documents USING gin (text_content gin_trgm_ops);",
+                  "CREATE OR REPLACE FUNCTION refresh_search_document_vector() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.search_vector := to_tsvector('simple', NEW.text_content); NEW.updated_at := now(); RETURN NEW; END $$;",
+                  "CREATE TRIGGER search_documents_vector_refresh BEFORE INSERT OR UPDATE OF text_content ON search_documents FOR EACH ROW EXECUTE FUNCTION refresh_search_document_vector();",
+                  ...(plan.needsTenancy
+                    ? [
+                        "ALTER TABLE search_documents ADD CONSTRAINT search_documents_organization_fk FOREIGN KEY (organization_id) REFERENCES organizations(id);",
+                        "ALTER TABLE search_documents ENABLE ROW LEVEL SECURITY;",
+                        "ALTER TABLE search_documents FORCE ROW LEVEL SECURITY;",
+                        "CREATE POLICY search_documents_tenant_isolation ON search_documents USING (organization_id = app_current_organization_id()) WITH CHECK (organization_id = app_current_organization_id());",
+                      ]
+                    : []),
+                ]
+              : []),
+            ...(plan.needsRag
+              ? [
+                  "CREATE EXTENSION IF NOT EXISTS vector;",
+                  "CREATE TABLE knowledge_documents (id text PRIMARY KEY, organization_id text NOT NULL, object_key text NOT NULL, version text NOT NULL, status text NOT NULL CHECK (status IN ('pending', 'processing', 'ready', 'failed', 'tombstoned')), created_at timestamptz NOT NULL DEFAULT now(), UNIQUE (organization_id, object_key, version));",
+                  "CREATE TABLE knowledge_chunks (id text PRIMARY KEY, document_id text NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE, organization_id text NOT NULL, ordinal integer NOT NULL CHECK (ordinal >= 0), page_number integer, section text, text_content text NOT NULL, embedding vector(1536), version text NOT NULL, tombstoned boolean NOT NULL DEFAULT false, UNIQUE (document_id, ordinal, version));",
+                  "CREATE INDEX knowledge_chunks_embedding_idx ON knowledge_chunks USING hnsw (embedding vector_cosine_ops);",
+                  "CREATE INDEX knowledge_chunks_org_idx ON knowledge_chunks (organization_id, document_id, tombstoned);",
+                  "CREATE TABLE knowledge_citations (id text PRIMARY KEY, run_id text NOT NULL, chunk_id text NOT NULL REFERENCES knowledge_chunks(id), organization_id text NOT NULL, citation text NOT NULL, verified boolean NOT NULL DEFAULT false, created_at timestamptz NOT NULL DEFAULT now());",
+                  ...(plan.needsTenancy
+                    ? [
+                        ...[
+                          "knowledge_documents",
+                          "knowledge_chunks",
+                          "knowledge_citations",
+                        ].flatMap((table) => [
+                          `ALTER TABLE ${table} ADD CONSTRAINT ${table}_organization_fk FOREIGN KEY (organization_id) REFERENCES organizations(id);`,
+                          `ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;`,
+                          `ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;`,
+                          `CREATE POLICY ${table}_tenant_isolation ON ${table} USING (organization_id = app_current_organization_id()) WITH CHECK (organization_id = app_current_organization_id());`,
+                        ]),
+                      ]
+                    : []),
                 ]
               : []),
             ...(plan.needsAi
               ? [
-                  "CREATE TABLE ai_approvals (id text PRIMARY KEY, organization_id text, tool_name text NOT NULL, subject_id text NOT NULL, resource_scope jsonb NOT NULL DEFAULT '{}', input_hash text, maximum_cost_microusd bigint NOT NULL DEFAULT 0 CHECK (maximum_cost_microusd >= 0), expires_at timestamptz NOT NULL DEFAULT (now() + interval '15 minutes'), consumed_at timestamptz, granted_by_subject_id text, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE (tool_name, subject_id));",
+                  "CREATE TABLE ai_approvals (id text PRIMARY KEY, organization_id text, tool_name text NOT NULL, subject_id text NOT NULL, run_id text, tool_call_id text, resource_scope jsonb NOT NULL DEFAULT '{}', input_hash text, maximum_cost_microusd bigint NOT NULL DEFAULT 0 CHECK (maximum_cost_microusd >= 0), expires_at timestamptz NOT NULL DEFAULT (now() + interval '15 minutes'), consumed_at timestamptz, granted_by_subject_id text, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE (tool_name, subject_id, organization_id, input_hash));",
                   "CREATE TABLE ai_runs (id text PRIMARY KEY, organization_id text NOT NULL, subject_id text NOT NULL, logical_model text NOT NULL CHECK (logical_model IN ('chat.fast', 'chat.quality', 'structured.default', 'embedding.default')), use_case text NOT NULL, status text NOT NULL CHECK (status IN ('requested', 'running', 'completed', 'failed')), idempotency_key text NOT NULL, correlation_id text NOT NULL, completed_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE (organization_id, idempotency_key));",
                   "CREATE TABLE ai_attempts (id text PRIMARY KEY, run_id text NOT NULL REFERENCES ai_runs(id) ON DELETE CASCADE, attempt_number integer NOT NULL CHECK (attempt_number > 0), provider text, provider_model text, outcome text NOT NULL, normalized_failure text, started_at timestamptz NOT NULL DEFAULT now(), completed_at timestamptz, UNIQUE (run_id, attempt_number));",
                   "CREATE TABLE ai_usage (id text PRIMARY KEY, run_id text NOT NULL REFERENCES ai_runs(id) ON DELETE CASCADE, attempt_id text REFERENCES ai_attempts(id), input_tokens integer NOT NULL CHECK (input_tokens >= 0), output_tokens integer NOT NULL CHECK (output_tokens >= 0), cost_microusd bigint NOT NULL CHECK (cost_microusd >= 0), created_at timestamptz NOT NULL DEFAULT now());",
@@ -2605,7 +3384,8 @@ function apiPackageFile(config: InitConfig, plan: CapabilityPlan): GeneratedFile
     coreTypes.length > 0
       ? `import type { ${coreTypes.join(", ")} } from "${packageName(config, "core")}";\n`
       : "";
-  const zodImport = plan.needsStorage || plan.needsAi ? `import { z } from "zod";\n` : "";
+  const zodImport =
+    plan.needsStorage || plan.needsAi || plan.needsTenancy ? `import { z } from "zod";\n` : "";
   const externalImports = plan.needsExternalApi
     ? `import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
@@ -2652,16 +3432,17 @@ export interface AiRuntime {
   executeTool(name: string, input: unknown, subjectId: string): Promise<unknown>;
   recordEvaluation(name: string, score: number, subjectId: string): Promise<void>;
 }
-export interface RequestContext { readonly subjectId: string | null;${plan.needsStorage ? " readonly storage?: ObjectStorage;" : ""}${plan.needsAi ? " readonly ai?: AiRuntime;" : ""} }
+export interface RequestContext { readonly subjectId: string | null;${plan.needsTenancy ? " readonly organizationId: string | null;" : ""}${plan.needsStorage ? " readonly storage?: ObjectStorage;" : ""}${plan.needsAi ? " readonly ai?: AiRuntime;" : ""} }
 export interface ApiDependencies {
 ${plan.needsIdentity ? "  readonly authentication: AuthenticationPort;\n" : ""}
 ${plan.needsIdentity ? "  readonly identity: IdentityRepository;\n" : ""}
   readonly database${plan.needsIdentity ? "" : "?"}: { readonly checkReadiness: () => Promise<void> };
 ${plan.needsStorage ? "  readonly storage?: ObjectStorage;\n" : ""}
 ${plan.needsAi ? "  readonly ai?: AiRuntime;\n" : ""}
+${plan.needsTenancy ? "  readonly organizationAuthorization?: { readonly hasMembership: (subjectId: string, organizationId: string) => Promise<boolean>; };\n" : ""}
   readonly readinessChecks?: readonly { readonly name: string; readonly check: () => Promise<void> }[];
 }
-export function createContext(subjectId: string | null${plan.needsStorage ? ", storage?: ObjectStorage" : ""}${plan.needsAi ? ", ai?: AiRuntime" : ""}): RequestContext { return { subjectId${plan.needsStorage ? ", ...(storage ? { storage } : {})" : ""}${plan.needsAi ? ", ...(ai ? { ai } : {})" : ""} }; }
+export function createContext(subjectId: string | null${plan.needsTenancy ? ", organizationId: string | null = null" : ""}${plan.needsStorage ? ", storage?: ObjectStorage" : ""}${plan.needsAi ? ", ai?: AiRuntime" : ""}): RequestContext { return { subjectId${plan.needsTenancy ? ", organizationId" : ""}${plan.needsStorage ? ", ...(storage ? { storage } : {})" : ""}${plan.needsAi ? ", ...(ai ? { ai } : {})" : ""} }; }
 ${
   plan.needsIdentity
     ? `
@@ -2700,8 +3481,8 @@ export function registerAuthenticationRoutes(server: FastifyInstance, baseURL: s
 `
     : ""
 }
-export async function resolveContext(${plan.needsIdentity ? "request" : "_request"}: FastifyRequest, ${plan.needsIdentity || plan.needsStorage || plan.needsAi ? "dependencies" : "_dependencies"}: ApiDependencies): Promise<RequestContext> {
-  ${plan.needsIdentity ? "const session = await dependencies.authentication.resolveSession(toHeaders(request));\n  const applicationSubject = session ? await dependencies.identity.resolveAuthenticationSubject(session.subjectId) : null;\n  " : ""}return createContext(${plan.needsIdentity ? "applicationSubject?.subjectId ?? null" : "null"}${plan.needsStorage ? ", dependencies.storage" : ""}${plan.needsAi ? ", dependencies.ai" : ""});
+export async function resolveContext(${plan.needsIdentity ? "request" : "_request"}: FastifyRequest, ${plan.needsIdentity || plan.needsStorage || plan.needsAi || plan.needsTenancy ? "dependencies" : "_dependencies"}: ApiDependencies): Promise<RequestContext> {
+  ${plan.needsIdentity ? "const session = await dependencies.authentication.resolveSession(toHeaders(request));\n  const applicationSubject = session ? await dependencies.identity.resolveAuthenticationSubject(session.subjectId) : null;\n  " : ""}${plan.needsTenancy ? 'const requestedOrganizationId = typeof request.headers["x-organization-id"] === "string" ? request.headers["x-organization-id"].trim() : "";\n  const organizationId = applicationSubject?.subjectId && requestedOrganizationId && dependencies.organizationAuthorization && (await dependencies.organizationAuthorization.hasMembership(applicationSubject.subjectId, requestedOrganizationId)) ? requestedOrganizationId : null;\n  ' : ""}return createContext(${plan.needsIdentity ? "applicationSubject?.subjectId ?? null" : "null"}${plan.needsTenancy ? ", organizationId" : ""}${plan.needsStorage ? ", dependencies.storage" : ""}${plan.needsAi ? ", dependencies.ai" : ""});
 }
 
 const t = initTRPC.context<RequestContext>().create();
@@ -2710,15 +3491,32 @@ export const authenticatedProcedure = t.procedure.use(({ ctx, next }) => {
   if (ctx.subjectId === null) throw new TRPCError({ code: "UNAUTHORIZED" });
   return next({ ctx: { ...ctx, subjectId: ctx.subjectId } });
 });
+${
+  plan.needsTenancy
+    ? `export const organizationProcedure = authenticatedProcedure.use(({ ctx, next }) => {
+  if (!ctx.organizationId) throw new TRPCError({ code: "BAD_REQUEST", message: "x-organization-id is required" });
+  return next({ ctx: { ...ctx, organizationId: ctx.organizationId } });
+});
+`
+    : ""
+}
 ${sourceOfTruthBlock({ id: "starter.api.transport", keywords: "api, fastify, trpc, health, readiness", what: "Thin Fastify and tRPC transport composition root.", why: "Separates request handling from domain and provider code.", when: "Use for first-party API routes and health probes.", how: "buildApi, appRouter", boundaries: "Do not place SQL, authorization policy, or provider SDK calls here." })}
 export const appRouter = t.router({
-  health: publicProcedure.query(() => healthResponseSchema.parse({ status: "ok", checkedAt: new Date().toISOString() })),
+  health: publicProcedure.query(() => healthResponseSchema.parse({ status: "ok", checkedAt: new Date().toISOString(), instanceId: process.env.STARTER_FIXTURE_ID ?? "local" })),
   viewer: authenticatedProcedure.query(({ ctx }) => ({ subjectId: ctx.subjectId })),
 ${
   plan.needsStorage
     ? `  storageUrl: authenticatedProcedure.input(z.object({ key: z.string().min(1) })).mutation(async ({ ctx, input }) => {
     if (!ctx.storage) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Storage is not configured" });
     return { url: await ctx.storage.getUrl({ key: input.key, subjectId: ctx.subjectId }) };
+  }),
+  storageUpload: authenticatedProcedure.input(z.object({ key: z.string().min(1), contentType: z.string().min(1), byteLength: z.number().int().positive(), organizationId: z.string().min(1).optional() }).strict()).mutation(async ({ ctx, input }) => {
+    if (!ctx.storage) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Storage is not configured" });
+    return ctx.storage.createUpload({ key: input.key, contentType: input.contentType, byteLength: input.byteLength, subjectId: ctx.subjectId, ...(input.organizationId ? { organizationId: input.organizationId } : {}) });
+  }),
+  storageComplete: authenticatedProcedure.input(z.object({ key: z.string().min(1) }).strict()).mutation(async ({ ctx, input }) => {
+    if (!ctx.storage) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Storage is not configured" });
+    return ctx.storage.completeUpload({ key: input.key, subjectId: ctx.subjectId });
   }),
 `
     : ""
@@ -2747,10 +3545,10 @@ async function readinessResponse(checks: readonly { readonly name: string; reado
   for (const check of checks) {
     try { await check.check(); } catch (error: unknown) {
       const detail = error instanceof Error ? error.message : "dependency check failed";
-      return healthResponseSchema.parse({ status: "degraded", checkedAt, detail, failedDependency: check.name });
+      return healthResponseSchema.parse({ status: "degraded", checkedAt, instanceId: process.env.STARTER_FIXTURE_ID ?? "local", detail, failedDependency: check.name });
     }
   }
-  return healthResponseSchema.parse({ status: "ok", checkedAt });
+  return healthResponseSchema.parse({ status: "ok", checkedAt, instanceId: process.env.STARTER_FIXTURE_ID ?? "local" });
 }
 
 export function buildApi(dependencies: ApiDependencies${plan.needsIdentity ? "" : " = {}"}) {
@@ -2759,7 +3557,7 @@ export function buildApi(dependencies: ApiDependencies${plan.needsIdentity ? "" 
     prefix: "/trpc",
     trpcOptions: { router: appRouter, createContext: ({ req }: { readonly req: FastifyRequest }) => resolveContext(req, dependencies) },
   });
-  server.get("/health/live", async () => healthResponseSchema.parse({ status: "ok", checkedAt: new Date().toISOString() }));
+  server.get("/health/live", async () => healthResponseSchema.parse({ status: "ok", checkedAt: new Date().toISOString(), instanceId: process.env.STARTER_FIXTURE_ID ?? "local" }));
   server.get("/health/ready", async (_request, reply) => {
     const checks = [
       ...(dependencies.database ? [{ name: "database", check: dependencies.database.checkReadiness }] : []),
@@ -2800,6 +3598,7 @@ function apiFiles(config: InitConfig): GeneratedFile[] {
           "  const identity = database.identity;",
         ]
       : []),
+    ...(plan.needsTenancy ? ["  const organizationAuthorization = database.organization;"] : []),
     ...(plan.needsStorage
       ? [
           `  const storage = createS3Storage({ bucket: environment.STORAGE_BUCKET, region: environment.STORAGE_REGION, ...(environment.STORAGE_ENDPOINT ? { endpoint: environment.STORAGE_ENDPOINT } : {}), ...(environment.STORAGE_ACCESS_KEY_ID && environment.STORAGE_SECRET_ACCESS_KEY ? { accessKeyId: environment.STORAGE_ACCESS_KEY_ID, secretAccessKey: environment.STORAGE_SECRET_ACCESS_KEY } : {}), metadata: database.metadata });`,
@@ -2817,6 +3616,7 @@ function apiFiles(config: InitConfig): GeneratedFile[] {
       ...(plan.needsDatabase ? ["database"] : []),
       ...(plan.needsIdentity ? ["authentication"] : []),
       ...(plan.needsIdentity ? ["identity"] : []),
+      ...(plan.needsTenancy ? ["organizationAuthorization"] : []),
       ...(plan.needsStorage ? ["storage"] : []),
       ...(plan.needsAi ? ["ai"] : []),
     ]
@@ -2839,6 +3639,12 @@ function apiFiles(config: InitConfig): GeneratedFile[] {
         ]
       : []),
   ].join("\n");
+  const capabilitySchemaFields = plan.capabilityEnvironment
+    .filter((item) => item.owner === "api")
+    .map(
+      (item) =>
+        `  ${item.name}: ${item.required ? "z.string().min(1)" : 'z.string().optional().default("")'},`,
+    );
   const environmentSchema = [
     "const environmentSchema = z.object({",
     "  PORT: z.coerce.number().int().min(1).max(65535).default(3001),",
@@ -2858,6 +3664,7 @@ function apiFiles(config: InitConfig): GeneratedFile[] {
           "  STORAGE_SECRET_ACCESS_KEY: z.string().min(1).optional(),",
         ]
       : []),
+    ...capabilitySchemaFields,
     plan.needsStorage
       ? `}).superRefine((value, context) => {
   if (Boolean(value.STORAGE_ACCESS_KEY_ID) !== Boolean(value.STORAGE_SECRET_ACCESS_KEY)) {
@@ -2909,6 +3716,7 @@ CMD ["pnpm", "--filter", "${packageName(config, "api-app")}", "start"]
 }
 
 function workerFiles(config: InitConfig): GeneratedFile[] {
+  const plan = createCapabilityPlan(config);
   const adaptersPackage = packageName(config, "adapters");
   const contractsPackage = packageName(config, "contracts");
   const corePackage = packageName(config, "core");
@@ -2935,6 +3743,13 @@ const environment = z.object({
   DATABASE_URL: z.string().min(1),
   WORKER_PORT: z.coerce.number().int().min(1).max(65535).default(3002),
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(50).default(2),
+${plan.capabilityEnvironment
+  .filter((item) => item.owner === "worker")
+  .map(
+    (item) =>
+      `  ${item.name}: ${item.required ? "z.string().min(1)" : 'z.string().optional().default("")'},`,
+  )
+  .join("\n")}
 }).parse(process.env);
 export async function startWorker(): Promise<void> {
   const database = createDatabaseRuntime(environment.DATABASE_URL);
@@ -2946,12 +3761,41 @@ export async function startWorker(): Promise<void> {
         const parsed = jobPayloadSchema.parse(payload);
         await runIdempotentWorkflow(database.workflow, parsed.requestId, async () => undefined);
       },
+${
+  plan.needsEvents
+    ? `      "starter.outbox.dispatch": async (payload) => {
+        const parsed = z.object({ eventId: z.string().min(1), leaseOwner: z.string().min(1).default("worker") }).parse(payload);
+        await runIdempotentWorkflow(database.workflow, \`outbox:\${parsed.eventId}\`, async () => {
+          const claim = await database.outbox.claim(parsed.eventId, parsed.leaseOwner, new Date(), 60_000);
+          if (!claim) return;
+          await database.outbox.recordAttempt(parsed.eventId, claim.fencingToken, "delivered");
+          await database.outbox.markDelivered(parsed.eventId, claim.fencingToken);
+        });
+      },`
+    : ""
+}${
+  plan.needsStorage && hasProfile(config, "python")
+    ? `
+      "starter.document.extract": async (payload) => {
+        const parsed = z.object({ documentId: z.string().min(1) }).parse(payload);
+        await runIdempotentWorkflow(database.workflow, \`document:\${parsed.documentId}\`, async () => undefined);
+      },`
+    : ""
+}${
+  plan.needsAi && plan.needsEvents
+    ? `
+      "starter.agent.continue": async (payload) => {
+        const parsed = z.object({ runId: z.string().min(1) }).parse(payload);
+        await runIdempotentWorkflow(database.workflow, \`agent:\${parsed.runId}\`, async () => undefined);
+      },`
+    : ""
+}
     },
   });
   const healthServer = createServer(async (request, response) => {
     if (request.url !== "/health/ready") { response.writeHead(404).end(); return; }
-    try { await database.checkReadiness(); response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ status: "ok", checkedAt: new Date().toISOString() })); }
-    catch { response.writeHead(503, { "content-type": "application/json" }).end(JSON.stringify({ status: "degraded", checkedAt: new Date().toISOString() })); }
+    try { await database.checkReadiness(); response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ status: "ok", checkedAt: new Date().toISOString(), instanceId: process.env.STARTER_FIXTURE_ID ?? "local" })); }
+    catch { response.writeHead(503, { "content-type": "application/json" }).end(JSON.stringify({ status: "degraded", checkedAt: new Date().toISOString(), instanceId: process.env.STARTER_FIXTURE_ID ?? "local" })); }
   });
   healthServer.listen(environment.WORKER_PORT, "0.0.0.0");
   try { await runner.promise; } finally { healthServer.close(); await database.close(); }
@@ -3216,20 +4060,57 @@ function pythonFiles(): GeneratedFile[] {
   return [
     textFile(
       "services/python/pyproject.toml",
-      `[project]\nname = "thaarei-python-service"\nversion = "${PACKAGE_VERSION}"\nrequires-python = ">=${PYTHON_VERSION},<3.13"\ndependencies = []\n\n[build-system]\nrequires = ["setuptools>=75"]\nbuild-backend = "setuptools.build_meta"\n`,
+      `[project]\nname = "thaarei-python-service"\nversion = "${PACKAGE_VERSION}"\nrequires-python = ">=${PYTHON_VERSION},<3.13"\ndependencies = [\n  "fastapi==0.116.1",\n  "uvicorn==0.35.0",\n  "python-multipart==0.0.20",\n  "pymupdf==1.26.6",\n  "python-docx==1.2.0",\n  "pillow==11.3.0",\n  "pytesseract==0.3.13",\n]\n\n[build-system]\nrequires = ["setuptools>=75"]\nbuild-backend = "setuptools.build_meta"\n`,
     ),
     textFile("services/python/src/__init__.py", ""),
     textFile(
       "services/python/src/main.py",
-      `"""Optional Python service boundary; keep it isolated from TypeScript packages."""
+      `"""Bounded document extraction service; keep it isolated from TypeScript packages."""
 
+import io
 import json
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+MAX_BYTES = 50 * 1024 * 1024
+MAX_PAGES = 500
+SERVICE_TOKEN = os.environ.get("PYTHON_SERVICE_TOKEN", "fixture-python-token")
+
 
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "instanceId": os.environ.get("STARTER_FIXTURE_ID", "local")}
+
+
+def extract_document(filename: str, content_type: str, body: bytes) -> dict[str, object]:
+    if len(body) > MAX_BYTES:
+        raise ValueError("document exceeds maximum byte length")
+    if content_type == "application/pdf" or filename.lower().endswith(".pdf"):
+        import fitz
+        document = fitz.open(stream=body, filetype="pdf")
+        if document.page_count > MAX_PAGES:
+            raise ValueError("document exceeds maximum page count")
+        pages = []
+        for index, page in enumerate(document):
+            text = page.get_text("text").strip()
+            if not text:
+                try:
+                    from PIL import Image
+                    import pytesseract
+                    pixels = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+                    text = pytesseract.image_to_string(Image.open(io.BytesIO(pixels.tobytes("png")))).strip()
+                except (ImportError, RuntimeError, OSError):
+                    text = ""
+            pages.append({"page": index + 1, "text": text})
+        return {"format": "pdf", "pages": pages, "sections": pages, "diagnostics": {"pageCount": len(pages)}}
+    if content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" or filename.lower().endswith(".docx"):
+        from docx import Document
+        document = Document(io.BytesIO(body))
+        pages = [{"page": 1, "text": "\\n".join(paragraph.text for paragraph in document.paragraphs).strip()}]
+        return {"format": "docx", "pages": pages, "sections": pages, "diagnostics": {"pageCount": 1}}
+    if content_type.startswith("text/") or filename.lower().endswith(".txt"):
+        pages = [{"page": 1, "text": body.decode("utf-8", errors="strict").strip()}]
+        return {"format": "text", "pages": pages, "sections": pages, "diagnostics": {"pageCount": 1}}
+    raise ValueError("unsupported document type")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -3240,6 +4121,27 @@ class Handler(BaseHTTPRequestHandler):
             return
         payload = json.dumps(health()).encode("utf-8")
         self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_POST(self) -> None:
+        if self.path != "/v1/extract" or self.headers.get("x-service-token", "") != SERVICE_TOKEN:
+            self.send_response(404 if self.path != "/v1/extract" else 401)
+            self.end_headers()
+            return
+        try:
+            length = int(self.headers.get("content-length", "0"))
+            if length <= 0 or length > MAX_BYTES:
+                raise ValueError("invalid document length")
+            body = self.rfile.read(length)
+            result = extract_document(self.headers.get("x-filename", "document"), self.headers.get("content-type", "application/octet-stream"), body)
+            payload = json.dumps(result).encode("utf-8")
+            self.send_response(200)
+        except (ValueError, UnicodeError, RuntimeError, OSError) as error:
+            payload = json.dumps({"error": str(error)}).encode("utf-8")
+            self.send_response(422)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(payload)))
         self.end_headers()
@@ -3264,13 +4166,33 @@ if __name__ == "__main__":
     ),
     textFile(
       "services/python/Dockerfile",
-      `FROM ${PYTHON_IMAGE}\nWORKDIR /app\nCOPY services/python .\nRUN python -m compileall -q src\nEXPOSE 8000\nCMD ["python", "-m", "src.main"]\n`,
+      `FROM ${PYTHON_IMAGE}\nWORKDIR /app\nCOPY services/python .\nRUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr && rm -rf /var/lib/apt/lists/*\nRUN python -m pip install --no-cache-dir .\nRUN python -m compileall -q src\nEXPOSE 8000\nCMD ["python", "-m", "src.main"]\n`,
     ),
   ];
 }
 
 function environmentFile(config: InitConfig): GeneratedFile {
   const plan = createCapabilityPlan(config);
+  const capabilityDefaults: Readonly<Record<string, string>> = {
+    PAYMENT_PROVIDER: "fixture",
+    PAYMENT_WEBHOOK_SECRET: "replace-with-a-local-secret",
+    RESEND_API_KEY: "fixture-only",
+    MAILPIT_URL: "http://127.0.0.1:8025",
+    VALKEY_URL: "redis://127.0.0.1:6379",
+    OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:4318",
+    SENTRY_DSN: "",
+    PYTHON_SERVICE_TOKEN: "fixture-python-token",
+    OPENAI_API_KEY: "",
+    OPENAI_BASE_URL: "",
+    ANTHROPIC_API_KEY: "",
+    ANTHROPIC_BASE_URL: "",
+    STRIPE_SECRET_KEY: "",
+    RAZORPAY_KEY_ID: "",
+    RAZORPAY_KEY_SECRET: "",
+  };
+  const capabilityLines = plan.capabilityEnvironment.map(
+    (item) => `${item.name}=${capabilityDefaults[item.name] ?? ""}`,
+  );
   const lines = [
     "NODE_ENV=development",
     `PORT=${plan.needsApi ? "3001" : "3000"}`,
@@ -3299,16 +4221,7 @@ function environmentFile(config: InitConfig): GeneratedFile {
         ]
       : []),
     ...(hasProfile(config, "python") ? ["PYTHON_SERVICE_URL=http://127.0.0.1:8000"] : []),
-    ...(hasProfile(config, "payments")
-      ? ["PAYMENT_PROVIDER=fixture", "PAYMENT_WEBHOOK_SECRET=replace-with-a-local-secret"]
-      : []),
-    ...(hasProfile(config, "notifications")
-      ? ["RESEND_API_KEY=fixture-only", "MAILPIT_URL=http://127.0.0.1:8025"]
-      : []),
-    ...(hasProfile(config, "cache") ? ["VALKEY_URL=redis://127.0.0.1:6379"] : []),
-    ...(hasProfile(config, "observability")
-      ? ["OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318", "SENTRY_DSN="]
-      : []),
+    ...capabilityLines,
   ];
   return textFile(".env.example", `${lines.join("\n")}\n`);
 }
@@ -3323,6 +4236,12 @@ function deploymentFiles(config: InitConfig): GeneratedFile[] {
     ...((name === "api" || name === "worker") && plan.needsDatabase ? ["DATABASE_URL"] : []),
     ...(name === "api" && plan.needsIdentity ? ["BETTER_AUTH_SECRET", "BETTER_AUTH_URL"] : []),
     ...(name === "api" && plan.needsAi ? ["AI_MAX_TOOL_BUDGET_USD"] : []),
+    ...(name === "api" && plan.providers.aiProviders.includes("openai")
+      ? ["OPENAI_API_KEY", "OPENAI_BASE_URL"]
+      : []),
+    ...(name === "api" && plan.providers.aiProviders.includes("anthropic")
+      ? ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"]
+      : []),
     ...(name === "api" && plan.needsStorage
       ? [
           "STORAGE_BUCKET",
@@ -3334,10 +4253,20 @@ function deploymentFiles(config: InitConfig): GeneratedFile[] {
       : []),
     ...(name === "worker" ? ["WORKER_CONCURRENCY"] : []),
     ...(name !== "python" && hasProfile(config, "python") ? ["PYTHON_SERVICE_URL"] : []),
-    ...(name === "api" && hasProfile(config, "payments")
-      ? ["PAYMENT_PROVIDER", "PAYMENT_WEBHOOK_SECRET"]
+    ...(hasProfile(config, "python") && (name === "python" || name === "worker")
+      ? ["PYTHON_SERVICE_TOKEN"]
       : []),
-    ...(name === "api" && hasProfile(config, "notifications")
+    ...(name === "api" && hasProfile(config, "payments")
+      ? [
+          "PAYMENT_PROVIDER",
+          "PAYMENT_WEBHOOK_SECRET",
+          ...(plan.providers.paymentProviders.includes("stripe") ? ["STRIPE_SECRET_KEY"] : []),
+          ...(plan.providers.paymentProviders.includes("razorpay")
+            ? ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET"]
+            : []),
+        ]
+      : []),
+    ...(name === "worker" && hasProfile(config, "notifications")
       ? ["RESEND_API_KEY", "MAILPIT_URL"]
       : []),
     ...((name === "api" || name === "worker") && hasProfile(config, "cache") ? ["VALKEY_URL"] : []),

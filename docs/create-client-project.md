@@ -173,6 +173,20 @@ variable, or CI job.
 | `external-api` | REST and OpenAPI contract plus generated client | `api` |
 | `storage` | S3-compatible storage adapter and metadata persistence | `api`, `data`, `identity` |
 | `python` | Separate Python 3.12 service | `api` or `jobs` |
+| `tenancy` | Organization control plane, membership authorization, RLS context, invitations, grants, and audit events | `identity`, `api`, `data` |
+| `events` | Transactional outbox, inbox receipts, delivery leases, fencing, retry, dead-letter, and replay ports | `data`, `jobs` |
+| `agentic-ai` | Fenced generic agent continuation and risk-tiered tool contracts | `ai`, `jobs`, `events` |
+| `payments` | Stripe/Razorpay-neutral payment, refund, subscription, webhook, and reconciliation contracts | `api`, `data`, `jobs`, `events`, `external-api` |
+| `notifications` | Versioned templates, quiet hours, durable in-app/email delivery, Resend/Mailpit/Expo payload adapters | `data`, `jobs`, `events` |
+| `cache` | Valkey-compatible tenant cache policy with bounded TTL and invalidation | None |
+| `rate-limit` | Distributed risk-tiered, fail-closed limiter contract | `api`, `cache` |
+| `search` | PostgreSQL full-text/trigram indexing with tenant ACLs and tombstones | `data`, `jobs`, `events` |
+| `rag` | pgvector retrieval, deterministic chunks, versioned provenance, and citation checks | `ai`, `search`, `storage`, `python`, `jobs`, `events` |
+| `observability` | OpenTelemetry correlation/redaction and injectable Sentry exporter | None |
+| `feature-flags` | Typed, audited rollout flags downstream of authorization | `api`, `data` |
+
+`durable-ai` remains a deprecated compatibility alias for `agentic-ai` for one
+release; select `agentic-ai` for new projects.
 
 These combinations are valid starting points:
 
@@ -180,7 +194,7 @@ These combinations are valid starting points:
 web
 web,api,data
 web,mobile,api,data,identity
-api,data,identity,ai,jobs,durable-ai
+  api,data,identity,ai,jobs,events,agentic-ai
 api,data,external-api
 api,python
 api,data,identity,storage
@@ -189,6 +203,41 @@ api,data,identity,storage
 The profile order does not change the generated profile set. The initializer
 rejects unknown and duplicate names and reports missing dependencies before it
 writes files.
+
+### Full-profile validation fixture
+
+The canonical non-native acceptance fixture selects every V2 capability:
+
+```bash
+pnpm starter:init \
+  --product-id omnidesk \
+  --client-id full-profile-capabilities \
+  --display-name "Full profile validation" \
+  --package-scope @fixture \
+  --profiles web,mobile,api,data,identity,tenancy,jobs,events,ai,agentic-ai,external-api,storage,python,payments,notifications,cache,rate-limit,search,rag,observability,feature-flags \
+  --deployment railway \
+  --technical-owner "Fixture Engineering" \
+  --operations-owner "Fixture Operations" \
+  --mobile-scheme fixture \
+  --ios-bundle-id com.example.fixture \
+  --android-application-id com.example.fixture \
+  --payment-providers stripe,razorpay \
+  --ai-providers openai,anthropic \
+  --email-provider resend \
+  --cache-provider valkey \
+  --observability-exporters otlp,sentry
+```
+
+`pnpm validate:starter` runs this fixture with allocated ports and local
+PostgreSQL/pgvector, MinIO, Valkey, Mailpit, collector, deterministic AI, and
+recorded provider protocol fixtures. The generated `.env` owns provider
+variables such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `STRIPE_SECRET_KEY`,
+`RAZORPAY_KEY_SECRET`, `RESEND_API_KEY`, and `SENTRY_DSN`; local proof leaves
+paid-provider credentials empty. Native device permissions, receipts, and
+foreground/background behavior remain `blocked_external` until iOS/Android
+development-build evidence exists. Dokploy/Railway live deployment and
+backup/restore/rollback are also external evidence; their generated service
+maps and runbooks are checked locally.
 
 ### Add mobile identifiers
 

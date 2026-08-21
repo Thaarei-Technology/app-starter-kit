@@ -125,6 +125,12 @@ const isLocalOrBuiltinDependency = (
   name.startsWith("node:") ||
   builtinModules.includes(name);
 
+const hasNonLatestImageTag = (reference: string): boolean => {
+  const lastSlash = reference.lastIndexOf("/");
+  const tagSeparator = reference.lastIndexOf(":");
+  return tagSeparator > lastSlash && reference.slice(tagSeparator + 1) !== "latest";
+};
+
 export async function checkRelease(root: string): Promise<ReleaseCheckResult> {
   const manifestResult = releaseSchema.safeParse(
     await parseJsonFile(resolve(root, "starter-release.json")),
@@ -208,6 +214,12 @@ export async function checkRelease(root: string): Promise<ReleaseCheckResult> {
   for (const name of Object.keys(manifest.approvedMajors)) {
     if (manifest.testedPackages[name] === undefined) {
       errors.push(`approved major ${name} has no exact tested package version`);
+    }
+  }
+
+  for (const [name, image] of Object.entries(manifest.containerImages)) {
+    if (!hasNonLatestImageTag(image.reference)) {
+      errors.push(`container image ${name} must use a non-latest tag`);
     }
   }
 

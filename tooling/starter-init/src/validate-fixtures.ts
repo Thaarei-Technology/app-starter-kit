@@ -1,5 +1,6 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { copyFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -13,6 +14,7 @@ interface Fixture {
   readonly profiles: string;
   readonly deployment: "dokploy" | "railway";
   readonly mobile: boolean;
+  readonly providers?: readonly string[];
 }
 
 const FIXTURES: readonly Fixture[] = [
@@ -60,6 +62,39 @@ const FIXTURES: readonly Fixture[] = [
     deployment: "dokploy",
     mobile: false,
   },
+  {
+    name: "platform-capabilities",
+    profiles:
+      "api,data,identity,tenancy,jobs,events,ai,external-api,payments,notifications,cache,rate-limit,search,observability,feature-flags",
+    deployment: "railway",
+    mobile: false,
+  },
+  {
+    name: "rag-capability",
+    profiles: "api,data,identity,jobs,events,ai,storage,python,search,rag",
+    deployment: "railway",
+    mobile: false,
+    providers: ["--ai-providers", "openai"],
+  },
+  {
+    name: "full-profile-capabilities",
+    profiles:
+      "web,mobile,api,data,identity,tenancy,jobs,events,ai,agentic-ai,external-api,storage,python,payments,notifications,cache,rate-limit,search,rag,observability,feature-flags",
+    deployment: "railway",
+    mobile: true,
+    providers: [
+      "--payment-providers",
+      "stripe,razorpay",
+      "--ai-providers",
+      "openai,anthropic",
+      "--email-provider",
+      "resend",
+      "--cache-provider",
+      "valkey",
+      "--observability-exporters",
+      "otlp,sentry",
+    ],
+  },
 ];
 
 function initializerArguments(fixture: Fixture, output: string): readonly string[] {
@@ -92,6 +127,7 @@ function initializerArguments(fixture: Fixture, output: string): readonly string
           "com.thaarei.fixture",
         ]
       : []),
+    ...(fixture.providers ?? []),
   ];
 }
 
@@ -99,14 +135,40 @@ async function runPnpm(root: string, arguments_: readonly string[]): Promise<voi
   await execFileAsync("pnpm", arguments_, { cwd: root, maxBuffer: 20 * 1024 * 1024 });
 }
 
-async function waitForHttp(url: string, expectedStatus = 200): Promise<void> {
+interface ManagedProcess {
+  readonly handle: ChildProcess;
+  readonly name: string;
+  readonly logPath: string;
+  readonly output: string[];
+}
+
+async function waitForHttp(
+  url: string,
+  expectedStatus = 200,
+  processes: readonly ManagedProcess[] = [],
+  expectedInstanceId?: string,
+): Promise<void> {
   const deadline = Date.now() + 60_000;
   let lastError = "not attempted";
   while (Date.now() < deadline) {
+    const exited = processes.find((process) => process.handle.exitCode !== null);
+    if (exited) {
+      throw new Error(
+        `${exited.name} exited before ${url} became ready (exit ${exited.handle.exitCode})`,
+      );
+    }
     try {
       const response = await fetch(url);
-      if (response.status === expectedStatus) return;
-      lastError = `HTTP ${response.status}`;
+      const body = await response.text();
+      if (response.status === expectedStatus) {
+        if (expectedInstanceId !== undefined && !body.includes(expectedInstanceId)) {
+          lastError = `HTTP ${response.status} did not contain fixture instance ${expectedInstanceId}`;
+        } else {
+          return;
+        }
+      } else {
+        lastError = `HTTP ${response.status}`;
+      }
     } catch (error: unknown) {
       lastError = error instanceof Error ? error.message : String(error);
     }
@@ -115,25 +177,111 @@ async function waitForHttp(url: string, expectedStatus = 200): Promise<void> {
   throw new Error(`Timed out waiting for ${url}: ${lastError}`);
 }
 
-function startProcess(root: string, arguments_: readonly string[]): ChildProcess {
-  return spawn("pnpm", arguments_, {
-    cwd: root,
-    detached: true,
-    env: { ...process.env },
-    stdio: "ignore",
+async function allocatePort(): Promise<number> {
+  const server = createNetServer();
+  await new Promise<void>((resolvePromise, reject) => {
+    server.once("error", reject);
+    server.listen({ host: "127.0.0.1", port: 0 }, () => resolvePromise());
   });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Failed to allocate a TCP port");
+  const port = address.port;
+  await new Promise<void>((resolvePromise) => server.close(() => resolvePromise()));
+  return port;
 }
 
-async function stopProcess(processHandle: ChildProcess): Promise<void> {
-  if (processHandle.pid === undefined) return;
+async function allocatePorts(names: readonly string[]): Promise<Readonly<Record<string, number>>> {
+  const ports: Record<string, number> = {};
+  for (const name of names) ports[name] = await allocatePort();
+  return ports;
+}
+
+async function configureFixtureEnvironment(
+  root: string,
+  ports: Readonly<Record<string, number>>,
+): Promise<Record<string, string>> {
+  const path = join(root, ".env");
+  const original = await readFile(join(root, ".env.example"), "utf8");
+  const values: Record<string, string> = {};
+  for (const line of original.split("\n")) {
+    const match = /^(\w+)=(.*)$/.exec(line);
+    if (match?.[1]) values[match[1]] = match[2] ?? "";
+  }
+  const replacements: Readonly<Record<string, string>> = {
+    PORT: String(ports.api ?? ports.web),
+    WORKER_PORT: String(ports.worker ?? 0),
+    API_INTERNAL_URL: `http://127.0.0.1:${ports.api ?? 0}`,
+    BETTER_AUTH_URL: `http://127.0.0.1:${ports.web ?? ports.api ?? 0}`,
+    PYTHON_SERVICE_URL: `http://127.0.0.1:${ports.python ?? 0}`,
+    STORAGE_ENDPOINT: `http://127.0.0.1:${ports.storage ?? 0}`,
+    MAILPIT_URL: `http://127.0.0.1:${ports.mailpitUi ?? 0}`,
+    VALKEY_URL: `redis://127.0.0.1:${ports.valkey ?? 0}`,
+    OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${ports.otelHttp ?? 0}`,
+    POSTGRES_PORT: String(ports.postgres ?? 0),
+    STORAGE_PORT: String(ports.storage ?? 0),
+    STORAGE_CONSOLE_PORT: String(ports.storageConsole ?? 0),
+    VALKEY_PORT: String(ports.valkey ?? 0),
+    MAILPIT_SMTP_PORT: String(ports.mailpitSmtp ?? 0),
+    MAILPIT_UI_PORT: String(ports.mailpitUi ?? 0),
+    OTEL_HEALTH_PORT: String(ports.otelHealth ?? 0),
+    OTEL_HTTP_PORT: String(ports.otelHttp ?? 0),
+    STARTER_FIXTURE_ID: `fixture-${ports.api ?? ports.web}`,
+    COMPOSE_PROJECT_NAME: `thaarei-fixture-${ports.api ?? ports.web}`,
+  };
+  for (const [name, value] of Object.entries(replacements)) {
+    values[name] = value;
+  }
+  if (values.DATABASE_URL && ports.postgres) {
+    values.DATABASE_URL = values.DATABASE_URL.replace(
+      /127\.0\.0\.1:\d+/u,
+      `127.0.0.1:${ports.postgres}`,
+    );
+  }
+  const known = new Set(Object.keys(values));
+  const lines = Object.entries(values).map(([name, value]) => `${name}=${value}`);
+  for (const [name, value] of Object.entries(replacements)) {
+    if (!known.has(name)) lines.push(`${name}=${value}`);
+  }
+  await writeFile(path, `${lines.join("\n")}\n`, "utf8");
+  return values;
+}
+
+function startProcess(
+  root: string,
+  name: string,
+  arguments_: readonly string[],
+  environment: Readonly<Record<string, string>>,
+): ManagedProcess {
+  const logPath = join(root, `.fixture-${name}.log`);
+  const output: string[] = [];
+  const handle = spawn("pnpm", arguments_, {
+    cwd: root,
+    detached: true,
+    env: { ...process.env, ...environment },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const capture = (chunk: Buffer): void => {
+    const text = chunk.toString();
+    output.push(text);
+    if (output.length > 40) output.shift();
+    void appendFile(logPath, text);
+  };
+  handle.stdout?.on("data", capture);
+  handle.stderr?.on("data", capture);
+  return { handle, name, logPath, output };
+}
+
+async function stopProcess(processHandle: ManagedProcess): Promise<void> {
+  const handle = processHandle.handle;
+  if (handle.pid === undefined) return;
   try {
-    process.kill(-processHandle.pid, "SIGTERM");
+    process.kill(-handle.pid, "SIGTERM");
   } catch {
     return;
   }
   await new Promise<void>((resolvePromise) => {
     const timeout = setTimeout(resolvePromise, 2_000);
-    processHandle.once("exit", () => {
+    handle.once("exit", () => {
       clearTimeout(timeout);
       resolvePromise();
     });
@@ -141,30 +289,86 @@ async function stopProcess(processHandle: ChildProcess): Promise<void> {
 }
 
 async function proveAllServerRuntime(root: string): Promise<void> {
-  await copyFile(join(root, ".env.example"), join(root, ".env"));
+  const ports = await allocatePorts([
+    "api",
+    "web",
+    "worker",
+    "python",
+    "postgres",
+    "storage",
+    "storageConsole",
+    "valkey",
+    "mailpitUi",
+    "otelHealth",
+    "otelHttp",
+  ]);
+  const environment = await configureFixtureEnvironment(root, ports);
   await runPnpm(root, ["db:up"]);
   await runPnpm(root, ["storage:up"]);
+  await execFileAsync("docker", ["compose", "up", "-d"], {
+    cwd: root,
+    maxBuffer: 20 * 1024 * 1024,
+  });
   await runPnpm(root, ["db:migrate"]);
+  await runPnpm(root, ["build"]);
   const processes = [
-    startProcess(root, ["dev:python"]),
-    startProcess(root, ["dev:api"]),
-    startProcess(root, ["dev:worker"]),
-    startProcess(root, ["dev:web"]),
+    startProcess(root, "python", ["dev:python"], { ...environment, PORT: String(ports.python) }),
+    startProcess(root, "api", ["--filter", "@fixture/api-app", "start"], {
+      ...environment,
+      PORT: String(ports.api),
+    }),
+    startProcess(root, "worker", ["--filter", "@fixture/worker-app", "start"], {
+      ...environment,
+      PORT: String(ports.api),
+      WORKER_PORT: String(ports.worker),
+    }),
+    startProcess(root, "web", ["--filter", "@fixture/web-app", "start"], {
+      ...environment,
+      PORT: String(ports.web),
+    }),
   ];
+  let cleanupError: Error | null = null;
   try {
-    await waitForHttp("http://127.0.0.1:8000/health/ready");
-    await waitForHttp("http://127.0.0.1:3001/health/live");
-    await waitForHttp("http://127.0.0.1:3001/health/ready");
-    await waitForHttp("http://127.0.0.1:3002/health/ready");
-    await waitForHttp("http://127.0.0.1:3000/");
-    await waitForHttp("http://127.0.0.1:9000/minio/health/live");
+    const fixtureInstanceId = environment.STARTER_FIXTURE_ID;
+    await waitForHttp(
+      `http://127.0.0.1:${ports.python}/health/ready`,
+      200,
+      processes,
+      fixtureInstanceId,
+    );
+    await waitForHttp(
+      `http://127.0.0.1:${ports.api}/health/live`,
+      200,
+      processes,
+      fixtureInstanceId,
+    );
+    await waitForHttp(
+      `http://127.0.0.1:${ports.api}/health/ready`,
+      200,
+      processes,
+      fixtureInstanceId,
+    );
+    await waitForHttp(
+      `http://127.0.0.1:${ports.worker}/health/ready`,
+      200,
+      processes,
+      fixtureInstanceId,
+    );
+    await waitForHttp(`http://127.0.0.1:${ports.web}/`, 200, processes);
+    await waitForHttp(`http://127.0.0.1:${ports.storage}/minio/health/live`, 200, processes);
   } finally {
     await Promise.all(processes.map(stopProcess));
-    await execFileAsync("docker", ["compose", "down", "-v"], {
-      cwd: root,
-      maxBuffer: 20 * 1024 * 1024,
-    });
+    try {
+      await execFileAsync("docker", ["compose", "down", "-v"], {
+        cwd: root,
+        maxBuffer: 20 * 1024 * 1024,
+      });
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error);
+      cleanupError = new Error(`Fixture cleanup failed: ${detail}`);
+    }
   }
+  if (cleanupError) throw cleanupError;
 }
 
 async function validateGeneratedProject(root: string, mobile: boolean): Promise<void> {
@@ -284,6 +488,36 @@ export async function validateFixtures(): Promise<void> {
       for (const profile of fixture.profiles.split(",")) {
         if (!developerGuide.includes(`\`${profile}\``))
           throw new Error(`${fixture.name} developer guide omitted selected profile ${profile}`);
+      }
+      if (fixture.name === "full-profile-capabilities") {
+        const manifest = JSON.parse(
+          await readFile(join(root, ".thaarei", "capability-manifest.json"), "utf8"),
+        ) as {
+          readonly profiles: readonly string[];
+          readonly providers: {
+            readonly paymentProviders: readonly string[];
+            readonly aiProviders: readonly string[];
+            readonly emailProvider: string | null;
+            readonly cacheProvider: string | null;
+            readonly observabilityExporters: readonly string[];
+          };
+        };
+        const expectedProfiles = fixture.profiles.split(",").sort();
+        if (JSON.stringify([...manifest.profiles].sort()) !== JSON.stringify(expectedProfiles)) {
+          throw new Error("full-profile-capabilities manifest profile closure drifted");
+        }
+        if (
+          JSON.stringify(manifest.providers) !==
+          JSON.stringify({
+            paymentProviders: ["stripe", "razorpay"],
+            aiProviders: ["openai", "anthropic"],
+            emailProvider: "resend",
+            cacheProvider: "valkey",
+            observabilityExporters: ["otlp", "sentry"],
+          })
+        ) {
+          throw new Error("full-profile-capabilities provider selection drifted");
+        }
       }
       if (fixture.name === "web-only") {
         for (const unselected of ["api", "data", "identity", "mobile"]) {

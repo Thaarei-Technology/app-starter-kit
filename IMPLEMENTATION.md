@@ -6,7 +6,7 @@ Canonical records: `.thaarei/work/*.md`.
 
 ## STARTER-006: Starter Kit V2 production hardening
 
-- Status: in_progress
+- Status: complete
 - Owner: primary-agent
 - Updated: 2026-08-21
 - Paths: .thaarei/work/STARTER-006.md, tooling/starter-init/src/, tooling/governance/src/, tooling/release/, starter-release.json, docs/, templates/, IMPLEMENTATION.md
@@ -38,10 +38,3 @@ Canonical records: `.thaarei/work/*.md`.
 - Owner: primary-agent
 - Updated: 2026-08-19
 - Paths: .thaarei/work/STARTER-002.md, IMPLEMENTATION.md, starter-release.json, tooling/starter-init/src/generator.ts, tooling/starter-init/src/initializer.test.ts
-
-## STARTER-003: Remediate the generated web developer handoff
-
-- Status: complete
-- Owner: primary-agent
-- Updated: 2026-08-19
-- Paths: .thaarei/work/STARTER-003.md, IMPLEMENTATION.md, starter-release.json, package.json, templates/tooling/check-migrations.ts, tooling/governance/src/boundaries.ts, tooling/governance/tests/governance.test.ts, tooling/starter-init/src/generator.ts, tooling/starter-init/src/initializer.test.ts, tooling/starter-init/src/validate-fixtures.ts, tooling/starter-init/src/validate-web-handoff.ts

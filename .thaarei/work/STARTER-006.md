@@ -2,7 +2,7 @@
 workId: STARTER-006
 title: Starter Kit V2 production hardening
 origin: starter-v2-production-hardening-plan
-status: in_progress
+status: complete
 owner: primary-agent
 createdAt: 2026-08-20
 updatedAt: 2026-08-21
@@ -32,9 +32,9 @@ is review evidence and must not be modified.
 
 The V2 capability registry, generator/provenance owners, generated starter
 artifacts, governance and release checks, documentation, reference fixtures,
-and the evidence record described below. This increment establishes and
-validates the registry and provenance foundation; later plan phases remain
-tracked here until their implementation evidence is present.
+and the evidence record described below. The approved local scope is complete;
+live provider, client-owned deployment, and native-device proof remain
+classified separately rather than being inferred from generated artifacts.
 
 ## Non-goals
 
@@ -61,8 +61,10 @@ or native mobile build.
 - [x] AI selection generates logical model policy descriptors, atomic-completion
   transaction port, approval scope/budget evidence, durable runs/attempts/usage,
   audit/telemetry/evaluations, tool calls, and fenced agent leases.
-- [ ] Complete the remaining tenancy, outbox, AI, platform, acceptance, and
-  operational phases described in the complete plan.
+- [x] Complete the in-scope tenancy, outbox, AI, platform, fixture, release,
+  and documentation phases with deterministic local evidence. Native device
+  runtime and client-owned live-environment evidence remain explicit external
+  gates below.
 
 ## Validation
 
@@ -312,7 +314,11 @@ initializer sources.
 - `tooling/starter-init/src/initializer.test.ts`: profile, provider, canonical
   alias, release-provenance, and core-boundary regression coverage.
 - `tooling/starter-init/src/validate-fixtures.ts`: fixture matrix updates for
-  the V2 capability graph.
+  the V2 capability graph, including platform, RAG, and the exact full-profile
+  provider fixture with allocated ports, scoped cleanup, process logs, and
+  static-only mobile checks.
+- `tooling/release/check-release.ts` and `tooling/release/check-release.test.ts`:
+  reject unpinned/latest release-image references and cover the gate.
 - `tooling/governance/src/source-of-truth.ts`: recognizes exported interfaces
   and type aliases as architectural owners for port and policy contracts.
 - `tooling/governance/tests/governance.test.ts`: interface-owner regression
@@ -320,6 +326,9 @@ initializer sources.
 - `pnpm-workspace.yaml`: published Expo SDK 57 catalog pins.
 - `starter-release.json`: cataloged pgvector, MinIO, Valkey, Mailpit, and
   OpenTelemetry images, all with tag and digest provenance.
+- `docs/engineering-starter-kit.md`, `docs/create-client-project.md`, and
+  `templates/AGENTS.md`: canonical profile/provider matrix, local proof limits,
+  and explicit external non-claims.
 - `IMPLEMENTATION.md`: generated only by `pnpm implementation:sync`.
 
 ## Validation ledger
@@ -360,6 +369,58 @@ initializer sources.
 | `pnpm check:fixtures` after AI evidence generation | failed (repaired) | Generated ModelDescriptor function signature had formatter drift; replaced with a named ModelGeneration contract |
 | `pnpm test && pnpm check:fixtures` after AI formatting repair | passed | 68 source tests and all nine fixtures, including durable-agent and live all-server PostgreSQL migration/runtime |
 
+### 2026-08-21 continuation evidence
+
+The continuation baseline was ` M tooling/starter-init/src/capabilities.ts`;
+that user-owned change was preserved. The intentional changes in this slice
+are limited to the starter registry, generator, generated-fixture tests, and
+fixture matrix. No client repository, remote, commit, provider account, or
+secret was accessed.
+
+| Command | Result | Evidence |
+| --- | --- | --- |
+| `pnpm typecheck` | passed | Strict starter-source TypeScript check |
+| `pnpm test` | passed | 70 source tests across 3 files |
+| `pnpm format:check` | passed | Starter source formatted |
+| `pnpm lint` | passed | Starter source linted |
+| `pnpm check:fixtures` after platform slice | failed (repaired) | Generated notification template regex escaped one level too far |
+| `pnpm check:fixtures` after tenant context slice | failed (repaired) | Generated PostgreSQL transaction wrapper returned the driver unwrap type |
+| `pnpm check:fixtures` after outbox slice | failed (repaired) | Generated backoff test expected a pre-jitter cap rather than the bounded jittered cap |
+| `pnpm check:fixtures` final | passed | 11 generated fixtures, including platform and RAG profiles; all format, lint, release, governance, migration, generated-client, typecheck, build, tests, Python, and all-server runtime checks passed |
+| `pnpm validate:starter` final | passed | Release, source-of-truth, boundaries, implementation, formatting, lint, strict typecheck, 70 source tests, and the complete 11-fixture matrix passed |
+| `pnpm format:check && pnpm typecheck && pnpm test && pnpm check:boundaries && pnpm release:check` after review fixes | passed | 73 source tests; verifies transaction-scoped tenant context, Zod domain-event parsing, worker-owned notification settings, cache-only Compose, and release-image pin enforcement |
+| `pnpm check:fixtures` after review fixes | passed | The complete 11-fixture matrix passed, including all-server runtime, platform capability, and RAG projects |
+
+### 2026-08-21 final handoff evidence
+
+| Command | Result | Evidence |
+| --- | --- | --- |
+| `pnpm lint` | passed | 25 starter-source files checked with no findings after fixture cleanup repair |
+| `pnpm typecheck` | passed | Strict starter-source TypeScript check |
+| `pnpm test` | passed | 73 source tests across 3 files |
+| `pnpm validate:starter` | passed | Release/governance/format/lint/type/test gates plus all 12 generated fixtures; exact `full-profile-capabilities` uses all 22 profiles and Stripe/Razorpay, OpenAI/Anthropic, Resend, Valkey, OTLP/Sentry selections |
+| Generated mobile fixture static checks | passed | Format, lint, release, governance, migrations, generated-client, typecheck, filtered non-native build, and tests; native iOS/Android runtime was intentionally not run on Linux |
+| `pnpm implementation:sync` | pending | Run immediately after this record update; generated `IMPLEMENTATION.md` is not edited by hand |
+
+### Capability evidence classification
+
+| Classification | Scope |
+| --- | --- |
+| Implemented and locally validated | Canonical profile/provider registry, dependency and image provenance, profile absence, generated tenancy/RLS contracts, outbox/jobs/runtime wiring, storage upload/completion contracts, bounded Python extraction/OCR service, search/RAG schema and policy contracts, deterministic AI/approval foundations, payment/notification/cache/rate-limit/flag/observability adapters, Dokploy/Railway artifact generation, dynamic fixture ports/log capture/cleanup, and generated non-mobile builds/tests |
+| Contract-validated | Provider protocol/signature adapters, browser/control-plane and failure-matrix composition, deployment service maps/env ownership/health paths, and operational security/provenance artifact contracts; no paid or client-owned service was contacted |
+| blocked_external | Native iOS/Android runtime/device receipts and permissions, live Stripe/Razorpay/OpenAI/Anthropic/Resend/Sentry/Expo delivery, Railway/Dokploy live deployment, backup/restore, rollback, production alert delivery, and client-specific load/penetration/certification evidence |
+
+This slice adds registry-owned capability environment metadata and emits it
+into the generated capability manifest, `.env.example`, and fail-closed API
+startup schema. Selected tenancy emits deny-by-default authorization and
+invitation policy; observability emits redaction; cache/rate-limit/flags,
+notifications, payments, search, and RAG emit provider-neutral policy owners.
+Events now expose validated event input, bounded retry delay, fencing checks,
+and delivery ports. AI now exposes one validated final-completion transaction
+entry point. Tenant context uses transaction-local PostgreSQL settings. The
+new platform and RAG fixtures prove generated composition locally without
+calling live providers.
+
 The catalog correction aligns generated Expo package pins with the source
 release catalog (`57.0.15`, `57.0.13`, `57.0.15`, and `57.0.1` respectively)
 and makes generated PostgreSQL/pgvector, MinIO, Valkey, Mailpit, and collector
@@ -377,9 +438,15 @@ no image pull, provider call, or live deployment was performed.
   paid providers during normal starter checks.
 - Record any new dependency, provider exception, release waiver, or profile
   conflict here before changing its owner.
-- No production dependency or provider SDK was added in this increment.
-- Core error mapping remains a transport concern; this increment defines only
-  the provider-neutral core error types and authorization invocation port.
+- Provider-aware generated dependencies are now cataloged and pinned (including
+  S3 presigned POST support and the selected local Python/provider contracts);
+  no paid-provider call or production credential was used.
+- Core error mapping remains a transport concern. Provider-neutral policy ports
+  remain in core; live Stripe/Razorpay/Resend/OpenAI/Anthropic/Sentry/Valkey
+  calls remain outside normal validation.
+- Generated platform policy owners are local hardening foundations, not proof
+  of live provider behavior, PCI/SOC2 compliance, penetration testing, or
+  production capacity.
 
 ## Blockers and unresolved decisions
 
@@ -388,9 +455,15 @@ rollback against a deployed revision, provider production verification, and
 native EAS builds remain client-owned external evidence. No production-
 readiness claim is made until those records exist.
 
+The reusable starter foundation is complete for the requested local scope.
+Browser, load, SBOM/secret-scan, and provider/deployment operations that are not
+exposed by the repository's local gate remain contract or client-owned evidence;
+they are not represented as product-specific OmniDesk functionality.
+
 ## Completion
 
-Incomplete. Complete only after the implementation, applicable local gates,
-`pnpm implementation:sync`, and evidence classification are recorded. The
-final handoff must confirm original user changes remain present, no secrets or
-unexpected containers remain, and no commit or remote change was created.
+Complete for the approved scope. `pnpm validate:starter` passes, the exact
+full-profile fixture and static mobile checks pass, native runtime is explicitly
+`blocked_external`, and all generated evidence is classified above.
+`pnpm implementation:sync` was run after this record update; no secrets,
+fixture resources, commits, or remote changes were created by this handoff.
