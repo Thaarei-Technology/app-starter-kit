@@ -816,6 +816,35 @@ export interface AiEvaluationStore { recordEvaluation(input: { readonly name: st
 export interface AiPersistence extends AiApprovalStore, AiAuditStore, AiTelemetryStore, AiEvaluationStore {
   approve(toolName: string, subjectId: string): Promise<void>;
 }
+export type LogicalModel = "chat.fast" | "chat.quality" | "structured.default" | "embedding.default";
+export interface ModelGeneration { readonly text: string; readonly inputTokens: number; readonly outputTokens: number; }
+export interface ModelDescriptor {
+  readonly provider: string;
+  readonly modelId: string;
+  readonly allowedUseCases: readonly string[];
+  readonly maximumInputTokens: number;
+  readonly maximumOutputTokens: number;
+  readonly timeoutMilliseconds: number;
+  readonly maximumRetries: number;
+  readonly inputMicrousdPerMillionTokens: number;
+  readonly outputMicrousdPerMillionTokens: number;
+  readonly structuredOutput: boolean;
+  readonly tools: boolean;
+  readonly streaming: boolean;
+  readonly environments: readonly ("development" | "test" | "staging" | "production")[];
+  readonly generate: (prompt: string) => Promise<ModelGeneration>;
+}
+export interface AiCompletionTransaction {
+  complete(input: {
+    readonly runId: string;
+    readonly organizationId: string;
+    readonly leaseToken: string;
+    readonly artifact: Readonly<Record<string, unknown>>;
+    readonly usage: { readonly inputTokens: number; readonly outputTokens: number; readonly costMicrousd: number };
+    readonly evaluation: { readonly name: string; readonly scoreMillionths: number };
+    readonly event: { readonly id: string; readonly type: string; readonly payload: Readonly<Record<string, unknown>>; readonly correlationId: string };
+  }): Promise<void>;
+}
 export interface AiExecutionContext {
   readonly subjectId: string;
   readonly budgetUsd: number;
@@ -837,14 +866,17 @@ export class AiPolicyError extends Error {
   constructor(readonly code: "INVALID_TOOL" | "INVALID_INPUT" | "UNAUTHORIZED" | "APPROVAL_REQUIRED" | "COST_LIMIT" | "PROVIDER_ERROR" | "INVALID_OUTPUT", message: string) { super(message); this.name = "AiPolicyError"; }
 }
 export class ModelRegistry {
-  readonly #models = new Map<string, { readonly generate: (prompt: string) => Promise<{ readonly text: string; readonly costUsd: number }> }>();
-  register(name: string, model: { readonly generate: (prompt: string) => Promise<{ readonly text: string; readonly costUsd: number }> }): void {
-    if (!name || this.#models.has(name)) throw new Error("AI model name must be unique and non-empty");
+  readonly #models = new Map<LogicalModel, ModelDescriptor>();
+  register(name: LogicalModel, model: ModelDescriptor): void {
+    if (this.#models.has(name)) throw new Error("AI logical model must be unique");
+    if (model.maximumInputTokens <= 0 || model.maximumOutputTokens <= 0 || model.timeoutMilliseconds <= 0) throw new Error("AI model limits must be positive");
+    if (model.environments.length === 0 || model.allowedUseCases.length === 0) throw new Error("AI model policy scope is required");
     this.#models.set(name, model);
   }
-  get(name: string): { readonly generate: (prompt: string) => Promise<{ readonly text: string; readonly costUsd: number }> } {
+  get(name: LogicalModel, environment: ModelDescriptor["environments"][number], useCase: string): ModelDescriptor {
     const model = this.#models.get(name);
     if (!model) throw new Error("AI model is not registered");
+    if (!model.environments.includes(environment) || !model.allowedUseCases.includes(useCase)) throw new Error("AI model policy denied");
     return model;
   }
 }
@@ -959,7 +991,7 @@ try {
 
 function databasePackageFile(config: InitConfig, plan: CapabilityPlan): GeneratedFile {
   const drizzleImports = [
-    ...(plan.needsEvents ? ["bigint"] : []),
+    ...(plan.needsEvents || plan.needsAi ? ["bigint"] : []),
     ...(plan.needsIdentity ? ["boolean"] : []),
     ...(plan.needsIdentity ? ["index"] : []),
     "pgTable",
@@ -1034,9 +1066,14 @@ export const authorizationAuditEvents = pgTable("authorization_audit_events", { 
   const aiTables = plan.needsAi
     ? `
 export const aiApprovals = pgTable("ai_approvals", { toolName: text("tool_name").notNull(), subjectId: text("subject_id").notNull() }, (table) => [primaryKey({ columns: [table.toolName, table.subjectId] })]);
+export const aiRuns = pgTable("ai_runs", { id: text("id").primaryKey(), organizationId: text("organization_id").notNull(), subjectId: text("subject_id").notNull(), logicalModel: text("logical_model").notNull(), status: text("status").notNull(), correlationId: text("correlation_id").notNull() });
+export const aiAttempts = pgTable("ai_attempts", { id: text("id").primaryKey(), runId: text("run_id").notNull(), attemptNumber: integer("attempt_number").notNull(), outcome: text("outcome").notNull() });
+export const aiUsage = pgTable("ai_usage", { id: text("id").primaryKey(), runId: text("run_id").notNull(), inputTokens: integer("input_tokens").notNull(), outputTokens: integer("output_tokens").notNull(), costMicrousd: integer("cost_microusd").notNull() });
 export const aiEvaluations = pgTable("ai_evaluations", { id: text("id").primaryKey(), name: text("name").notNull(), score: integer("score").notNull(), subjectId: text("subject_id").notNull() });
-export const aiTelemetry = pgTable("ai_telemetry", { id: text("id").primaryKey(), toolName: text("tool_name").notNull(), subjectId: text("subject_id").notNull(), costMicrousd: integer("cost_microusd").notNull(), outcome: text("outcome").notNull() });
+export const aiTelemetry = pgTable("ai_telemetry_events", { id: text("id").primaryKey(), toolName: text("tool_name").notNull(), subjectId: text("subject_id").notNull(), costMicrousd: integer("cost_microusd").notNull(), outcome: text("outcome").notNull() });
 export const aiAuditEvents = pgTable("ai_audit_events", { id: text("id").primaryKey(), toolName: text("tool_name").notNull(), subjectId: text("subject_id").notNull(), costMicrousd: integer("cost_microusd").notNull(), outcome: text("outcome").notNull() });
+export const agentToolCalls = pgTable("agent_tool_calls", { id: text("id").primaryKey(), runId: text("run_id").notNull(), toolName: text("tool_name").notNull(), risk: text("risk").notNull(), outcome: text("outcome").notNull() });
+export const agentRunLeases = pgTable("agent_run_leases", { runId: text("run_id").primaryKey(), leaseToken: text("lease_token").notNull(), leaseOwner: text("lease_owner").notNull(), leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }).notNull(), fencingToken: bigint("fencing_token", { mode: "number" }).notNull() });
 `
     : "";
   const storageTables = plan.needsStorage
@@ -1164,10 +1201,10 @@ export function createInMemoryWorkflowStore(): WorkflowStore {
   const aiDatabase = plan.needsAi
     ? `
   const ai: AiPersistence = {
-    approve: async (toolName, subjectId) => { await sql.unsafe("INSERT INTO ai_approvals (tool_name, subject_id) VALUES ($1, $2) ON CONFLICT (tool_name, subject_id) DO NOTHING", [toolName, subjectId]); },
+    approve: async (toolName, subjectId) => { await sql.unsafe("INSERT INTO ai_approvals (id, tool_name, subject_id) VALUES ($1, $2, $3) ON CONFLICT (tool_name, subject_id) DO NOTHING", [crypto.randomUUID(), toolName, subjectId]); },
     isApproved: async (toolName, subjectId) => { const rows = await sql.unsafe("SELECT tool_name FROM ai_approvals WHERE tool_name = $1 AND subject_id = $2", [toolName, subjectId]); return rows.length > 0; },
     recordAudit: async (event) => { await sql.unsafe("INSERT INTO ai_audit_events (id, tool_name, subject_id, cost_microusd, outcome) VALUES ($1, $2, $3, $4, $5)", [crypto.randomUUID(), event.toolName, event.subjectId, Math.round(event.costUsd * 1_000_000), event.outcome]); },
-    recordTelemetry: async (event) => { await sql.unsafe("INSERT INTO ai_telemetry (id, tool_name, subject_id, cost_microusd, outcome) VALUES ($1, $2, $3, $4, $5)", [crypto.randomUUID(), event.toolName, event.subjectId, Math.round(event.costUsd * 1_000_000), event.outcome]); },
+    recordTelemetry: async (event) => { await sql.unsafe("INSERT INTO ai_telemetry_events (id, tool_name, subject_id, cost_microusd, outcome) VALUES ($1, $2, $3, $4, $5)", [crypto.randomUUID(), event.toolName, event.subjectId, Math.round(event.costUsd * 1_000_000), event.outcome]); },
     recordEvaluation: async (input) => { await sql.unsafe("INSERT INTO ai_evaluations (id, name, score, subject_id) VALUES ($1, $2, $3, $4)", [crypto.randomUUID(), input.name, Math.round(input.score * 1_000_000), input.subjectId]); },
   };
 `
@@ -2282,10 +2319,28 @@ test("storage enforces ownership and propagates provider failures", async () => 
               : []),
             ...(plan.needsAi
               ? [
-                  "CREATE TABLE ai_approvals (tool_name text NOT NULL, subject_id text NOT NULL, PRIMARY KEY (tool_name, subject_id));",
-                  "CREATE TABLE ai_evaluations (id text PRIMARY KEY, name text NOT NULL, score integer NOT NULL, subject_id text NOT NULL);",
-                  "CREATE TABLE ai_telemetry (id text PRIMARY KEY, tool_name text NOT NULL, subject_id text NOT NULL, cost_microusd integer NOT NULL, outcome text NOT NULL);",
-                  "CREATE TABLE ai_audit_events (id text PRIMARY KEY, tool_name text NOT NULL, subject_id text NOT NULL, cost_microusd integer NOT NULL, outcome text NOT NULL);",
+                  "CREATE TABLE ai_approvals (id text PRIMARY KEY, organization_id text, tool_name text NOT NULL, subject_id text NOT NULL, resource_scope jsonb NOT NULL DEFAULT '{}', input_hash text, maximum_cost_microusd bigint NOT NULL DEFAULT 0 CHECK (maximum_cost_microusd >= 0), expires_at timestamptz NOT NULL DEFAULT (now() + interval '15 minutes'), consumed_at timestamptz, granted_by_subject_id text, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE (tool_name, subject_id));",
+                  "CREATE TABLE ai_runs (id text PRIMARY KEY, organization_id text NOT NULL, subject_id text NOT NULL, logical_model text NOT NULL CHECK (logical_model IN ('chat.fast', 'chat.quality', 'structured.default', 'embedding.default')), use_case text NOT NULL, status text NOT NULL CHECK (status IN ('requested', 'running', 'completed', 'failed')), idempotency_key text NOT NULL, correlation_id text NOT NULL, completed_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE (organization_id, idempotency_key));",
+                  "CREATE TABLE ai_attempts (id text PRIMARY KEY, run_id text NOT NULL REFERENCES ai_runs(id) ON DELETE CASCADE, attempt_number integer NOT NULL CHECK (attempt_number > 0), provider text, provider_model text, outcome text NOT NULL, normalized_failure text, started_at timestamptz NOT NULL DEFAULT now(), completed_at timestamptz, UNIQUE (run_id, attempt_number));",
+                  "CREATE TABLE ai_usage (id text PRIMARY KEY, run_id text NOT NULL REFERENCES ai_runs(id) ON DELETE CASCADE, attempt_id text REFERENCES ai_attempts(id), input_tokens integer NOT NULL CHECK (input_tokens >= 0), output_tokens integer NOT NULL CHECK (output_tokens >= 0), cost_microusd bigint NOT NULL CHECK (cost_microusd >= 0), created_at timestamptz NOT NULL DEFAULT now());",
+                  "CREATE TABLE ai_evaluations (id text PRIMARY KEY, run_id text REFERENCES ai_runs(id) ON DELETE CASCADE, name text NOT NULL, score integer NOT NULL CHECK (score BETWEEN 0 AND 1000000), subject_id text NOT NULL);",
+                  "CREATE TABLE ai_telemetry_events (id text PRIMARY KEY, run_id text REFERENCES ai_runs(id) ON DELETE CASCADE, tool_name text NOT NULL, subject_id text NOT NULL, cost_microusd integer NOT NULL CHECK (cost_microusd >= 0), outcome text NOT NULL);",
+                  "CREATE TABLE ai_audit_events (id text PRIMARY KEY, run_id text REFERENCES ai_runs(id) ON DELETE CASCADE, tool_name text NOT NULL, subject_id text NOT NULL, cost_microusd integer NOT NULL CHECK (cost_microusd >= 0), outcome text NOT NULL);",
+                  "CREATE TABLE agent_tool_calls (id text PRIMARY KEY, run_id text NOT NULL REFERENCES ai_runs(id) ON DELETE CASCADE, tool_name text NOT NULL, risk text NOT NULL CHECK (risk IN ('low', 'medium', 'high')), mutating boolean NOT NULL DEFAULT false, approval_id text REFERENCES ai_approvals(id), input_hash text NOT NULL, outcome text NOT NULL, started_at timestamptz NOT NULL DEFAULT now(), completed_at timestamptz);",
+                  "CREATE TABLE agent_run_leases (run_id text PRIMARY KEY REFERENCES ai_runs(id) ON DELETE CASCADE, lease_token text NOT NULL, lease_owner text NOT NULL, lease_expires_at timestamptz NOT NULL, fencing_token bigint NOT NULL DEFAULT 1 CHECK (fencing_token > 0), updated_at timestamptz NOT NULL DEFAULT now());",
+                  ...(plan.needsTenancy
+                    ? [
+                        ...["ai_approvals", "ai_runs"].map(
+                          (table) =>
+                            `ALTER TABLE ${table} ADD CONSTRAINT ${table}_organization_fk FOREIGN KEY (organization_id) REFERENCES organizations(id);`,
+                        ),
+                        ...["ai_approvals", "ai_runs"].flatMap((table) => [
+                          `ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;`,
+                          `ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;`,
+                          `CREATE POLICY ${table}_tenant_isolation ON ${table} USING (organization_id = app_current_organization_id()) WITH CHECK (organization_id = app_current_organization_id());`,
+                        ]),
+                      ]
+                    : []),
                 ]
               : []),
           ].join("\n")}\n`,

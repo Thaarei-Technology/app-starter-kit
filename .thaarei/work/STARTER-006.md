@@ -58,6 +58,9 @@ or native mobile build.
 - [x] Events selection generates versioned domain-event/outbox ports and durable
   outbox, delivery-attempt, dead-letter, inbox, lease, fencing, and idempotency
   persistence without leaking artifacts into jobs-only projects.
+- [x] AI selection generates logical model policy descriptors, atomic-completion
+  transaction port, approval scope/budget evidence, durable runs/attempts/usage,
+  audit/telemetry/evaluations, tool calls, and fenced agent leases.
 - [ ] Complete the remaining tenancy, outbox, AI, platform, acceptance, and
   operational phases described in the complete plan.
 
@@ -353,6 +356,9 @@ initializer sources.
 | `pnpm check:fixtures` with tenancy in all-server fixture | passed | All nine fixtures passed; the all-server migration and runtime proof included tenancy schema with PostgreSQL and MinIO |
 | `pnpm typecheck && pnpm test` after events persistence | passed | 67 source tests across 3 files |
 | `pnpm check:fixtures` with tenancy and events | passed | All nine fixtures passed; live all-server PostgreSQL migration included tenant RLS and transactional outbox/inbox schema |
+| `pnpm typecheck && pnpm test` after AI evidence generation | passed | 68 source tests across 3 files |
+| `pnpm check:fixtures` after AI evidence generation | failed (repaired) | Generated ModelDescriptor function signature had formatter drift; replaced with a named ModelGeneration contract |
+| `pnpm test && pnpm check:fixtures` after AI formatting repair | passed | 68 source tests and all nine fixtures, including durable-agent and live all-server PostgreSQL migration/runtime |
 
 The catalog correction aligns generated Expo package pins with the source
 release catalog (`57.0.15`, `57.0.13`, `57.0.15`, and `57.0.1` respectively)

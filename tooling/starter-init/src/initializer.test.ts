@@ -650,6 +650,38 @@ describe("starter profile validation", () => {
     expect(eventMigration).toContain("UNIQUE (consumer, event_id)");
   });
 
+  test("generates logical AI models and durable run evidence", () => {
+    const generated = generateProject(config(["api", "data", "identity", "ai"]));
+    const core =
+      generated.files.find((file) => file.path === "packages/core/src/index.ts")?.content ?? "";
+    const migration =
+      generated.files.find((file) => file.path === "packages/database/migrations/0000_starter.sql")
+        ?.content ?? "";
+    for (const logicalModel of [
+      "chat.fast",
+      "chat.quality",
+      "structured.default",
+      "embedding.default",
+    ]) {
+      expect(core).toContain(logicalModel);
+    }
+    expect(core).toContain("export interface AiCompletionTransaction");
+    for (const table of [
+      "ai_runs",
+      "ai_attempts",
+      "ai_usage",
+      "ai_audit_events",
+      "ai_telemetry_events",
+      "ai_evaluations",
+      "agent_tool_calls",
+      "agent_run_leases",
+    ]) {
+      expect(migration).toContain(`CREATE TABLE ${table}`);
+    }
+    expect(migration).toContain("UNIQUE (organization_id, idempotency_key)");
+    expect(migration).toContain("fencing_token bigint");
+  });
+
   test.each([
     ["identity", "identity requires api and data profiles"],
     ["jobs", "jobs requires data"],
