@@ -38,7 +38,7 @@ const FIXTURES: readonly Fixture[] = [
   },
   {
     name: "all-server-capabilities",
-    profiles: "web,api,data,identity,tenancy,jobs,ai,durable-ai,external-api,storage,python",
+    profiles: "web,api,data,identity,tenancy,jobs,events,ai,durable-ai,external-api,storage,python",
     deployment: "railway",
     mobile: false,
   },

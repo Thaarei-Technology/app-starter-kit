@@ -55,6 +55,9 @@ or native mobile build.
 - [x] Tenancy selection generates bounded organization schema, governance and
   product roles, permissions, invitations, audit records, forced PostgreSQL RLS,
   cross-organization foreign keys, and last-owner database protection.
+- [x] Events selection generates versioned domain-event/outbox ports and durable
+  outbox, delivery-attempt, dead-letter, inbox, lease, fencing, and idempotency
+  persistence without leaking artifacts into jobs-only projects.
 - [ ] Complete the remaining tenancy, outbox, AI, platform, acceptance, and
   operational phases described in the complete plan.
 
@@ -348,6 +351,8 @@ initializer sources.
 | `pnpm release:check && pnpm test && pnpm check:fixtures` after repairs | passed | 64 source tests; all nine generated fixtures passed, including mobile, durable AI, Railway, Python, PostgreSQL, and MinIO runtime paths |
 | `pnpm typecheck && pnpm test` after tenancy generation | passed | 66 source tests across 3 files |
 | `pnpm check:fixtures` with tenancy in all-server fixture | passed | All nine fixtures passed; the all-server migration and runtime proof included tenancy schema with PostgreSQL and MinIO |
+| `pnpm typecheck && pnpm test` after events persistence | passed | 67 source tests across 3 files |
+| `pnpm check:fixtures` with tenancy and events | passed | All nine fixtures passed; live all-server PostgreSQL migration included tenant RLS and transactional outbox/inbox schema |
 
 The catalog correction aligns generated Expo package pins with the source
 release catalog (`57.0.15`, `57.0.13`, `57.0.15`, and `57.0.1` respectively)

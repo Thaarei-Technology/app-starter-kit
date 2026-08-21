@@ -627,6 +627,29 @@ describe("starter profile validation", () => {
     expect(tenantMigration).toContain("protect_last_organization_owner");
   });
 
+  test("generates transactional outbox, dead-letter, and inbox persistence only for events", () => {
+    const jobs = generateProject(config(["data", "jobs"]));
+    const events = generateProject(config(["data", "jobs", "events"]));
+    const jobsMigration =
+      jobs.files.find((file) => file.path === "packages/database/migrations/0000_starter.sql")
+        ?.content ?? "";
+    const eventMigration =
+      events.files.find((file) => file.path === "packages/database/migrations/0000_starter.sql")
+        ?.content ?? "";
+    expect(jobsMigration).not.toContain("outbox_events");
+    for (const table of [
+      "outbox_events",
+      "outbox_delivery_attempts",
+      "outbox_dead_letters",
+      "inbox_receipts",
+    ]) {
+      expect(eventMigration).toContain(`CREATE TABLE ${table}`);
+    }
+    expect(eventMigration).toContain("fencing_token bigint");
+    expect(eventMigration).toContain("UNIQUE (destination, idempotency_key)");
+    expect(eventMigration).toContain("UNIQUE (consumer, event_id)");
+  });
+
   test.each([
     ["identity", "identity requires api and data profiles"],
     ["jobs", "jobs requires data"],

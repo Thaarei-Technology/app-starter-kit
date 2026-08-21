@@ -73,6 +73,7 @@ interface CapabilityPlan {
   readonly needsApiClient: boolean;
   readonly needsDatabase: boolean;
   readonly needsWorker: boolean;
+  readonly needsEvents: boolean;
   readonly needsExternalApi: boolean;
   readonly needsIdentity: boolean;
   readonly needsTenancy: boolean;
@@ -104,6 +105,7 @@ function createCapabilityPlan(config: InitConfig): CapabilityPlan {
   const needsStorage = has("storage");
   const needsExternalApi = has("external-api");
   const needsWorker = has("jobs");
+  const needsEvents = has("events");
   if (needsAi && (!has("api") || !has("data") || !needsIdentity))
     throw new Error("Invalid capability plan: ai requires api, data, and identity");
   if (needsStorage && (!has("api") || !has("data") || !needsIdentity))
@@ -157,6 +159,7 @@ function createCapabilityPlan(config: InitConfig): CapabilityPlan {
     needsApiClient,
     needsDatabase,
     needsWorker,
+    needsEvents,
     needsExternalApi,
     needsIdentity,
     needsTenancy,
@@ -764,6 +767,24 @@ export async function runIdempotentWorkflow(
 }
 `
     : "";
+  const events = plan.needsEvents
+    ? `export interface DomainEvent<TPayload> {
+  readonly id: string;
+  readonly organizationId?: string;
+  readonly type: string;
+  readonly schemaVersion: number;
+  readonly aggregateType: string;
+  readonly aggregateId: string;
+  readonly payload: TPayload;
+  readonly occurredAt: string;
+  readonly correlationId: string;
+  readonly causationId?: string;
+}
+export interface OutboxPort {
+  append<TPayload>(event: DomainEvent<TPayload>, destination: string, idempotencyKey: string): Promise<void>;
+}
+`
+    : "";
   const storage = plan.needsStorage
     ? `export interface ObjectStorage {
   put(input: { readonly key: string; readonly contentType: string; readonly body: Uint8Array; readonly subjectId: string }): Promise<void>;
@@ -868,12 +889,13 @@ export class ToolRegistry {
   const owners = [
     ...(plan.needsIdentity ? ["AuthenticationPort", "IdentityRepository"] : []),
     ...(plan.needsWorker ? ["runIdempotentWorkflow"] : []),
+    ...(plan.needsEvents ? ["OutboxPort"] : []),
     ...(plan.needsStorage ? ["defaultStoragePolicy"] : []),
     ...(plan.needsAi ? ["ToolRegistry"] : []),
   ];
   return textFile(
     "packages/core/src/index.ts",
-    `${owners.length === 0 ? 'export const packageId = "core" as const;\n' : ""}${applicationBoundary}${identity}${jobs}${storage}${ai}`,
+    `${owners.length === 0 ? 'export const packageId = "core" as const;\n' : ""}${applicationBoundary}${identity}${jobs}${events}${storage}${ai}`,
   );
 }
 
@@ -937,12 +959,14 @@ try {
 
 function databasePackageFile(config: InitConfig, plan: CapabilityPlan): GeneratedFile {
   const drizzleImports = [
+    ...(plan.needsEvents ? ["bigint"] : []),
     ...(plan.needsIdentity ? ["boolean"] : []),
     ...(plan.needsIdentity ? ["index"] : []),
     "pgTable",
+    ...(plan.needsEvents ? ["jsonb"] : []),
     ...(plan.needsAi ? ["primaryKey"] : []),
     "text",
-    ...(plan.needsStorage || plan.needsAi ? ["integer"] : []),
+    ...(plan.needsStorage || plan.needsAi || plan.needsEvents ? ["integer"] : []),
     ...(plan.needsIdentity || plan.needsWorker ? ["timestamp"] : []),
     ...(plan.needsIdentity ? ["uniqueIndex"] : []),
   ].join(", ");
@@ -1023,6 +1047,14 @@ export const objectMetadata = pgTable("object_metadata", { key: text("key").prim
   const jobTables = plan.needsWorker
     ? `
 export const workflowRuns = pgTable("workflow_runs", { idempotencyKey: text("idempotency_key").primaryKey(), status: text("status").notNull(), claimToken: text("claim_token").notNull(), claimExpiresAt: timestamp("claim_expires_at", { withTimezone: true }).notNull() });
+`
+    : "";
+  const eventTables = plan.needsEvents
+    ? `
+export const outboxEvents = pgTable("outbox_events", { id: text("id").primaryKey(), organizationId: text("organization_id"), type: text("type").notNull(), schemaVersion: integer("schema_version").notNull(), aggregateType: text("aggregate_type").notNull(), aggregateId: text("aggregate_id").notNull(), payload: jsonb("payload").notNull(), destination: text("destination").notNull(), idempotencyKey: text("idempotency_key").notNull(), status: text("status").notNull(), availableAt: timestamp("available_at", { withTimezone: true }).notNull(), attemptCount: integer("attempt_count").notNull(), leaseOwner: text("lease_owner"), leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }), fencingToken: bigint("fencing_token", { mode: "number" }).notNull(), correlationId: text("correlation_id").notNull(), causationId: text("causation_id") });
+export const outboxDeliveryAttempts = pgTable("outbox_delivery_attempts", { id: text("id").primaryKey(), eventId: text("event_id").notNull(), attemptNumber: integer("attempt_number").notNull(), fencingToken: bigint("fencing_token", { mode: "number" }).notNull(), outcome: text("outcome").notNull(), normalizedFailure: text("normalized_failure"), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull() });
+export const outboxDeadLetters = pgTable("outbox_dead_letters", { eventId: text("event_id").primaryKey(), organizationId: text("organization_id"), reason: text("reason").notNull(), replayedBySubjectId: text("replayed_by_subject_id"), replayedAt: timestamp("replayed_at", { withTimezone: true }), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull() });
+export const inboxReceipts = pgTable("inbox_receipts", { id: text("id").primaryKey(), organizationId: text("organization_id"), consumer: text("consumer").notNull(), eventId: text("event_id").notNull(), idempotencyKey: text("idempotency_key").notNull(), processedAt: timestamp("processed_at", { withTimezone: true }).defaultNow().notNull() });
 `
     : "";
   const aiPersistence = plan.needsAi
@@ -1148,7 +1180,7 @@ ${coreTypeImport}
 
 ${sourceOfTruthBlock({ id: "starter.database.schema", keywords: databaseKeywords, what: "Persistence schema, readiness, and repositories for selected capabilities.", why: "Durable state and provider sessions need one explicit persistence owner.", when: "Use for migrations, repositories, idempotency, and operational readiness.", how: databaseOwners, boundaries: "Apps compose this package; core and adapters must not import its driver directly." })}
 export const starterHealth = pgTable("starter_health", { id: text("id").primaryKey() });
-${identityTables}${tenancyTables}${jobTables}${storageTables}${aiTables}
+${identityTables}${tenancyTables}${jobTables}${eventTables}${storageTables}${aiTables}
 export interface DatabaseRuntime {
   readonly checkReadiness: () => Promise<void>;
   readonly close: () => Promise<void>;
@@ -2218,6 +2250,29 @@ test("storage enforces ownership and propagates provider failures", async () => 
             ...(plan.needsWorker
               ? [
                   "CREATE TABLE workflow_runs (idempotency_key text PRIMARY KEY, status text NOT NULL, claim_token text NOT NULL, claim_expires_at timestamptz NOT NULL);",
+                ]
+              : []),
+            ...(plan.needsEvents
+              ? [
+                  "CREATE TABLE outbox_events (id text PRIMARY KEY, organization_id text, type text NOT NULL, schema_version integer NOT NULL CHECK (schema_version > 0), aggregate_type text NOT NULL, aggregate_id text NOT NULL, payload jsonb NOT NULL, destination text NOT NULL, idempotency_key text NOT NULL, status text NOT NULL DEFAULT 'available' CHECK (status IN ('available', 'processing', 'delivered', 'dead_letter')), available_at timestamptz NOT NULL DEFAULT now(), attempt_count integer NOT NULL DEFAULT 0 CHECK (attempt_count >= 0), lease_owner text, lease_expires_at timestamptz, fencing_token bigint NOT NULL DEFAULT 0, correlation_id text NOT NULL, causation_id text, occurred_at timestamptz NOT NULL, last_failure text, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE (destination, idempotency_key));",
+                  "CREATE INDEX outbox_events_claim_idx ON outbox_events (status, available_at, lease_expires_at);",
+                  "CREATE TABLE outbox_delivery_attempts (id text PRIMARY KEY, event_id text NOT NULL REFERENCES outbox_events(id) ON DELETE CASCADE, attempt_number integer NOT NULL CHECK (attempt_number > 0), fencing_token bigint NOT NULL, outcome text NOT NULL CHECK (outcome IN ('delivered', 'retry', 'dead_letter')), normalized_failure text, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE (event_id, attempt_number));",
+                  "CREATE TABLE outbox_dead_letters (event_id text PRIMARY KEY REFERENCES outbox_events(id) ON DELETE CASCADE, organization_id text, reason text NOT NULL, replayed_by_subject_id text, replayed_at timestamptz, created_at timestamptz NOT NULL DEFAULT now());",
+                  "CREATE TABLE inbox_receipts (id text PRIMARY KEY, organization_id text, consumer text NOT NULL, event_id text NOT NULL, idempotency_key text NOT NULL, processed_at timestamptz NOT NULL DEFAULT now(), UNIQUE (consumer, event_id), UNIQUE (consumer, idempotency_key));",
+                  ...(plan.needsTenancy
+                    ? [
+                        "ALTER TABLE outbox_events ADD CONSTRAINT outbox_events_organization_fk FOREIGN KEY (organization_id) REFERENCES organizations(id);",
+                        "ALTER TABLE outbox_dead_letters ADD CONSTRAINT outbox_dead_letters_organization_fk FOREIGN KEY (organization_id) REFERENCES organizations(id);",
+                        "ALTER TABLE inbox_receipts ADD CONSTRAINT inbox_receipts_organization_fk FOREIGN KEY (organization_id) REFERENCES organizations(id);",
+                        ...["outbox_events", "outbox_dead_letters", "inbox_receipts"].flatMap(
+                          (table) => [
+                            `ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;`,
+                            `ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;`,
+                            `CREATE POLICY ${table}_tenant_isolation ON ${table} USING (organization_id IS NULL OR organization_id = app_current_organization_id()) WITH CHECK (organization_id IS NULL OR organization_id = app_current_organization_id());`,
+                          ],
+                        ),
+                      ]
+                    : []),
                 ]
               : []),
             ...(plan.needsStorage
