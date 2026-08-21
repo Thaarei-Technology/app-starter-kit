@@ -75,6 +75,7 @@ interface CapabilityPlan {
   readonly needsWorker: boolean;
   readonly needsExternalApi: boolean;
   readonly needsIdentity: boolean;
+  readonly needsTenancy: boolean;
   readonly needsAi: boolean;
   readonly needsStorage: boolean;
   readonly needsAdapters: boolean;
@@ -98,6 +99,7 @@ function createCapabilityPlan(config: InitConfig): CapabilityPlan {
   const has = (profile: Profile): boolean =>
     selected.has(profile === "durable-ai" ? "agentic-ai" : profile);
   const needsIdentity = has("identity");
+  const needsTenancy = has("tenancy");
   const needsAi = has("ai");
   const needsStorage = has("storage");
   const needsExternalApi = has("external-api");
@@ -157,6 +159,7 @@ function createCapabilityPlan(config: InitConfig): CapabilityPlan {
     needsWorker,
     needsExternalApi,
     needsIdentity,
+    needsTenancy,
     needsAi,
     needsStorage,
     needsAdapters: needsIdentity || needsAi || needsStorage,
@@ -990,11 +993,18 @@ export const authVerification = pgTable("verification", {
 }, (table) => [index("verification_identifier_idx").on(table.identifier)]);
 export const authSchema = { user: authUser, session: authSession, account: authAccount, verification: authVerification };
 export const applicationUsers = pgTable("application_users", { id: text("id").primaryKey(), authenticationSubjectId: text("authentication_subject_id").notNull().unique() });
-export const organizations = pgTable("organizations", { id: text("id").primaryKey(), name: text("name").notNull() });
-export const memberships = pgTable("memberships", { id: text("id").primaryKey(), userId: text("user_id").notNull(), organizationId: text("organization_id").notNull(), role: text("role").notNull() });
-export const permissions = pgTable("permissions", { id: text("id").primaryKey(), membershipId: text("membership_id").notNull(), permission: text("permission").notNull() });
-export const invitations = pgTable("invitations", { id: text("id").primaryKey(), organizationId: text("organization_id").notNull(), email: text("email").notNull() });
-export const auditEvents = pgTable("audit_events", { id: text("id").primaryKey(), subjectId: text("subject_id").notNull(), action: text("action").notNull() });
+`
+    : "";
+  const tenancyTables = plan.needsTenancy
+    ? `
+export const organizations = pgTable("organizations", { id: text("id").primaryKey(), name: text("name").notNull(), createdBySubjectId: text("created_by_subject_id").notNull() });
+export const memberships = pgTable("memberships", { id: text("id").primaryKey(), userId: text("user_id").notNull(), organizationId: text("organization_id").notNull(), status: text("status").notNull() });
+export const governanceRoleAssignments = pgTable("governance_role_assignments", { id: text("id").primaryKey(), membershipId: text("membership_id").notNull(), organizationId: text("organization_id").notNull(), role: text("role").notNull() });
+export const productRoleAssignments = pgTable("product_role_assignments", { id: text("id").primaryKey(), membershipId: text("membership_id").notNull(), organizationId: text("organization_id").notNull(), role: text("role").notNull() });
+export const permissionDefinitions = pgTable("permission_definitions", { id: text("id").primaryKey(), permission: text("permission").notNull().unique() });
+export const permissionGrants = pgTable("permission_grants", { id: text("id").primaryKey(), membershipId: text("membership_id").notNull(), organizationId: text("organization_id").notNull(), permissionId: text("permission_id").notNull() });
+export const invitations = pgTable("invitations", { id: text("id").primaryKey(), organizationId: text("organization_id").notNull(), email: text("email").notNull(), tokenHash: text("token_hash").notNull().unique(), status: text("status").notNull(), expiresAt: timestamp("expires_at", { withTimezone: true }).notNull() });
+export const authorizationAuditEvents = pgTable("authorization_audit_events", { id: text("id").primaryKey(), organizationId: text("organization_id").notNull(), actorSubjectId: text("actor_subject_id").notNull(), action: text("action").notNull(), outcome: text("outcome").notNull(), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull() });
 `
     : "";
   const aiTables = plan.needsAi
@@ -1138,7 +1148,7 @@ ${coreTypeImport}
 
 ${sourceOfTruthBlock({ id: "starter.database.schema", keywords: databaseKeywords, what: "Persistence schema, readiness, and repositories for selected capabilities.", why: "Durable state and provider sessions need one explicit persistence owner.", when: "Use for migrations, repositories, idempotency, and operational readiness.", how: databaseOwners, boundaries: "Apps compose this package; core and adapters must not import its driver directly." })}
 export const starterHealth = pgTable("starter_health", { id: text("id").primaryKey() });
-${identityTables}${jobTables}${storageTables}${aiTables}
+${identityTables}${tenancyTables}${jobTables}${storageTables}${aiTables}
 export interface DatabaseRuntime {
   readonly checkReadiness: () => Promise<void>;
   readonly close: () => Promise<void>;
@@ -2172,11 +2182,37 @@ test("storage enforces ownership and propagates provider failures", async () => 
                   'CREATE TABLE "verification" (id text PRIMARY KEY, identifier text NOT NULL, value text NOT NULL, expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());',
                   'CREATE INDEX verification_identifier_idx ON "verification" (identifier);',
                   "CREATE TABLE application_users (id text PRIMARY KEY, authentication_subject_id text NOT NULL UNIQUE);",
-                  "CREATE TABLE organizations (id text PRIMARY KEY, name text NOT NULL);",
-                  "CREATE TABLE memberships (id text PRIMARY KEY, user_id text NOT NULL, organization_id text NOT NULL, role text NOT NULL);",
-                  "CREATE TABLE permissions (id text PRIMARY KEY, membership_id text NOT NULL, permission text NOT NULL);",
-                  "CREATE TABLE invitations (id text PRIMARY KEY, organization_id text NOT NULL, email text NOT NULL);",
-                  "CREATE TABLE audit_events (id text PRIMARY KEY, subject_id text NOT NULL, action text NOT NULL);",
+                ]
+              : []),
+            ...(plan.needsTenancy
+              ? [
+                  "CREATE TABLE organizations (id text PRIMARY KEY, name text NOT NULL, created_by_subject_id text NOT NULL REFERENCES application_users(id), created_at timestamptz NOT NULL DEFAULT now());",
+                  "CREATE TABLE memberships (id text PRIMARY KEY, user_id text NOT NULL REFERENCES application_users(id), organization_id text NOT NULL REFERENCES organizations(id), status text NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')), created_at timestamptz NOT NULL DEFAULT now(), UNIQUE (organization_id, user_id), UNIQUE (id, organization_id));",
+                  "CREATE TABLE governance_role_assignments (id text PRIMARY KEY, membership_id text NOT NULL UNIQUE REFERENCES memberships(id) ON DELETE CASCADE, organization_id text NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, role text NOT NULL CHECK (role IN ('owner', 'admin', 'member')), granted_by_subject_id text NOT NULL REFERENCES application_users(id), created_at timestamptz NOT NULL DEFAULT now(), FOREIGN KEY (membership_id, organization_id) REFERENCES memberships(id, organization_id));",
+                  "CREATE TABLE product_role_assignments (id text PRIMARY KEY, membership_id text NOT NULL REFERENCES memberships(id) ON DELETE CASCADE, organization_id text NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, role text NOT NULL, granted_by_subject_id text NOT NULL REFERENCES application_users(id), created_at timestamptz NOT NULL DEFAULT now(), UNIQUE (membership_id, role), FOREIGN KEY (membership_id, organization_id) REFERENCES memberships(id, organization_id));",
+                  "CREATE TABLE permission_definitions (id text PRIMARY KEY, permission text NOT NULL UNIQUE);",
+                  "CREATE TABLE permission_grants (id text PRIMARY KEY, membership_id text NOT NULL REFERENCES memberships(id) ON DELETE CASCADE, organization_id text NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, permission_id text NOT NULL REFERENCES permission_definitions(id), granted_by_subject_id text NOT NULL REFERENCES application_users(id), created_at timestamptz NOT NULL DEFAULT now(), UNIQUE (membership_id, permission_id), FOREIGN KEY (membership_id, organization_id) REFERENCES memberships(id, organization_id));",
+                  "CREATE TABLE invitations (id text PRIMARY KEY, organization_id text NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, email text NOT NULL, token_hash text NOT NULL UNIQUE, governance_role text NOT NULL CHECK (governance_role IN ('owner', 'admin', 'member')), product_roles text[] NOT NULL DEFAULT '{}', status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'revoked', 'expired')), expires_at timestamptz NOT NULL, accepted_at timestamptz, revoked_at timestamptz, invited_by_subject_id text NOT NULL REFERENCES application_users(id), created_at timestamptz NOT NULL DEFAULT now(), CHECK ((status = 'accepted') = (accepted_at IS NOT NULL)), CHECK ((status = 'revoked') = (revoked_at IS NOT NULL)));",
+                  "CREATE TABLE authorization_audit_events (id text PRIMARY KEY, organization_id text NOT NULL REFERENCES organizations(id), actor_subject_id text NOT NULL REFERENCES application_users(id), action text NOT NULL, resource_type text NOT NULL, resource_id text, outcome text NOT NULL CHECK (outcome IN ('allowed', 'denied')), correlation_id text NOT NULL, created_at timestamptz NOT NULL DEFAULT now());",
+                  "CREATE OR REPLACE FUNCTION app_current_organization_id() RETURNS text LANGUAGE sql STABLE AS $$ SELECT NULLIF(current_setting('app.organization_id', true), '') $$;",
+                  "CREATE OR REPLACE FUNCTION app_current_subject_id() RETURNS text LANGUAGE sql STABLE AS $$ SELECT NULLIF(current_setting('app.subject_id', true), '') $$;",
+                  "CREATE OR REPLACE FUNCTION protect_last_organization_owner() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.role = 'owner' AND (TG_OP = 'DELETE' OR NEW.role <> 'owner') AND NOT EXISTS (SELECT 1 FROM governance_role_assignments role_assignment JOIN memberships membership ON membership.id = role_assignment.membership_id WHERE role_assignment.organization_id = OLD.organization_id AND role_assignment.membership_id <> OLD.membership_id AND role_assignment.role = 'owner' AND membership.status = 'active') THEN RAISE EXCEPTION 'organization must retain an active owner'; END IF; RETURN CASE WHEN TG_OP = 'DELETE' THEN OLD ELSE NEW END; END $$;",
+                  "CREATE TRIGGER governance_role_last_owner BEFORE UPDATE OR DELETE ON governance_role_assignments FOR EACH ROW EXECUTE FUNCTION protect_last_organization_owner();",
+                  "ALTER TABLE organizations ENABLE ROW LEVEL SECURITY;",
+                  "ALTER TABLE organizations FORCE ROW LEVEL SECURITY;",
+                  "CREATE POLICY organizations_tenant_isolation ON organizations USING (id = app_current_organization_id()) WITH CHECK (id = app_current_organization_id());",
+                  ...[
+                    "memberships",
+                    "governance_role_assignments",
+                    "product_role_assignments",
+                    "permission_grants",
+                    "invitations",
+                    "authorization_audit_events",
+                  ].flatMap((table) => [
+                    `ALTER TABLE ${table} ENABLE ROW LEVEL SECURITY;`,
+                    `ALTER TABLE ${table} FORCE ROW LEVEL SECURITY;`,
+                    `CREATE POLICY ${table}_tenant_isolation ON ${table} USING (organization_id = app_current_organization_id()) WITH CHECK (organization_id = app_current_organization_id());`,
+                  ]),
                 ]
               : []),
             ...(plan.needsWorker

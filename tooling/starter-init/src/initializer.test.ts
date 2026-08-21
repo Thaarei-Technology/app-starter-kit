@@ -600,6 +600,33 @@ describe("starter profile validation", () => {
     }
   });
 
+  test("keeps tenancy artifacts optional and generates fail-closed RLS when selected", () => {
+    const identity = generateProject(config(["api", "data", "identity"]));
+    const tenant = generateProject(config(["api", "data", "identity", "tenancy"]));
+    const identityMigration =
+      identity.files.find((file) => file.path === "packages/database/migrations/0000_starter.sql")
+        ?.content ?? "";
+    const tenantMigration =
+      tenant.files.find((file) => file.path === "packages/database/migrations/0000_starter.sql")
+        ?.content ?? "";
+    expect(identityMigration).not.toContain("CREATE TABLE organizations");
+    for (const owner of [
+      "organizations",
+      "memberships",
+      "governance_role_assignments",
+      "product_role_assignments",
+      "permission_definitions",
+      "permission_grants",
+      "invitations",
+      "authorization_audit_events",
+    ]) {
+      expect(tenantMigration).toContain(`CREATE TABLE ${owner}`);
+    }
+    expect(tenantMigration).toContain("FORCE ROW LEVEL SECURITY");
+    expect(tenantMigration).toContain("app_current_organization_id()");
+    expect(tenantMigration).toContain("protect_last_organization_owner");
+  });
+
   test.each([
     ["identity", "identity requires api and data profiles"],
     ["jobs", "jobs requires data"],
@@ -607,6 +634,7 @@ describe("starter profile validation", () => {
     ["ai", "ai requires api, data, and identity"],
     ["storage", "storage requires api, data, and identity"],
     ["durable-ai", "durable-ai requires ai and jobs"],
+    ["tenancy", "tenancy requires identity, api, and data"],
   ])("rejects invalid %s combinations", (profile, message) => {
     expect(() => validateInitOptions(options(profile))).toThrow(message);
   });

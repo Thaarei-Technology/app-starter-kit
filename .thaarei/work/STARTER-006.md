@@ -52,6 +52,9 @@ or native mobile build.
 - [x] Focused formatting, type, test, boundary, and release checks pass.
 - [x] Generated core packages expose actor/public contexts, authorization port,
   and normalized error taxonomy for composition-only transports.
+- [x] Tenancy selection generates bounded organization schema, governance and
+  product roles, permissions, invitations, audit records, forced PostgreSQL RLS,
+  cross-organization foreign keys, and last-owner database protection.
 - [ ] Complete the remaining tenancy, outbox, AI, platform, acceptance, and
   operational phases described in the complete plan.
 
@@ -343,6 +346,8 @@ initializer sources.
 | `pnpm test && pnpm check:fixtures` after core boundary generation | failed (repaired) | Governance initially rejected interface ownership, then the mobile fixture proved `expo-secure-store@57.0.2` was unpublished; catalog corrected to `57.0.1` |
 | `pnpm release:check && pnpm test && pnpm check:fixtures` | failed (repaired) | Mobile fixture proved `expo-notifications@57.0.15` was unpublished; registry verification established published pins: Expo/router `57.0.15`, notifications `57.0.13`, SecureStore `57.0.1` |
 | `pnpm release:check && pnpm test && pnpm check:fixtures` after repairs | passed | 64 source tests; all nine generated fixtures passed, including mobile, durable AI, Railway, Python, PostgreSQL, and MinIO runtime paths |
+| `pnpm typecheck && pnpm test` after tenancy generation | passed | 66 source tests across 3 files |
+| `pnpm check:fixtures` with tenancy in all-server fixture | passed | All nine fixtures passed; the all-server migration and runtime proof included tenancy schema with PostgreSQL and MinIO |
 
 The catalog correction aligns generated Expo package pins with the source
 release catalog (`57.0.15`, `57.0.13`, `57.0.15`, and `57.0.1` respectively)
