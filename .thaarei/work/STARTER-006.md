@@ -50,6 +50,8 @@ or native mobile build.
 - [x] Generated Compose and release metadata consume the shared image catalog.
 - [x] Source release metadata records the V2 local-service image provenance.
 - [x] Focused formatting, type, test, boundary, and release checks pass.
+- [x] Generated core packages expose actor/public contexts, authorization port,
+  and normalized error taxonomy for composition-only transports.
 - [ ] Complete the remaining tenancy, outbox, AI, platform, acceptance, and
   operational phases described in the complete plan.
 
@@ -299,9 +301,14 @@ initializer sources.
 - `tooling/starter-init/src/validation.ts`: validates V2 profiles and provider
   option ownership before generation.
 - `tooling/starter-init/src/initializer.test.ts`: profile, provider, canonical
-  alias, and release-provenance regression coverage.
+  alias, release-provenance, and core-boundary regression coverage.
 - `tooling/starter-init/src/validate-fixtures.ts`: fixture matrix updates for
   the V2 capability graph.
+- `tooling/governance/src/source-of-truth.ts`: recognizes exported interfaces
+  and type aliases as architectural owners for port and policy contracts.
+- `tooling/governance/tests/governance.test.ts`: interface-owner regression
+  coverage.
+- `pnpm-workspace.yaml`: published Expo SDK 57 catalog pins.
 - `starter-release.json`: cataloged pgvector, MinIO, Valkey, Mailpit, and
   OpenTelemetry images, all with tag and digest provenance.
 - `IMPLEMENTATION.md`: generated only by `pnpm implementation:sync`.
@@ -332,9 +339,13 @@ initializer sources.
 | `pnpm implementation:sync && pnpm validate:starter` | failed (repaired) | Biome found an unused generator import after catalog centralization |
 | `pnpm implementation:sync && pnpm validate:starter` | passed | Release, governance, formatting, lint, typecheck, 61 source tests, and generated fixture validation completed |
 | `pnpm audit --prod --audit-level high` | passed | No known production vulnerabilities found |
+| `pnpm typecheck && pnpm test` after core boundary generation | passed | 62 tests across 3 files |
+| `pnpm test && pnpm check:fixtures` after core boundary generation | failed (repaired) | Governance initially rejected interface ownership, then the mobile fixture proved `expo-secure-store@57.0.2` was unpublished; catalog corrected to `57.0.1` |
+| `pnpm release:check && pnpm test && pnpm check:fixtures` | failed (repaired) | Mobile fixture proved `expo-notifications@57.0.15` was unpublished; registry verification established published pins: Expo/router `57.0.15`, notifications `57.0.13`, SecureStore `57.0.1` |
+| `pnpm release:check && pnpm test && pnpm check:fixtures` after repairs | passed | 64 source tests; all nine generated fixtures passed, including mobile, durable AI, Railway, Python, PostgreSQL, and MinIO runtime paths |
 
 The catalog correction aligns generated Expo package pins with the source
-release catalog (`57.0.17`, `57.0.15`, `57.0.17`, and `57.0.2` respectively)
+release catalog (`57.0.15`, `57.0.13`, `57.0.15`, and `57.0.1` respectively)
 and makes generated PostgreSQL/pgvector, MinIO, Valkey, Mailpit, and collector
 references consume the same image owner. This is local generator evidence only;
 no image pull, provider call, or live deployment was performed.
@@ -351,6 +362,8 @@ no image pull, provider call, or live deployment was performed.
 - Record any new dependency, provider exception, release waiver, or profile
   conflict here before changing its owner.
 - No production dependency or provider SDK was added in this increment.
+- Core error mapping remains a transport concern; this increment defines only
+  the provider-neutral core error types and authorization invocation port.
 
 ## Blockers and unresolved decisions
 

@@ -36,6 +36,17 @@ test("source-of-truth accepts a complete architectural owner", async () => {
   assert.equal(result.records.length, 1);
 });
 
+test("source-of-truth accepts exported interface owners", async () => {
+  const root = await temporaryRoot();
+  await writeFile(
+    join(root, "policy.ts"),
+    `${metadata("owner.policy", "authorization", "AuthorizationService.authorize")}\nexport interface AuthorizationService {\n  authorize(): Promise<boolean>;\n}\n`,
+  );
+  const result = await checkSourceOfTruth(root);
+  assert.equal(result.ok, true);
+  assert.equal(result.records[0]?.owner, "AuthorizationService");
+});
+
 test("source-of-truth rejects missing fields and stale HOW symbols", async () => {
   const root = await temporaryRoot();
   await writeFile(

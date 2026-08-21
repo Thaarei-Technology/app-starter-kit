@@ -64,9 +64,9 @@ const IGNORED_DIRECTORIES = new Set([
 ]);
 
 const ARCHITECTURAL_DECLARATION =
-  /\bexport\s+(?:(?:default|abstract)\s+)?(?:async\s+)?(?:class|function|const|let)\s+([A-Za-z_$][\w$]*)/g;
+  /\bexport\s+(?:(?:default|abstract)\s+)?(?:async\s+)?(?:class|function|const|let|interface|type)\s+([A-Za-z_$][\w$]*)/g;
 const FIRST_ARCHITECTURAL_DECLARATION =
-  /^\s*export\s+(?:(?:default|abstract)\s+)?(?:async\s+)?(?:class|function|const|let)\s+[A-Za-z_$][\w$]*/u;
+  /^\s*export\s+(?:(?:default|abstract)\s+)?(?:async\s+)?(?:class|function|const|let|interface|type)\s+[A-Za-z_$][\w$]*/u;
 
 const collectFiles = async (root: string): Promise<readonly string[]> => {
   const files: string[] = [];
@@ -195,7 +195,9 @@ const isGenericDumpingGround = (owner: ArchitecturalOwner): boolean => {
 
 const declaredNames = (source: string): ReadonlySet<string> => {
   const names = new Set<string>();
-  for (const match of source.matchAll(/\b(?:class|function|const|let|var)\s+([A-Za-z_$][\w$]*)/g)) {
+  for (const match of source.matchAll(
+    /\b(?:class|function|const|let|var|interface|type)\s+([A-Za-z_$][\w$]*)/g,
+  )) {
     const name = match[1];
     if (name !== undefined) names.add(name);
   }

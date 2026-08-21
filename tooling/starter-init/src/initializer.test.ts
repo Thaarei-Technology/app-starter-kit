@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { IMAGE_CATALOG, resolveCapabilities } from "./capabilities.js";
+import { DEPENDENCY_VERSIONS, IMAGE_CATALOG, resolveCapabilities } from "./capabilities.js";
 import {
   generateProject,
   type InitConfig,
@@ -568,6 +568,36 @@ describe("starter profile validation", () => {
     );
     expect(compose).toContain(`${IMAGE_CATALOG.minio.reference}@${IMAGE_CATALOG.minio.digest}`);
     expect(JSON.stringify(release)).toContain(IMAGE_CATALOG.minio.digest);
+  });
+
+  test("uses published Expo package pins from the shared dependency catalog", () => {
+    const mobile = generatedJson(
+      generateProject(config(["mobile"], true)),
+      "apps/mobile/package.json",
+    );
+    expect(jsonRecord(mobile, "mobile package").dependencies).toMatchObject({
+      expo: DEPENDENCY_VERSIONS.expo,
+      "expo-notifications": DEPENDENCY_VERSIONS.notifications,
+      "expo-router": DEPENDENCY_VERSIONS.expoRouter,
+      "expo-secure-store": DEPENDENCY_VERSIONS.secureStore,
+    });
+  });
+
+  test("generates provider-neutral core invocation and authorization boundaries", () => {
+    const generated = generateProject(config(["api", "data", "identity", "jobs"]));
+    const core =
+      generated.files.find((file) => file.path === "packages/core/src/index.ts")?.content ?? "";
+    expect(core).toContain("export interface ActorContext");
+    expect(core).toContain("export interface PublicContext");
+    expect(core).toContain("export interface AuthorizationService");
+    for (const error of [
+      "UnauthenticatedError",
+      "ForbiddenError",
+      "ResourceNotFoundError",
+      "RetryableWorkflowError",
+    ]) {
+      expect(core).toContain(`export class ${error}`);
+    }
   });
 
   test.each([

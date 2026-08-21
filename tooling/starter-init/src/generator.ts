@@ -678,6 +678,49 @@ export type JobPayload = z.infer<typeof jobPayloadSchema>;
 }
 
 function corePackageFile(plan: CapabilityPlan): GeneratedFile {
+  const applicationBoundary =
+    plan.needsApi || plan.needsWorker
+      ? `export type GovernanceRole = "owner" | "admin" | "member";
+export type Permission = string & { readonly __brand: "Permission" };
+${sourceOfTruthBlock({ id: "starter.core.application-boundary", keywords: "actor-context, authorization, application-service, core-errors", what: "Provider-neutral application invocation context, authorization port, and error taxonomy.", why: "Transports and workers need a shared, authenticated context without deciding domain policy or leaking infrastructure errors.", when: "Every authenticated command or query entering a core application service.", how: "ActorContext", boundaries: "Core defines policy contracts and normalized errors; transports map errors and adapters implement ports." })}
+export interface ActorContext {
+  readonly subjectId: string;
+  readonly organizationId?: string;
+  readonly membershipId?: string;
+  readonly governanceRole?: GovernanceRole;
+  readonly permissions: readonly Permission[];
+  readonly productRoles: readonly string[];
+  readonly correlationId: string;
+  readonly traceId?: string;
+  readonly idempotencyKey?: string;
+}
+export interface PublicContext { readonly correlationId: string; readonly traceId?: string; }
+export interface ResourceDescriptor {
+  readonly type: string;
+  readonly id: string;
+  readonly organizationId?: string;
+  readonly owningSubjectId?: string;
+  readonly owningMembershipId?: string;
+  readonly visibility?: "draft" | "published" | "private" | "public";
+  readonly attributes?: Readonly<Record<string, string | number | boolean>>;
+}
+export interface AuthorizationDecision { readonly allowed: boolean; readonly reason?: string; }
+export interface AuthorizationService {
+  authorize(actor: ActorContext, permission: Permission, resource: ResourceDescriptor): Promise<AuthorizationDecision>;
+}
+export abstract class CoreError extends Error { abstract readonly code: string; }
+export class UnauthenticatedError extends CoreError { readonly code = "UNAUTHENTICATED"; }
+export class ForbiddenError extends CoreError { readonly code = "FORBIDDEN"; }
+export class ResourceNotFoundError extends CoreError { readonly code = "NOT_FOUND"; }
+export class ConflictError extends CoreError { readonly code = "CONFLICT"; }
+export class ValidationError extends CoreError { readonly code = "VALIDATION"; }
+export class RateLimitedError extends CoreError { readonly code = "RATE_LIMITED"; }
+export class BudgetExceededError extends CoreError { readonly code = "BUDGET_EXCEEDED"; }
+export class ProviderUnavailableError extends CoreError { readonly code = "PROVIDER_UNAVAILABLE"; }
+export class RetryableWorkflowError extends CoreError { readonly code = "RETRYABLE_WORKFLOW"; }
+export class PermanentWorkflowError extends CoreError { readonly code = "PERMANENT_WORKFLOW"; }
+`
+      : "";
   const identity = plan.needsIdentity
     ? `export interface AuthenticationSession { readonly subjectId: string; }
 export interface AuthenticationPort { resolveSession(headers: Headers): Promise<AuthenticationSession | null>; }
@@ -827,7 +870,7 @@ export class ToolRegistry {
   ];
   return textFile(
     "packages/core/src/index.ts",
-    `${owners.length === 0 ? 'export const packageId = "core" as const;\n' : ""}${identity}${jobs}${storage}${ai}`,
+    `${owners.length === 0 ? 'export const packageId = "core" as const;\n' : ""}${applicationBoundary}${identity}${jobs}${storage}${ai}`,
   );
 }
 
