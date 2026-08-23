@@ -395,7 +395,7 @@ async function validateGeneratedProject(root: string, mobile: boolean): Promise<
 }
 
 async function proveGeneratedReleaseDrift(root: string): Promise<void> {
-  const path = join(root, "starter-release.json");
+  const path = join(root, "release-manifest.json");
   const original = await readFile(path, "utf8");
   const parsed = JSON.parse(original) as {
     testedPackages: Record<string, string>;
@@ -415,7 +415,7 @@ async function proveGeneratedReleaseDrift(root: string): Promise<void> {
 }
 
 async function proveGeneratedReleaseContract(root: string): Promise<void> {
-  const path = join(root, "starter-release.json");
+  const path = join(root, "release-manifest.json");
   const original = await readFile(path, "utf8");
   const mutations: readonly [string, (release: Record<string, unknown>) => void][] = [
     [
@@ -480,7 +480,9 @@ export async function validateFixtures(): Promise<void> {
       await runInitializer(initializerArguments(fixture, root));
       const [installedAgents, expectedAgents] = await Promise.all([
         readFile(join(root, "AGENTS.md"), "utf8"),
-        readFile(join(sourceRoot, "templates", "AGENTS.md"), "utf8"),
+        readFile(join(sourceRoot, "templates", "AGENTS.md"), "utf8").then((source) =>
+          source.replaceAll("{{PRODUCT_NAMESPACE}}", `.fixture-${fixture.name}`),
+        ),
       ]);
       if (installedAgents !== expectedAgents)
         throw new Error(`${fixture.name} did not receive the canonical AGENTS.md template`);
@@ -491,7 +493,7 @@ export async function validateFixtures(): Promise<void> {
       }
       if (fixture.name === "full-profile-capabilities") {
         const manifest = JSON.parse(
-          await readFile(join(root, ".thaarei", "capability-manifest.json"), "utf8"),
+          await readFile(join(root, `.fixture-${fixture.name}`, "capabilities.json"), "utf8"),
         ) as {
           readonly profiles: readonly string[];
           readonly providers: {
@@ -525,7 +527,7 @@ export async function validateFixtures(): Promise<void> {
             throw new Error(`web-only developer guide listed unselected profile ${unselected}`);
         }
         const marker = JSON.parse(
-          await readFile(join(root, ".thaarei", "starter-init.json"), "utf8"),
+          await readFile(join(root, `.fixture-${fixture.name}`, "project.json"), "utf8"),
         ) as { readonly generatedFiles: readonly string[] };
         for (const forbidden of ["compose.yaml", "packages/database/src/migrate.ts"]) {
           if (marker.generatedFiles.includes(forbidden))

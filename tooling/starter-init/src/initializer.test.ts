@@ -100,7 +100,7 @@ describe("starter profile generation", () => {
         "**/node_modules",
       );
       expect(
-        generated.files.find((file) => file.path === ".github/workflows/starter-validation.yml")
+        generated.files.find((file) => file.path === ".github/workflows/product-validation.yml")
           ?.content,
       ).toContain("pnpm install --frozen-lockfile --ignore-scripts");
       for (const file of generated.files.filter(
@@ -206,18 +206,18 @@ describe("starter profile generation", () => {
         "react-native-unistyles",
       ]),
     );
-    expect(mobile.files.some((file) => file.path === ".thaarei/security-waivers.json")).toBe(true);
-    expect(web.files.some((file) => file.path === ".thaarei/security-waivers.json")).toBe(false);
+    expect(mobile.files.some((file) => file.path === ".product/security-waivers.json")).toBe(true);
+    expect(web.files.some((file) => file.path === ".product/security-waivers.json")).toBe(false);
   });
 
   test("generates database-owned transactional migrations without a custom outbox", () => {
     const generated = generateProject(config(["api", "data", "jobs"]));
     const migration = generated.files.find(
-      (file) => file.path === "packages/database/migrations/0000_starter.sql",
+      (file) => file.path === "packages/database/migrations/0000_product.sql",
     );
     const runner = generated.files.find((file) => file.path === "packages/database/src/migrate.ts");
     expect(runner?.content).toContain('createHash("sha256")');
-    expect(runner?.content).toContain("thaarei_migrations");
+    expect(runner?.content).toContain("product_migrations");
     expect(runner?.content).toMatch(/\.begin\(/u);
     expect(runner?.content).toMatch(/checksum/iu);
     expect(migration?.content).not.toMatch(/^BEGIN;/u);
@@ -232,7 +232,7 @@ describe("starter profile generation", () => {
     const apiManifest = JSON.stringify(generatedJson(generated, "apps/api/package.json"));
     const webManifest = JSON.stringify(generatedJson(generated, "apps/web/package.json"));
     const turbo = JSON.stringify(generatedJson(generated, "turbo.json"));
-    const release = JSON.stringify(generatedJson(generated, "starter-release.json"));
+    const release = JSON.stringify(generatedJson(generated, "release-manifest.json"));
     const readme = generated.files.find((file) => file.path === "README.md")?.content ?? "";
     const guide =
       generated.files.find((file) => file.path === "docs/developer-guide.md")?.content ?? "";
@@ -263,7 +263,7 @@ describe("starter profile generation", () => {
     expect(webManifest).toContain("next dev -p 3000");
     expect(turbo).toContain('"persistent":true');
     expect(compose).toMatch(/127\.0\.0\.1:\$\{POSTGRES_PORT:-5432\}:5432/u);
-    expect(compose).toContain("starter-postgres-data:/var/lib/postgresql");
+    expect(compose).toContain("product-postgres-data:/var/lib/postgresql");
     expect(readme).toContain("pnpm dev");
     for (const profile of ["web", "api", "data", "identity"])
       expect(guide).toContain(`\`${profile}\``);
@@ -387,7 +387,7 @@ describe("starter profile generation", () => {
     expect(compose).toContain("minio/minio:");
     expect(compose).toContain("object-storage-init:");
     expect(environment).toContain("STORAGE_ENDPOINT=http://127.0.0.1:9000");
-    expect(environment).toContain("STORAGE_BUCKET=starter");
+    expect(environment).toContain("STORAGE_BUCKET=product");
     expect(plainCompose).not.toContain("object-storage");
   });
 
@@ -485,7 +485,7 @@ describe("starter profile generation", () => {
       (file) => file.path === "apps/api/src/index.ts",
     )?.content;
     const migration = generated.files.find(
-      (file) => file.path === "packages/database/migrations/0000_starter.sql",
+      (file) => file.path === "packages/database/migrations/0000_product.sql",
     )?.content;
 
     expect(database).toContain('pgTable("session"');
@@ -521,11 +521,9 @@ describe("starter profile generation", () => {
     const outputDir = await mkdtemp(join(tmpdir(), "thaarei-starter-"));
     const generated = generateProject({ ...config(["web"]), outputDir });
     const written = await writeGeneratedProject(generated);
-    expect(written.files).toContain(".thaarei/starter-init.json");
+    expect(written.files).toContain(".product/project.json");
     expect(
-      markerProfiles(
-        JSON.parse(await readFile(join(outputDir, ".thaarei/starter-init.json"), "utf8")),
-      ),
+      markerProfiles(JSON.parse(await readFile(join(outputDir, ".product/project.json"), "utf8"))),
     ).toEqual(["web"]);
     await expect(writeGeneratedProject(generated)).rejects.toThrow("already initialized");
   });
@@ -562,7 +560,7 @@ describe("starter profile validation", () => {
   test("generates image provenance from the shared catalog", () => {
     const generated = generateProject(config(["api", "data", "identity", "storage"]));
     const compose = generated.files.find((file) => file.path === "compose.yaml")?.content ?? "";
-    const release = generatedJson(generated, "starter-release.json");
+    const release = generatedJson(generated, "release-manifest.json");
     expect(compose).toContain(
       `${IMAGE_CATALOG.postgresql.reference}@${IMAGE_CATALOG.postgresql.digest}`,
     );
@@ -604,10 +602,10 @@ describe("starter profile validation", () => {
     const identity = generateProject(config(["api", "data", "identity"]));
     const tenant = generateProject(config(["api", "data", "identity", "tenancy"]));
     const identityMigration =
-      identity.files.find((file) => file.path === "packages/database/migrations/0000_starter.sql")
+      identity.files.find((file) => file.path === "packages/database/migrations/0000_product.sql")
         ?.content ?? "";
     const tenantMigration =
-      tenant.files.find((file) => file.path === "packages/database/migrations/0000_starter.sql")
+      tenant.files.find((file) => file.path === "packages/database/migrations/0000_product.sql")
         ?.content ?? "";
     expect(identityMigration).not.toContain("CREATE TABLE organizations");
     for (const owner of [
@@ -635,10 +633,10 @@ describe("starter profile validation", () => {
     const jobs = generateProject(config(["data", "jobs"]));
     const events = generateProject(config(["data", "jobs", "events"]));
     const jobsMigration =
-      jobs.files.find((file) => file.path === "packages/database/migrations/0000_starter.sql")
+      jobs.files.find((file) => file.path === "packages/database/migrations/0000_product.sql")
         ?.content ?? "";
     const eventMigration =
-      events.files.find((file) => file.path === "packages/database/migrations/0000_starter.sql")
+      events.files.find((file) => file.path === "packages/database/migrations/0000_product.sql")
         ?.content ?? "";
     expect(jobsMigration).not.toContain("outbox_events");
     for (const table of [
@@ -665,7 +663,7 @@ describe("starter profile validation", () => {
     );
     const dependencies = jsonRecord(contracts.dependencies, "contract dependencies");
     expect(dependencies.zod).toBe(DEPENDENCY_VERSIONS.zod);
-    const release = jsonRecord(generatedJson(generated, "starter-release.json"), "release");
+    const release = jsonRecord(generatedJson(generated, "release-manifest.json"), "release");
     const testedPackages = jsonRecord(release.testedPackages, "tested packages");
     expect(testedPackages.zod).toBe(DEPENDENCY_VERSIONS.zod);
   });
@@ -675,7 +673,7 @@ describe("starter profile validation", () => {
     const core =
       generated.files.find((file) => file.path === "packages/core/src/index.ts")?.content ?? "";
     const migration =
-      generated.files.find((file) => file.path === "packages/database/migrations/0000_starter.sql")
+      generated.files.find((file) => file.path === "packages/database/migrations/0000_product.sql")
         ?.content ?? "";
     for (const logicalModel of [
       "chat.fast",
@@ -733,9 +731,9 @@ describe("starter profile validation", () => {
     expect(core).toContain("evaluateFeatureFlag");
     expect(core).toContain("canReadSearchDocument");
     expect(core).toContain("chunkText");
-    const manifest = generatedJson(platform, ".thaarei/capability-manifest.json");
+    const manifest = generatedJson(platform, ".product/capabilities.json");
     expect(JSON.stringify(manifest)).toContain("PAYMENT_WEBHOOK_SECRET");
-    const release = JSON.stringify(generatedJson(platform, "starter-release.json"));
+    const release = JSON.stringify(generatedJson(platform, "release-manifest.json"));
     expect(release).toContain(IMAGE_CATALOG.valkey.digest);
     expect(release).toContain(IMAGE_CATALOG.mailpit.digest);
     expect(release).toContain(IMAGE_CATALOG.otelCollector.digest);

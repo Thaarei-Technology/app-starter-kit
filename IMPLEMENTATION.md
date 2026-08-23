@@ -4,6 +4,13 @@
 
 Canonical records: `.thaarei/work/*.md`.
 
+## STARTER-007: Product-owned generated repository contract
+
+- Status: complete
+- Owner: primary-agent
+- Updated: 2026-08-22
+- Paths: .thaarei/work/STARTER-007.md, docs/, templates/, tooling/governance/, tooling/starter-init/, package.json, starter-release.json, IMPLEMENTATION.md
+
 ## STARTER-006: Starter Kit V2 production hardening
 
 - Status: complete
@@ -31,10 +38,3 @@ Canonical records: `.thaarei/work/*.md`.
 - Owner: primary-agent
 - Updated: 2026-08-19
 - Paths: AGENTS.md, docs/, tooling/, templates/, package.json, pnpm-workspace.yaml, starter-release.json, .github/workflows/, README.md, pnpm-lock.yaml, tsconfig.json, turbo.json, biome.jsonc
-
-## STARTER-002: Validate local containers and PostgreSQL-backed starter scenarios
-
-- Status: complete
-- Owner: primary-agent
-- Updated: 2026-08-19
-- Paths: .thaarei/work/STARTER-002.md, IMPLEMENTATION.md, starter-release.json, tooling/starter-init/src/generator.ts, tooling/starter-init/src/initializer.test.ts

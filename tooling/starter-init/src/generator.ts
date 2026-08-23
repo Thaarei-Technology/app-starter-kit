@@ -48,6 +48,23 @@ export interface WriteResult {
   readonly files: readonly string[];
 }
 
+export interface ProductIdentity {
+  readonly namespace: string;
+  readonly sqlPrefix: string;
+  readonly environmentPrefix: string;
+  readonly workPrefix: string;
+}
+
+export function productIdentity(config: Pick<InitConfig, "productId">): ProductIdentity {
+  const sqlPrefix = config.productId.replaceAll("-", "_");
+  return {
+    namespace: `.${config.productId}`,
+    sqlPrefix,
+    environmentPrefix: sqlPrefix.toUpperCase(),
+    workPrefix: sqlPrefix.toUpperCase(),
+  };
+}
+
 const PACKAGE_VERSION = "0.1.0";
 const NODE_VERSION = "24.19.0";
 const PNPM_VERSION = "11.22.0";
@@ -549,8 +566,8 @@ function externalOpenApiDocument(config: InitConfig): Readonly<Record<string, un
 function generatedReleaseSchema(): Readonly<Record<string, unknown>> {
   return {
     $schema: "https://json-schema.org/draft/2020-12/schema",
-    $id: "https://thaarei.example/schemas/starter-release.schema.json",
-    title: "Thaarei starter release",
+    $id: "https://example.invalid/schemas/release-manifest.schema.json",
+    title: "Product release manifest",
     type: "object",
     additionalProperties: false,
     required: [
@@ -681,13 +698,13 @@ function catalogFromWorkspace(value: string): Readonly<Record<string, string>> {
 
 const errors: string[] = [];
 const root = resolve(process.argv[2] ?? process.cwd());
-const release = await readJson(resolve(root, "starter-release.json"));
-if (!isRecord(release)) errors.push("starter-release.json must be an object");
+const release = await readJson(resolve(root, "release-manifest.json"));
+if (!isRecord(release)) errors.push("release-manifest.json must be an object");
 if (isRecord(release)) {
   for (const key of ["$schema", "schemaVersion", "release", "status", "releasedAt", "runtime", "approvedMajors", "testedPackages", "containerImages", "enabledProfiles", "compatibilityEvidence"]) {
     if (!(key in release)) errors.push(\`starter-release.json is missing \${key}\`);
   }
-  if (release.$schema !== "./tooling/release/starter-release.schema.json") errors.push("starter-release.json must reference the bundled schema");
+  if (release.$schema !== "./tooling/release/release-manifest.schema.json") errors.push("release-manifest.json must reference the bundled schema");
   unknownKeys(release, ["$schema", "schemaVersion", "release", "status", "releasedAt", "runtime", "approvedMajors", "testedPackages", "containerImages", "enabledProfiles", "compatibilityEvidence"], "starter-release.json");
   if (release.schemaVersion !== 1) errors.push("schemaVersion must be 1");
   if (typeof release.release !== "string" || release.release.length === 0) errors.push("release must be a non-empty string");
@@ -741,7 +758,7 @@ for (const [name, version] of Object.entries(catalogFromWorkspace(workspace))) {
   if (tested[name] !== version) errors.push(\`catalog package \${name}@\${version} does not match testedPackages\`);
 }
 if (errors.length > 0) { for (const error of errors) process.stderr.write(\`\${error}\\n\`); process.exitCode = 1; }
-else process.stdout.write("starter release manifest is consistent\\n");
+else process.stdout.write("product release manifest is consistent\\n");
 `,
   );
 }
@@ -2395,10 +2412,11 @@ function localComposeFile(plan: CapabilityPlan): GeneratedFile {
 }
 
 function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
+  const identity = productIdentity(config);
   const releasePackages = plan.testedPackages;
   const files: GeneratedFile[] = [
     jsonFile("package.json", {
-      name: packageName(config, config.clientId),
+      name: packageName(config, config.productId),
       private: true,
       version: PACKAGE_VERSION,
       type: "module",
@@ -2460,7 +2478,7 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
         test: "vitest run --passWithNoTests",
         typecheck: "turbo run typecheck",
         check: `pnpm format:check && pnpm lint && pnpm release:check && pnpm check:source-of-truth && pnpm check:boundaries && pnpm check:implementation${plan.needsDatabase ? " && pnpm check:migrations" : ""}${plan.needsExternalApi ? " && pnpm check:generated" : ""}${hasProfile(config, "python") ? " && pnpm check:python" : ""} && pnpm typecheck && pnpm build && pnpm test`,
-        "validate:starter": "pnpm check",
+        "validate:product": "pnpm check",
       },
       devDependencies: {
         "@biomejs/biome": DEPENDENCY_VERSIONS.biome,
@@ -2504,6 +2522,33 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
       include: ["packages/**/*.ts", "apps/**/*.ts", "apps/**/*.tsx"],
       exclude: ["node_modules", "dist"],
     }),
+    textFile(
+      "vitest.config.ts",
+      `import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { defineConfig } from "vitest/config";
+
+const root = fileURLToPath(new URL(".", import.meta.url));
+const packages = ${JSON.stringify(
+        [
+          "foundation",
+          "core",
+          "contracts",
+          "adapters",
+          "test-support",
+          ...(plan.needsDatabase ? ["database"] : []),
+          ...(plan.needsApi ? ["api"] : []),
+          ...(plan.needsApiClient ? ["api-client"] : []),
+          ...(hasProfile(config, "web") || hasProfile(config, "mobile") ? ["design-tokens"] : []),
+        ].map((name) => [packageName(config, name), name]),
+      )} as const;
+
+export default defineConfig({
+  resolve: { alias: Object.fromEntries(packages.map(([name, directory]) => [name, resolve(root, "packages", directory, "src", "index.ts")])) },
+  test: { include: ["packages/**/tests/**/*.test.ts"], testTimeout: 30_000 },
+});
+`,
+    ),
     jsonFile("turbo.json", {
       $schema: "https://turbo.build/schema.json",
       tasks: {
@@ -2540,11 +2585,11 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
     textFile(".gitignore", "node_modules\ndist\n.next\n.turbo\n.env\n"),
     textFile(
       ".dockerignore",
-      ".git\n.github\n.thaarei\n.turbo\nnode_modules\n**/node_modules\n**/dist\n**/.next\ncoverage\n*.log\n.env\n.env.*\n!.env.example\n",
+      `.git\n.github\n${identity.namespace}\n.turbo\nnode_modules\n**/node_modules\n**/dist\n**/.next\ncoverage\n*.log\n.env\n.env.*\n!.env.example\n`,
     ),
     textFile(
       "README.md",
-      `# ${config.displayName}\n\nPrivate, self-contained Thaarei starter. Selected profiles: ${config.profiles.join(", ") || "base"}.\n\n## Start here\n\nRead docs/developer-guide.md, copy .env.example to .env, then run pnpm install --frozen-lockfile and pnpm dev.${plan.needsDatabase ? " Data-enabled projects also run pnpm db:up and pnpm db:migrate." : ""}\n`,
+      `# ${config.displayName}\n\nPrivate, self-contained ${config.displayName} application. Selected profiles: ${config.profiles.join(", ") || "base"}.\n\n## Start here\n\nRead docs/developer-guide.md, copy .env.example to .env, then run pnpm install --frozen-lockfile and pnpm dev.${plan.needsDatabase ? " Data-enabled projects also run pnpm db:up and pnpm db:migrate." : ""}\n`,
     ),
     developerGuideFile(config, plan),
     environmentReferenceFile(config, plan),
@@ -2558,7 +2603,7 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
         ]
       : []),
     textFile(
-      ".thaarei/work/INIT-001.md",
+      `${identity.namespace}/work/${identity.workPrefix}-INIT-001.md`,
       `---\nworkId: INIT-001\ntitle: ${stringLiteral(`Initialize ${config.displayName}`)}\norigin: starter:init\nstatus: in_progress\nowner: ${stringLiteral(config.technicalOwner)}\ncreatedAt: 2026-08-19\nupdatedAt: 2026-08-19\nsourceOfTruthIds: []\naffectedPaths:\n  - apps/\n  - packages/\n  - deployment/\n---\n\n# Initialize ${config.displayName}\n\n## Objective\n\nValidate the generated repository and record environment-specific evidence.\n\n## Scope\n\nGenerated profiles and the selected deployment adapter.\n\n## Non-goals\n\nLive production deployment without separate approval and evidence.\n\n## Acceptance criteria\n\n- [ ] Local checks pass.\n- [ ] Selected deployment gates have evidence.\n\n## Validation\n\nPending.\n\n## Evidence\n\nGenerated by starter:init with profiles: ${config.profiles.join(", ") || "base"}.\n\n## Decisions\n\nDeployment target: ${config.deployment}.\n\n## Blockers\n\nLive deployment and native mobile gates require their target environments.\n\n## Handoff\n\n${config.technicalOwner} owns technical validation. ${config.operationsOwner} owns operational validation.\n\n## Completion\n\nIncomplete.\n`,
     ),
     textFile(
@@ -2566,10 +2611,10 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
       `<!-- GENERATED FILE. Run \`pnpm implementation:sync\`. Do not edit. -->\n\n# Implementation Dashboard\n\nCanonical records: \`.thaarei/work/*.md\`.\n\n## INIT-001: Initialize ${config.displayName}\n\n- Status: in_progress\n- Owner: ${config.technicalOwner}\n- Updated: 2026-08-19\n- Paths: apps/, packages/, deployment/\n`,
     ),
     textFile(
-      ".github/workflows/starter-validation.yml",
+      ".github/workflows/product-validation.yml",
       `name: Starter validation\n\non:\n  push:\n  pull_request:\n\npermissions:\n  contents: read\n\njobs:\n  validate:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa\n        with:\n          version: ${PNPM_VERSION}\n      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020\n        with:\n          node-version-file: .nvmrc\n          cache: pnpm\n      - run: pnpm install --frozen-lockfile --ignore-scripts\n      - run: pnpm audit --prod --audit-level high${hasProfile(config, "mobile") ? " --ignore GHSA-w3rx-r6r6-pgpr --ignore GHSA-5p2g-fcmc-qvqq" : ""}\n${hasProfile(config, "python") ? "      - run: docker build --file services/python/Dockerfile .\n" : ""}      - run: pnpm validate:starter\n`,
     ),
-    jsonFile(".thaarei/capability-manifest.json", {
+    jsonFile(`${identity.namespace}/capabilities.json`, {
       schemaVersion: 2,
       requestedProfiles: config.profiles,
       profiles: plan.canonicalProfiles,
@@ -2579,8 +2624,8 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
       fixtures: plan.capabilityFixtures,
       localServices: plan.localServices,
     }),
-    jsonFile("starter-release.json", {
-      $schema: "./tooling/release/starter-release.schema.json",
+    jsonFile("release-manifest.json", {
+      $schema: "./tooling/release/release-manifest.schema.json",
       schemaVersion: 1,
       release: `${PACKAGE_VERSION}-dev.1`,
       status: "prerelease",
@@ -2687,11 +2732,11 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
           : []),
       ],
     }),
-    jsonFile("tooling/release/starter-release.schema.json", generatedReleaseSchema()),
+    jsonFile("tooling/release/release-manifest.schema.json", generatedReleaseSchema()),
     generatedReleaseChecker(),
     ...(hasProfile(config, "mobile")
       ? [
-          jsonFile(".thaarei/security-waivers.json", {
+          jsonFile(`${identity.namespace}/security-waivers.json`, {
             schemaVersion: 1,
             waivers: [
               {
@@ -3575,6 +3620,7 @@ ${externalDocument}
 
 function apiFiles(config: InitConfig): GeneratedFile[] {
   const plan = createCapabilityPlan(config);
+  const identity = productIdentity(config);
   const imports = [
     `import { buildApi${plan.needsIdentity ? ", registerAuthenticationRoutes" : ""}${plan.needsExternalApi ? ", registerExternalApi" : ""} } from "${packageName(config, "api")}";`,
     ...(plan.needsAi ? [`import { ToolRegistry } from "${packageName(config, "core")}";`] : []),
@@ -3608,7 +3654,7 @@ function apiFiles(config: InitConfig): GeneratedFile[] {
       ? [
           "  const tools = new ToolRegistry();",
           `  const recordSchema = { parse: (value: unknown) => z.record(z.string(), z.unknown()).parse(value) };
-  tools.register({ name: "starter.echo", risk: "low", requiresApproval: false, maximumCostUsd: 0.001, input: recordSchema, output: recordSchema, authorize: async (_input, subjectId) => subjectId.length > 0, execute: async (input) => input });`,
+  tools.register({ name: "${identity.sqlPrefix}.echo", risk: "low", requiresApproval: false, maximumCostUsd: 0.001, input: recordSchema, output: recordSchema, authorize: async (_input, subjectId) => subjectId.length > 0, execute: async (input) => input });`,
           "  const ai = { toolNames: tools.names(), executeTool: async (name: string, input: unknown, subjectId: string) => tools.execute(name, input, { subjectId, budgetUsd: environment.AI_MAX_TOOL_BUDGET_USD, approvals: database.ai, audit: database.ai, telemetry: database.ai }), recordEvaluation: async (name: string, score: number, subjectId: string) => database.ai.recordEvaluation({ name, score, subjectId }) };",
         ]
       : []),
@@ -3717,6 +3763,7 @@ CMD ["pnpm", "--filter", "${packageName(config, "api-app")}", "start"]
 
 function workerFiles(config: InitConfig): GeneratedFile[] {
   const plan = createCapabilityPlan(config);
+  const identity = productIdentity(config);
   const adaptersPackage = packageName(config, "adapters");
   const contractsPackage = packageName(config, "contracts");
   const corePackage = packageName(config, "core");
@@ -3757,13 +3804,13 @@ export async function startWorker(): Promise<void> {
     connectionString: environment.DATABASE_URL,
     concurrency: environment.WORKER_CONCURRENCY,
     taskList: {
-      "starter.health": async (payload) => {
+      "${identity.sqlPrefix}.health": async (payload) => {
         const parsed = jobPayloadSchema.parse(payload);
         await runIdempotentWorkflow(database.workflow, parsed.requestId, async () => undefined);
       },
 ${
   plan.needsEvents
-    ? `      "starter.outbox.dispatch": async (payload) => {
+    ? `      "${identity.sqlPrefix}.outbox.dispatch": async (payload) => {
         const parsed = z.object({ eventId: z.string().min(1), leaseOwner: z.string().min(1).default("worker") }).parse(payload);
         await runIdempotentWorkflow(database.workflow, \`outbox:\${parsed.eventId}\`, async () => {
           const claim = await database.outbox.claim(parsed.eventId, parsed.leaseOwner, new Date(), 60_000);
@@ -3776,7 +3823,7 @@ ${
 }${
   plan.needsStorage && hasProfile(config, "python")
     ? `
-      "starter.document.extract": async (payload) => {
+      "${identity.sqlPrefix}.document.extract": async (payload) => {
         const parsed = z.object({ documentId: z.string().min(1) }).parse(payload);
         await runIdempotentWorkflow(database.workflow, \`document:\${parsed.documentId}\`, async () => undefined);
       },`
@@ -3784,7 +3831,7 @@ ${
 }${
   plan.needsAi && plan.needsEvents
     ? `
-      "starter.agent.continue": async (payload) => {
+      "${identity.sqlPrefix}.agent.continue": async (payload) => {
         const parsed = z.object({ runId: z.string().min(1) }).parse(payload);
         await runIdempotentWorkflow(database.workflow, \`agent:\${parsed.runId}\`, async () => undefined);
       },`
@@ -3985,7 +4032,7 @@ function webFiles(config: InitConfig): GeneratedFile[] {
       "apps/web/app/page.tsx",
       hasTypedReferenceFlow
         ? `import { ReferenceFlow } from "./reference-flow";\n\nexport default function Page() { return <ReferenceFlow />; }\n`
-        : `export default function Page() {\n  return <main><h1>{${stringLiteral(config.displayName)}}</h1><p>Thaarei web profile</p></main>;\n}\n`,
+        : `export default function Page() {\n  return <main><h1>{${stringLiteral(config.displayName)}}</h1><p>{${stringLiteral(`${config.displayName} web profile`)}}</p></main>;\n}\n`,
     ),
     ...(hasTypedReferenceFlow ? [webReferenceFlow(config)] : []),
     ...(plan.needsApi ? webProxyFiles(plan.needsExternalApi) : []),
@@ -4056,11 +4103,11 @@ function mobileFiles(config: InitConfig): GeneratedFile[] {
   ];
 }
 
-function pythonFiles(): GeneratedFile[] {
+function pythonFiles(config: InitConfig): GeneratedFile[] {
   return [
     textFile(
       "services/python/pyproject.toml",
-      `[project]\nname = "thaarei-python-service"\nversion = "${PACKAGE_VERSION}"\nrequires-python = ">=${PYTHON_VERSION},<3.13"\ndependencies = [\n  "fastapi==0.116.1",\n  "uvicorn==0.35.0",\n  "python-multipart==0.0.20",\n  "pymupdf==1.26.6",\n  "python-docx==1.2.0",\n  "pillow==11.3.0",\n  "pytesseract==0.3.13",\n]\n\n[build-system]\nrequires = ["setuptools>=75"]\nbuild-backend = "setuptools.build_meta"\n`,
+      `[project]\nname = "${config.productId}-python-service"\nversion = "${PACKAGE_VERSION}"\nrequires-python = ">=${PYTHON_VERSION},<3.13"\ndependencies = [\n  "fastapi==0.116.1",\n  "uvicorn==0.35.0",\n  "python-multipart==0.0.20",\n  "pymupdf==1.26.6",\n  "python-docx==1.2.0",\n  "pillow==11.3.0",\n  "pytesseract==0.3.13",\n]\n\n[build-system]\nrequires = ["setuptools>=75"]\nbuild-backend = "setuptools.build_meta"\n`,
     ),
     textFile("services/python/src/__init__.py", ""),
     textFile(
@@ -4369,7 +4416,7 @@ function deploymentFiles(config: InitConfig): GeneratedFile[] {
 }
 
 function generatedMarker(config: InitConfig, files: readonly GeneratedFile[]): GeneratedFile {
-  return jsonFile(".thaarei/starter-init.json", {
+  return jsonFile(`${productIdentity(config).namespace}/project.json`, {
     schemaVersion: 1,
     initializedAt: "deterministic",
     productId: config.productId,
@@ -4388,6 +4435,23 @@ function relativeFilePath(path: string): string {
   if (isAbsolute(normalized) || normalized === ".." || normalized.startsWith(`..${join("", "/")}`))
     throw new Error(`Generated path escapes output directory: ${path}`);
   return normalized;
+}
+
+function productizeGeneratedFile(config: InitConfig, file: GeneratedFile): GeneratedFile {
+  const identity = productIdentity(config);
+  const replace = (value: string): string =>
+    value
+      .replaceAll("OmniDesk", config.displayName)
+      .replaceAll("Thaarei", config.displayName)
+      .replaceAll(".thaarei", identity.namespace)
+      .replaceAll("workId: INIT-001", `workId: ${identity.workPrefix}-INIT-001`)
+      .replaceAll("## INIT-001:", `## ${identity.workPrefix}-INIT-001:`)
+      .replaceAll("starterHealth", `${identity.sqlPrefix}Health`)
+      .replaceAll("starter_health", `${identity.sqlPrefix}_health`)
+      .replaceAll("thaarei", identity.sqlPrefix)
+      .replaceAll("starter", config.productId)
+      .replaceAll("STARTER_FIXTURE", `${identity.environmentPrefix}_FIXTURE`);
+  return { path: replace(file.path), content: replace(file.content) };
 }
 
 function isMissingPath(error: unknown): boolean {
@@ -4411,10 +4475,11 @@ export function generateProject(config: InitConfig): GenerationResult {
   if (plan.needsWorker) files.push(...workerFiles(config));
   if (hasProfile(config, "web")) files.push(...webFiles(config));
   if (hasProfile(config, "mobile")) files.push(...mobileFiles(config));
-  if (hasProfile(config, "python")) files.push(...pythonFiles());
+  if (hasProfile(config, "python")) files.push(...pythonFiles(config));
   files.push(environmentFile(config), ...deploymentFiles(config));
   const unique = new Map<string, GeneratedFile>();
-  for (const file of files) {
+  for (const originalFile of files) {
+    const file = productizeGeneratedFile(config, originalFile);
     const path = relativeFilePath(file.path);
     if (unique.has(path)) throw new Error(`Generator produced duplicate path: ${path}`);
     unique.set(path, { path, content: file.content });
@@ -4422,7 +4487,10 @@ export function generateProject(config: InitConfig): GenerationResult {
   const withoutMarker = [...unique.values()].sort((left, right) =>
     left.path.localeCompare(right.path),
   );
-  unique.set(".thaarei/starter-init.json", generatedMarker(config, withoutMarker));
+  unique.set(
+    `${productIdentity(config).namespace}/project.json`,
+    generatedMarker(config, withoutMarker),
+  );
   const finalFiles = [...unique.values()].sort((left, right) =>
     left.path.localeCompare(right.path),
   );
@@ -4431,7 +4499,7 @@ export function generateProject(config: InitConfig): GenerationResult {
 
 export async function writeGeneratedProject(result: GenerationResult): Promise<WriteResult> {
   const outputDir = resolve(result.config.outputDir);
-  const markerPath = join(outputDir, ".thaarei", "starter-init.json");
+  const markerPath = join(outputDir, productIdentity(result.config).namespace, "project.json");
   try {
     await stat(markerPath);
     throw new Error(`Output directory is already initialized: ${outputDir}`);

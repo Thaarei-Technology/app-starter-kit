@@ -1,7 +1,7 @@
 {
   "$schema": "./tooling/release/starter-release.schema.json",
   "schemaVersion": 1,
-  "release": "0.1.0-dev.1",
+  "release": "0.2.0-dev.1",
   "status": "prerelease",
   "releasedAt": null,
   "runtime": {

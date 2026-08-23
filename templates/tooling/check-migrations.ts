@@ -20,9 +20,11 @@ export async function checkMigrations(root: string): Promise<void> {
     }
   }
   const runner = await readFile(resolve(root, "packages", "database", "src", "migrate.ts"), "utf8");
-  for (const required of ["thaarei_migrations", 'createHash("sha256")', ".begin("]) {
+  for (const required of ['createHash("sha256")', ".begin("]) {
     if (!runner.includes(required)) throw new Error(`Migration runner is missing ${required}`);
   }
+  if (!/CREATE TABLE IF NOT EXISTS [a-z0-9_]+_migrations/u.test(runner))
+    throw new Error("Migration runner is missing a product-scoped migration ledger");
 }
 
 await checkMigrations(process.cwd());

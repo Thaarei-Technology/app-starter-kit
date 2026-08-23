@@ -7,6 +7,7 @@ import {
   type GeneratedFile,
   generateProject,
   type InitConfig,
+  productIdentity,
   readAgentTemplate,
   writeGeneratedProject,
 } from "./generator.js";
@@ -33,6 +34,7 @@ const VALUE_FLAGS = new Set([
   "email-provider",
   "cache-provider",
   "observability-exporters",
+  "dry-run",
 ]);
 const execFileAsync = promisify(execFile);
 const sourceRoot = resolve(import.meta.dirname, "../../..");
@@ -56,6 +58,7 @@ Usage:
 Profiles: web,mobile,api,data,identity,jobs,events,ai,agentic-ai,durable-ai,external-api,storage,python,tenancy,payments,notifications,cache,rate-limit,search,rag,observability,feature-flags
 Provider options: --payment-providers stripe,razorpay --ai-providers openai,anthropic --email-provider resend --cache-provider valkey --observability-exporters otlp,sentry
 Mobile-only options: --mobile-scheme --ios-bundle-id --android-application-id
+Preview option: --dry-run
 Output defaults to .thaarei/generated/<client-id>.
 Test/automation options: --output <directory> --agent-template <path>
 `;
@@ -72,6 +75,10 @@ export function parseArguments(argv: readonly string[]): ReadonlyMap<string, str
       throw new InitValidationError(`Unexpected argument: ${argument ?? ""}`);
     const name = argument.slice(2);
     if (!VALUE_FLAGS.has(name)) throw new InitValidationError(`Unknown option: --${name}`);
+    if (name === "dry-run") {
+      options.set(name, "true");
+      continue;
+    }
     const value = argv[index + 1];
     if (!value || value.startsWith("--"))
       throw new InitValidationError(`Missing value for --${name}`);
@@ -87,9 +94,16 @@ async function addAgentTemplate(
   config: InitConfig,
   files: readonly GeneratedFile[],
 ): Promise<readonly GeneratedFile[]> {
-  const agentFile = await readAgentTemplate(
+  const agentTemplate = await readAgentTemplate(
     config.agentTemplate ?? resolve(sourceRoot, "templates", "AGENTS.md"),
   );
+  const agentFile = {
+    ...agentTemplate,
+    content: agentTemplate.content.replaceAll(
+      "{{PRODUCT_NAMESPACE}}",
+      productIdentity(config).namespace,
+    ),
+  };
   if (files.some((file) => file.path === agentFile.path))
     throw new InitValidationError("Agent template would overwrite a generated AGENTS.md");
   const bundledPaths = BUNDLED_GOVERNANCE_FILES.filter((path) => {
@@ -102,7 +116,10 @@ async function addAgentTemplate(
     bundledPaths.map(
       async (path): Promise<GeneratedFile> => ({
         path: path.startsWith("templates/") ? path.slice("templates/".length) : path,
-        content: await readFile(resolve(sourceRoot, path), "utf8"),
+        content: (await readFile(resolve(sourceRoot, path), "utf8")).replaceAll(
+          ".thaarei",
+          productIdentity(config).namespace,
+        ),
       }),
     ),
   );
@@ -120,11 +137,11 @@ function refreshMarker(
     "pnpm-lock.yaml",
     ...(config.profiles.includes("external-api") ? ["packages/api-client/src/generated/"] : []),
   ]
-    .filter((path) => path !== ".thaarei/starter-init.json")
+    .filter((path) => path !== `${productIdentity(config).namespace}/project.json`)
     .sort();
   const normalizedProfiles = canonicalizeProfiles(config.profiles).profiles;
   const marker: GeneratedFile = {
-    path: ".thaarei/starter-init.json",
+    path: `${productIdentity(config).namespace}/project.json`,
     content: `${JSON.stringify({ schemaVersion: 2, initializedAt: "deterministic", productId: config.productId, clientId: config.clientId, displayName: config.displayName, packageScope: config.packageScope, profiles: normalizedProfiles, deprecatedAliases: canonicalizeProfiles(config.profiles).deprecatedAliases, providers: config.providers, deployment: config.deployment, owners: { technical: config.technicalOwner, operations: config.operationsOwner }, generatedFiles }, null, 2)}\n`,
   };
   return [...files.filter((file) => file.path !== marker.path), marker].sort((left, right) =>
@@ -136,6 +153,14 @@ export async function runInitializer(argv: readonly string[]): Promise<string> {
   const options = parseArguments(argv);
   if (options.has("help")) return HELP;
   const config = validateInitOptions(options);
+  if (options.has("dry-run")) {
+    const generated = generateProject(config);
+    return JSON.stringify(
+      { product: config.displayName, files: generated.files.map((file) => file.path) },
+      null,
+      2,
+    );
+  }
   if (config.profiles.includes("durable-ai"))
     process.stderr.write(
       "starter:init: --profiles durable-ai is deprecated; use agentic-ai in V2.\n",

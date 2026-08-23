@@ -1,6 +1,6 @@
 {
   "name": "thaarei-starter-source",
-  "version": "0.1.0-dev.1",
+  "version": "0.2.0-dev.1",
   "private": true,
   "description": "Source template and validation tooling for independent Thaarei client repositories.",
   "type": "module",

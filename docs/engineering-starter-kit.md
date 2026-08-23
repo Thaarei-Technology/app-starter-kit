@@ -141,8 +141,8 @@ duplicate ownership and generic catch-all owners.
 
 ## Work tracking and initialization
 
-Store the canonical plan, evidence, validation results, and blockers in
-`.thaarei/work/<work-id>.md`. Generate the bounded root
+Store the canonical plan, evidence, validation results, and blockers in the
+generated product namespace, `.<product-id>/work/<work-id>.md`. Generate the bounded root
 `IMPLEMENTATION.md` with `pnpm implementation:sync`. Never edit that generated
 file by hand.
 
@@ -182,7 +182,8 @@ services to separate services. See the [Railway Compose guide](https://docs.rail
 and [monorepo deployment guide](https://docs.railway.com/deployments/monorepo).
 
 Record approved majors, exact tested versions, image digests, enabled profiles,
-and compatibility evidence in `starter-release.json`. Commit
+and product release gates in generated `release-manifest.json`. The starter source keeps
+its own `starter-release.json`. Commit
 `pnpm-lock.yaml`, pin the Node LTS patch, set the `packageManager` field, and
 use frozen-lockfile installs in CI. Change versions only through a starter
 release that reruns the compatibility matrix. Keep [Node's release policy](https://nodejs.org/en/about/previous-releases)
