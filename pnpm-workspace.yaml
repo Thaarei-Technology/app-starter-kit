@@ -23,17 +23,17 @@ catalog:
   ai: 7.0.68
   better-auth: 1.7.1
   drizzle-orm: 0.45.2
-  expo: 57.0.15
-  expo-notifications: 57.0.13
-  expo-router: 57.0.15
-  expo-secure-store: 57.0.1
+  expo: 57.0.18
+  expo-notifications: 57.0.15
+  expo-router: 57.0.17
+  expo-secure-store: 57.0.2
   fastify: 5.12.1
   graphile-worker: 0.17.3
   next: 16.3.1
   pino: 10.3.1
   postgres: 3.4.9
   react: 19.2.3
-  react-native: 0.86.2
+  react-native: 0.86.3
   react-native-gesture-handler: 2.32.0
   react-native-reanimated: 4.5.1
   react-native-unistyles: 3.3.0

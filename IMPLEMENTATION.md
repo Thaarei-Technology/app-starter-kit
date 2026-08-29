@@ -4,6 +4,13 @@
 
 Canonical records: `.thaarei/work/*.md`.
 
+## STARTER-008: Add the approved DMS Core starter fixture and Expo SDK 57 patch pins
+
+- Status: complete
+- Owner: primary-agent
+- Updated: 2026-08-29
+- Paths: tooling/starter-init/src/capabilities.ts, tooling/starter-init/src/initializer.test.ts, tooling/starter-init/src/validate-fixtures.ts, pnpm-workspace.yaml, starter-release.json, .thaarei/work/STARTER-008.md, IMPLEMENTATION.md
+
 ## STARTER-007: Product-owned generated repository contract
 
 - Status: complete
@@ -31,10 +38,3 @@ Canonical records: `.thaarei/work/*.md`.
 - Owner: primary-agent
 - Updated: 2026-08-20
 - Paths: tooling/starter-init/src/generator.ts, tooling/starter-init/src/initializer.test.ts, tooling/starter-init/src/validate-fixtures.ts, templates/, .thaarei/work/STARTER-005.md, IMPLEMENTATION.md
-
-## STARTER-001: Implement the executable Thaarei engineering starter contract
-
-- Status: complete
-- Owner: primary-agent
-- Updated: 2026-08-19
-- Paths: AGENTS.md, docs/, tooling/, templates/, package.json, pnpm-workspace.yaml, starter-release.json, .github/workflows/, README.md, pnpm-lock.yaml, tsconfig.json, turbo.json, biome.jsonc

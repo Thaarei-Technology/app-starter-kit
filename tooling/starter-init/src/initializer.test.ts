@@ -89,6 +89,7 @@ describe("starter profile generation", () => {
     ["web-mobile", ["web", "mobile", "api", "data", "identity"]],
     ["durable-agent", ["api", "data", "identity", "ai", "jobs", "durable-ai"]],
     ["external-rest", ["api", "data", "external-api"]],
+    ["dms-core", ["api", "data", "identity", "jobs", "external-api", "storage"]],
   ];
   test.each(approvedFixtures)(
     "generates the approved %s fixture without source docs",
@@ -579,6 +580,15 @@ describe("starter profile validation", () => {
       "expo-router": DEPENDENCY_VERSIONS.expoRouter,
       "expo-secure-store": DEPENDENCY_VERSIONS.secureStore,
     });
+  });
+
+  test("derives the external API boundary for the exact DMS Core profile", () => {
+    const generated = generateProject(
+      config(["api", "data", "identity", "jobs", "external-api", "storage"]),
+    );
+    const api = generated.files.find((file) => file.path === "packages/api/src/index.ts")?.content;
+
+    expect(api).toContain('Partial<Pick<ApiDependencies, "database" | "readinessChecks">>');
   });
 
   test("generates provider-neutral core invocation and authorization boundaries", () => {

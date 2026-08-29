@@ -4,6 +4,7 @@ import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { productIdentity } from "./generator.js";
 import { runInitializer } from "./index.js";
 
 const execFileAsync = promisify(execFile);
@@ -59,6 +60,12 @@ const FIXTURES: readonly Fixture[] = [
   {
     name: "storage-service",
     profiles: "api,data,identity,storage",
+    deployment: "dokploy",
+    mobile: false,
+  },
+  {
+    name: "dms-core",
+    profiles: "api,data,identity,jobs,external-api,storage",
     deployment: "dokploy",
     mobile: false,
   },
@@ -199,6 +206,7 @@ async function allocatePorts(names: readonly string[]): Promise<Readonly<Record<
 async function configureFixtureEnvironment(
   root: string,
   ports: Readonly<Record<string, number>>,
+  productId: string,
 ): Promise<Record<string, string>> {
   const path = join(root, ".env");
   const original = await readFile(join(root, ".env.example"), "utf8");
@@ -207,6 +215,8 @@ async function configureFixtureEnvironment(
     const match = /^(\w+)=(.*)$/.exec(line);
     if (match?.[1]) values[match[1]] = match[2] ?? "";
   }
+  const fixtureIdName = `${productIdentity({ productId }).environmentPrefix}_FIXTURE_ID`;
+  const fixtureInstanceId = `fixture-${ports.api ?? ports.web}`;
   const replacements: Readonly<Record<string, string>> = {
     PORT: String(ports.api ?? ports.web),
     WORKER_PORT: String(ports.worker ?? 0),
@@ -225,12 +235,12 @@ async function configureFixtureEnvironment(
     MAILPIT_UI_PORT: String(ports.mailpitUi ?? 0),
     OTEL_HEALTH_PORT: String(ports.otelHealth ?? 0),
     OTEL_HTTP_PORT: String(ports.otelHttp ?? 0),
-    STARTER_FIXTURE_ID: `fixture-${ports.api ?? ports.web}`,
     COMPOSE_PROJECT_NAME: `thaarei-fixture-${ports.api ?? ports.web}`,
   };
   for (const [name, value] of Object.entries(replacements)) {
     values[name] = value;
   }
+  values[fixtureIdName] = fixtureInstanceId;
   if (values.DATABASE_URL && ports.postgres) {
     values.DATABASE_URL = values.DATABASE_URL.replace(
       /127\.0\.0\.1:\d+/u,
@@ -288,7 +298,7 @@ async function stopProcess(processHandle: ManagedProcess): Promise<void> {
   });
 }
 
-async function proveAllServerRuntime(root: string): Promise<void> {
+async function proveAllServerRuntime(root: string, productId: string): Promise<void> {
   const ports = await allocatePorts([
     "api",
     "web",
@@ -302,7 +312,7 @@ async function proveAllServerRuntime(root: string): Promise<void> {
     "otelHealth",
     "otelHttp",
   ]);
-  const environment = await configureFixtureEnvironment(root, ports);
+  const environment = await configureFixtureEnvironment(root, ports, productId);
   await runPnpm(root, ["db:up"]);
   await runPnpm(root, ["storage:up"]);
   await execFileAsync("docker", ["compose", "up", "-d"], {
@@ -329,7 +339,11 @@ async function proveAllServerRuntime(root: string): Promise<void> {
   ];
   let cleanupError: Error | null = null;
   try {
-    const fixtureInstanceId = environment.STARTER_FIXTURE_ID;
+    const fixtureIdName = `${productIdentity({ productId }).environmentPrefix}_FIXTURE_ID`;
+    const fixtureInstanceId = environment[fixtureIdName];
+    if (fixtureInstanceId === undefined) {
+      throw new Error("Configured fixture environment is missing its product-owned fixture ID");
+    }
     await waitForHttp(
       `http://127.0.0.1:${ports.python}/health/ready`,
       200,
@@ -559,7 +573,9 @@ export async function validateFixtures(): Promise<void> {
         ]);
       }
       await validateGeneratedProject(root, fixture.mobile);
-      if (fixture.name === "all-server-capabilities") await proveAllServerRuntime(root);
+      if (fixture.name === "all-server-capabilities") {
+        await proveAllServerRuntime(root, `fixture-${fixture.name}`);
+      }
       process.stdout.write(`Validated ${fixture.name}\n`);
     } finally {
       await rm(root, { recursive: true, force: true });
