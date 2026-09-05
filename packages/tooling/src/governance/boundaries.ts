@@ -34,6 +34,16 @@ const isProviderModule = (specifier: string): boolean =>
 const isAllowedProviderClient = (specifier: string, owner: PackageInfo | undefined): boolean =>
   (specifier === "better-auth/client" || specifier.startsWith("better-auth/client/")) &&
   (owner?.name.endsWith("/api-client") ?? false);
+const isAllowedInfrastructureMigration = (
+  specifier: string,
+  owner: PackageInfo | undefined,
+  file: string,
+): boolean =>
+  specifier === "graphile-worker" &&
+  (owner?.name.endsWith("/database") ?? false) &&
+  file.endsWith("/packages/database/src/migrate.ts");
+const isStarterInfrastructureOwner = (owner: PackageInfo | undefined): boolean =>
+  owner?.name === "@thaarei-technology/create-app" || owner?.name === "@thaarei-technology/tooling";
 
 const importSpecifiers = (source: string): readonly string[] => {
   const specifiers: string[] = [];
@@ -176,7 +186,8 @@ export const checkBoundaries = async (root: string): Promise<CheckResult> => {
           specifier.startsWith("pg/") ||
           specifier === "postgres" ||
           specifier.startsWith("postgres/")) &&
-        !(owner?.directory.endsWith("/packages/database") ?? false)
+        !(owner?.directory.endsWith("/packages/database") ?? false) &&
+        !isStarterInfrastructureOwner(owner)
       ) {
         diagnostics.push(
           diagnostic(
@@ -229,7 +240,9 @@ export const checkBoundaries = async (root: string): Promise<CheckResult> => {
       if (
         isProviderModule(specifier) &&
         !(owner?.name.endsWith("/adapters") ?? false) &&
-        !isAllowedProviderClient(specifier, owner)
+        !isAllowedProviderClient(specifier, owner) &&
+        !isAllowedInfrastructureMigration(specifier, owner, file) &&
+        !isStarterInfrastructureOwner(owner)
       ) {
         diagnostics.push(
           diagnostic(

@@ -1,0 +1,50 @@
+{
+  "name": "@thaarei-technology/tooling",
+  "version": "1.0.0-dev.1",
+  "description": "Private Thaarei governance, evidence, and release tooling.",
+  "type": "module",
+  "bin": {
+    "thaarei-governance": "./dist/governance/cli.js",
+    "thaarei-release-check": "./dist/release/check-release.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./governance": {
+      "types": "./dist/governance/index.d.ts",
+      "import": "./dist/governance/index.js"
+    },
+    "./qualification": {
+      "types": "./dist/qualification.d.ts",
+      "import": "./dist/qualification.js"
+    }
+  },
+  "files": [
+    "dist",
+    "schemas",
+    "README.md"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted",
+    "tag": "next"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Thaarei-Technology/app-starter-kit.git",
+    "directory": "packages/tooling"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "pnpm build"
+  },
+  "dependencies": {
+    "yaml": "2.9.0",
+    "zod": "4.4.3"
+  },
+  "engines": {
+    "node": "24.20.x"
+  }
+}

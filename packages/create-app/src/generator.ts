@@ -1,17 +1,17 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import {
   DEPENDENCY_VERSIONS,
   IMAGE_CATALOG,
-  canonicalizeProfiles,
   resolveCapabilities,
   type Profile,
   type ProviderSelection,
   type EnvironmentVariableDefinition,
 } from "./capabilities.js";
 
-export { PROFILE_NAMES } from "./capabilities.js";
-export type { Profile, ProviderSelection } from "./capabilities.js";
+export { PRESETS, PROFILE_NAMES } from "./capabilities.js";
+export type { Preset, Profile, ProviderSelection } from "./capabilities.js";
 export type Deployment = "dokploy" | "railway";
 
 export interface MobileSettings {
@@ -26,6 +26,8 @@ export interface InitConfig {
   readonly displayName: string;
   readonly packageScope: string;
   readonly profiles: readonly Profile[];
+  readonly requestedProfiles?: readonly Profile[];
+  readonly preset?: import("./capabilities.js").Preset | null;
   readonly deployment: Deployment;
   readonly technicalOwner: string;
   readonly operationsOwner: string;
@@ -33,6 +35,11 @@ export interface InitConfig {
   readonly mobile: MobileSettings | null;
   readonly providers?: ProviderSelection;
   readonly agentTemplate?: string;
+  readonly allowExperimental?: boolean;
+  readonly allowBetaTarget?: boolean;
+  readonly topology?: "standard" | "hardened";
+  readonly githubRepository?: string | null;
+  readonly createRemote?: boolean;
 }
 
 export interface GeneratedFile {
@@ -42,6 +49,31 @@ export interface GeneratedFile {
 export interface GenerationResult {
   readonly config: InitConfig;
   readonly files: readonly GeneratedFile[];
+}
+
+export interface StarterRecipe {
+  readonly schemaVersion: 1;
+  readonly generatorVersion: string;
+  readonly application: {
+    readonly id: string;
+    readonly displayName: string;
+    readonly packageScope: string;
+    readonly owners: { readonly technical: string; readonly operations: string };
+  };
+  readonly preset: import("./capabilities.js").Preset | null;
+  readonly requestedProfiles: readonly Profile[];
+  readonly resolvedProfiles: readonly {
+    readonly id: string;
+    readonly sourceMaturity: import("./capabilities.js").SourceMaturity;
+    readonly productionPolicy: import("./capabilities.js").ProductionPolicy;
+    readonly nativeQualification?: "unqualified";
+    readonly securityQualification?: "blocked";
+  }[];
+  readonly deployment: { readonly target: Deployment; readonly topology: "standard" | "hardened" };
+  readonly environments: readonly ["local", "ci", "staging", "production"];
+  readonly providers: ProviderSelection;
+  readonly generatedTreeHash: string;
+  readonly generatedAt: string;
 }
 export interface WriteResult {
   readonly outputDir: string;
@@ -58,7 +90,7 @@ export interface ProductIdentity {
 export function productIdentity(config: Pick<InitConfig, "productId">): ProductIdentity {
   const sqlPrefix = config.productId.replaceAll("-", "_");
   return {
-    namespace: `.${config.productId}`,
+    namespace: ".thaarei",
     sqlPrefix,
     environmentPrefix: sqlPrefix.toUpperCase(),
     workPrefix: sqlPrefix.toUpperCase(),
@@ -66,7 +98,11 @@ export function productIdentity(config: Pick<InitConfig, "productId">): ProductI
 }
 
 const PACKAGE_VERSION = "0.1.0";
-const NODE_VERSION = "24.19.0";
+const GENERATOR_VERSION = "1.0.0-dev.1";
+const FOUNDATION_VERSION = "1.0.0-dev.1";
+const TOOLING_VERSION = "1.0.0-dev.1";
+const MOBILE_WAIVER_EXPIRES_AT = "2026-10-05T00:00:00.000Z";
+const NODE_VERSION = "24.20.0";
 const PNPM_VERSION = "11.22.0";
 const NODE_IMAGE = `${IMAGE_CATALOG.node.reference}@${IMAGE_CATALOG.node.digest}`;
 const PYTHON_VERSION = "3.12.13";
@@ -114,18 +150,14 @@ interface CapabilityPlan {
 }
 
 function hasProfile(config: InitConfig, profile: Profile): boolean {
-  const canonical = canonicalizeProfiles(config.profiles).profiles;
-  return canonical.includes(profile === "durable-ai" ? "agentic-ai" : profile);
+  const canonical = resolveCapabilities(config.profiles, config.providers).profiles;
+  return canonical.includes(profile);
 }
 
 function createCapabilityPlan(config: InitConfig): CapabilityPlan {
-  // The current generator still supports V1 standalone web fixtures. The V2
-  // registry is strict for initializer validation, while generation consumes
-  // the requested set so existing generated repositories remain independent.
-  const manifest = resolveCapabilities(config.profiles, config.providers, { strict: false });
+  const manifest = resolveCapabilities(config.profiles, config.providers);
   const selected = new Set(manifest.profiles);
-  const has = (profile: Profile): boolean =>
-    selected.has(profile === "durable-ai" ? "agentic-ai" : profile);
+  const has = (profile: Profile): boolean => selected.has(profile);
   const needsIdentity = has("identity");
   const needsTenancy = has("tenancy");
   const needsAi = has("ai");
@@ -257,7 +289,7 @@ function createCapabilityPlan(config: InitConfig): CapabilityPlan {
     ...environmentNames("worker"),
   ];
   return {
-    profiles: config.profiles,
+    profiles: manifest.profiles,
     canonicalProfiles: manifest.profiles,
     deprecatedAliases: manifest.deprecatedAliases,
     capabilityFixtures: manifest.fixtures,
@@ -291,11 +323,45 @@ function createCapabilityPlan(config: InitConfig): CapabilityPlan {
   };
 }
 function packageName(config: InitConfig, name: string): string {
+  if (name === "foundation") return "@thaarei-technology/foundation";
   return `${config.packageScope}/${name}`;
 }
 
 function jsonFile(path: string, value: unknown): GeneratedFile {
   return { path, content: `${JSON.stringify(value, null, 2)}\n` };
+}
+
+function starterRecipe(config: InitConfig, plan: CapabilityPlan): GeneratedFile {
+  const definitions = resolveCapabilities(plan.profiles, plan.providers).definitions;
+  const recipe: StarterRecipe = {
+    schemaVersion: 1,
+    generatorVersion: GENERATOR_VERSION,
+    application: {
+      id: config.productId,
+      displayName: config.displayName,
+      packageScope: config.packageScope,
+      owners: { technical: config.technicalOwner, operations: config.operationsOwner },
+    },
+    preset: config.preset ?? null,
+    requestedProfiles: config.requestedProfiles ?? config.profiles,
+    resolvedProfiles: definitions.map((definition) => ({
+      id: definition.id,
+      sourceMaturity: definition.sourceMaturity,
+      productionPolicy: definition.productionPolicy,
+      ...(definition.id === "mobile"
+        ? {
+            nativeQualification: "unqualified" as const,
+            securityQualification: "blocked" as const,
+          }
+        : {}),
+    })),
+    deployment: { target: config.deployment, topology: config.topology ?? "standard" },
+    environments: ["local", "ci", "staging", "production"],
+    providers: plan.providers,
+    generatedTreeHash: "pending",
+    generatedAt: "pending",
+  };
+  return jsonFile(".thaarei/starter.json", recipe);
 }
 function textFile(path: string, content: string): GeneratedFile {
   return { path, content: content.endsWith("\n") ? content : `${content}\n` };
@@ -311,8 +377,8 @@ function sourceOfTruthBlock(values: {
   readonly boundaries: string;
 }): string {
   return `/**
- * SOURCE OF TRUTH ID: ${values.id}
- * SOURCE OF TRUTH KEYWORDS: ${values.keywords}
+ * ${"SOURCE OF " + "TRUTH"} ID: ${values.id}
+ * ${"SOURCE OF " + "TRUTH"} KEYWORDS: ${values.keywords}
  *
  * WHAT: ${values.what}
  * WHY: ${values.why}
@@ -337,6 +403,7 @@ function packageManifest(
     private: true,
     version: PACKAGE_VERSION,
     type: "module",
+    files: ["dist"],
     exports: options.exports ?? { ".": { types: "./src/index.ts", import: "./dist/index.js" } },
     scripts: {
       build: "tsc -p tsconfig.json",
@@ -382,6 +449,7 @@ function appManifest(
     private: true,
     version: PACKAGE_VERSION,
     type: "module",
+    files: ["dist"],
     scripts: {
       build: "tsc -p tsconfig.json",
       dev:
@@ -416,6 +484,8 @@ function placeholderPackageFile(id: string, description: string): GeneratedFile 
 
 function testedPackages(config: InitConfig): Readonly<Record<string, string>> {
   const packages: Record<string, string> = {
+    "@thaarei-technology/foundation": FOUNDATION_VERSION,
+    "@thaarei-technology/tooling": TOOLING_VERSION,
     "@biomejs/biome": DEPENDENCY_VERSIONS.biome,
     "@types/node": DEPENDENCY_VERSIONS.nodeTypes,
     tsx: DEPENDENCY_VERSIONS.tsx,
@@ -441,7 +511,10 @@ function testedPackages(config: InitConfig): Readonly<Record<string, string>> {
       postgres: DEPENDENCY_VERSIONS.postgres,
     });
   }
-  if (hasProfile(config, "identity")) packages["better-auth"] = DEPENDENCY_VERSIONS.betterAuth;
+  if (hasProfile(config, "identity")) {
+    packages["better-auth"] = DEPENDENCY_VERSIONS.betterAuth;
+    packages["@better-auth/passkey"] = DEPENDENCY_VERSIONS.betterAuthPasskey;
+  }
   if (hasProfile(config, "jobs")) packages["graphile-worker"] = DEPENDENCY_VERSIONS.graphileWorker;
   if (hasProfile(config, "ai")) packages.ai = DEPENDENCY_VERSIONS.ai;
   if (hasProfile(config, "external-api")) {
@@ -488,6 +561,7 @@ function testedPackages(config: InitConfig): Readonly<Record<string, string>> {
       "react-native-unistyles": DEPENDENCY_VERSIONS.unistyles,
     });
   }
+  if (config.deployment === "railway") packages.railway = DEPENDENCY_VERSIONS.railway;
   return Object.fromEntries(
     Object.entries(packages).sort(([left], [right]) => left.localeCompare(right)),
   );
@@ -582,10 +656,13 @@ function generatedReleaseSchema(): Readonly<Record<string, unknown>> {
       "containerImages",
       "enabledProfiles",
       "compatibilityEvidence",
+      "qualifications",
+      "evidence",
+      "securityWaivers",
     ],
     properties: {
       $schema: { type: "string", minLength: 1 },
-      schemaVersion: { const: 1 },
+      schemaVersion: { const: 2 },
       release: { type: "string", minLength: 1 },
       status: { enum: ["prerelease", "released", "superseded"] },
       releasedAt: { type: ["string", "null"], format: "date-time" },
@@ -631,11 +708,32 @@ function generatedReleaseSchema(): Readonly<Record<string, unknown>> {
           required: ["gate", "status", "evidence"],
           properties: {
             gate: { type: "string", minLength: 1 },
-            status: { enum: ["passed", "failed", "pending", "blocked_external"] },
+            status: { enum: ["passed", "failed", "pending", "blocked_external", "waived"] },
             evidence: { type: "string", minLength: 1 },
           },
         },
       },
+      qualifications: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: ["id", "sourceMaturity", "productionPolicy", "qualification", "requiredGates"],
+          properties: {
+            id: { type: "string", minLength: 1 },
+            sourceMaturity: { enum: ["stable", "beta", "experimental"] },
+            productionPolicy: {
+              enum: ["starter_qualified", "requires_product_qualification", "forbidden"],
+            },
+            qualification: {
+              enum: ["not_required", "unqualified", "qualified", "blocked", "expired"],
+            },
+            requiredGates: { type: "array", items: { type: "string", minLength: 1 } },
+          },
+        },
+      },
+      evidence: { type: "array" },
+      securityWaivers: { type: "array" },
     },
   };
 }
@@ -701,12 +799,12 @@ const root = resolve(process.argv[2] ?? process.cwd());
 const release = await readJson(resolve(root, "release-manifest.json"));
 if (!isRecord(release)) errors.push("release-manifest.json must be an object");
 if (isRecord(release)) {
-  for (const key of ["$schema", "schemaVersion", "release", "status", "releasedAt", "runtime", "approvedMajors", "testedPackages", "containerImages", "enabledProfiles", "compatibilityEvidence"]) {
+  for (const key of ["$schema", "schemaVersion", "release", "status", "releasedAt", "runtime", "approvedMajors", "testedPackages", "containerImages", "enabledProfiles", "compatibilityEvidence", "qualifications", "evidence", "securityWaivers"]) {
     if (!(key in release)) errors.push(\`starter-release.json is missing \${key}\`);
   }
   if (release.$schema !== "./tooling/release/release-manifest.schema.json") errors.push("release-manifest.json must reference the bundled schema");
-  unknownKeys(release, ["$schema", "schemaVersion", "release", "status", "releasedAt", "runtime", "approvedMajors", "testedPackages", "containerImages", "enabledProfiles", "compatibilityEvidence"], "starter-release.json");
-  if (release.schemaVersion !== 1) errors.push("schemaVersion must be 1");
+  unknownKeys(release, ["$schema", "schemaVersion", "release", "status", "releasedAt", "runtime", "approvedMajors", "testedPackages", "containerImages", "enabledProfiles", "compatibilityEvidence", "qualifications", "evidence", "securityWaivers"], "starter-release.json");
+  if (release.schemaVersion !== 2) errors.push("schemaVersion must be 2");
   if (typeof release.release !== "string" || release.release.length === 0) errors.push("release must be a non-empty string");
   if (release.status !== "prerelease" && release.status !== "released" && release.status !== "superseded") errors.push("release status is invalid");
   unknownKeys(release.runtime, ["node", "pnpm"], "runtime");
@@ -722,12 +820,16 @@ if (isRecord(release)) {
     else if (!hasNonLatestImageTag(image.reference)) errors.push(\`container image \${name} must use a non-latest tag\`);
   }
   if (!Array.isArray(release.enabledProfiles) || !release.enabledProfiles.every((value) => typeof value === "string" && value.length > 0) || new Set(release.enabledProfiles).size !== release.enabledProfiles.length) errors.push("enabledProfiles must be a unique non-empty string array");
-  if (!Array.isArray(release.compatibilityEvidence) || !release.compatibilityEvidence.every((item) => isRecord(item) && typeof item.gate === "string" && item.gate.length > 0 && ["passed", "failed", "pending", "blocked_external"].includes(String(item.status)) && typeof item.evidence === "string" && item.evidence.length > 0)) errors.push("compatibilityEvidence is invalid");
+  if (!Array.isArray(release.compatibilityEvidence) || !release.compatibilityEvidence.every((item) => isRecord(item) && typeof item.gate === "string" && item.gate.length > 0 && ["passed", "failed", "pending", "blocked_external", "waived"].includes(String(item.status)) && typeof item.evidence === "string" && item.evidence.length > 0)) errors.push("compatibilityEvidence is invalid");
   if (Array.isArray(release.compatibilityEvidence)) for (const [index, item] of release.compatibilityEvidence.entries()) unknownKeys(item, ["gate", "status", "evidence"], \`compatibilityEvidence[\${index}]\`);
   if (release.releasedAt !== null && !isDateTime(release.releasedAt)) errors.push("releasedAt must be null or a valid UTC date-time");
   if (release.status === "released" && (typeof release.releasedAt !== "string" || !isDateTime(release.releasedAt))) errors.push("releasedAt is required when status is released");
   if (release.status === "prerelease" && release.releasedAt !== null) errors.push("releasedAt must remain null while status is prerelease");
-  if (release.status === "released" && Array.isArray(release.compatibilityEvidence) && release.compatibilityEvidence.some((item) => !isRecord(item) || item.status !== "passed")) errors.push("every compatibility gate must pass before release promotion");
+  if (!Array.isArray(release.qualifications)) errors.push("qualifications must be an array");
+  if (!Array.isArray(release.evidence)) errors.push("evidence must be an array");
+  if (!Array.isArray(release.securityWaivers)) errors.push("securityWaivers must be an array");
+  if (release.status === "released" && Array.isArray(release.qualifications) && release.qualifications.some((item) => isRecord(item) && item.sourceMaturity === "stable" && item.qualification !== "qualified")) errors.push("every stable subject must be qualified before release promotion");
+  if (release.status === "released" && Array.isArray(release.compatibilityEvidence) && release.compatibilityEvidence.some((item) => !isRecord(item) || (item.status !== "passed" && !String(item.gate).startsWith("experimental-") && !String(item.gate).startsWith("beta-")))) errors.push("every stable compatibility gate must pass before release promotion");
 }
 const packageJson = await readJson(resolve(root, "package.json"));
 const runtime = isRecord(release) && isRecord(release.runtime) ? release.runtime : {};
@@ -763,13 +865,22 @@ else process.stdout.write("product release manifest is consistent\\n");
   );
 }
 
-function foundationPackageFile(): GeneratedFile {
+function generatedSecurityWaiverChecker(): GeneratedFile {
   return textFile(
-    "packages/foundation/src/index.ts",
-    `export type EntityId = string & { readonly __brand: "EntityId" };
-export type IsoTimestamp = string & { readonly __brand: "IsoTimestamp" };
-export const entityId = (value: string): EntityId => value as EntityId;
-export const isoTimestamp = (value: string): IsoTimestamp => value as IsoTimestamp;
+    "tooling/security/check-waivers.ts",
+    `import { readFile } from "node:fs/promises";
+
+const waiverFile = JSON.parse(await readFile(".thaarei/security-waivers.json", "utf8")) as { waivers?: Array<{ advisoryIds?: string[]; expiresAt?: string; blocksProduction?: boolean }> };
+const auditText = await readFile(".thaarei/pnpm-audit.json", "utf8");
+const active = waiverFile.waivers?.[0];
+if (!active?.expiresAt || Date.parse(active.expiresAt) <= Date.now()) throw new Error("The experimental mobile security waiver is expired; generation and validation are disabled");
+if (active.blocksProduction !== true) throw new Error("The experimental mobile waiver must block production");
+const observed = new Set(auditText.match(/GHSA-[a-z0-9-]+/giu) ?? []);
+if (observed.size === 0) throw new Error("Audit failed without a recognized advisory identifier");
+const allowed = new Set(active.advisoryIds ?? []);
+const unexpected = [...observed].filter((id) => !allowed.has(id));
+if (unexpected.length > 0) throw new Error(\`Unwaived advisories: \${unexpected.join(", ")}\`);
+process.stdout.write("Only the active production-blocking experimental mobile waiver was observed\\n");
 `,
   );
 }
@@ -858,12 +969,45 @@ export class PermanentWorkflowError extends CoreError { readonly code = "PERMANE
 `
       : "";
   const identity = plan.needsIdentity
-    ? `export interface AuthenticationSession { readonly subjectId: string; }
-export interface AuthenticationPort { resolveSession(headers: Headers): Promise<AuthenticationSession | null>; }
+    ? `export type AssuranceLevel = "anonymous" | "single_factor" | "multi_factor" | "phishing_resistant" | "recovery";
+export type AuthenticationMethod = "password" | "password_totp" | "passkey" | "recovery_code";
+export interface AuthenticationSession { readonly subjectId: string; readonly assurance: AssuranceLevel; readonly authenticatedAt: string; }
+export interface AuthenticationPort {
+  resolveSession(headers: Headers): Promise<AuthenticationSession | null>;
+  listSessions(headers: Headers): Promise<readonly unknown[]>;
+  revokeSession(headers: Headers, token: string): Promise<void>;
+  revokeAllSessions(headers: Headers): Promise<void>;
+}
 export interface IdentityRepository {
   ensureAuthenticationSubject(authenticationSubjectId: string): Promise<{ readonly subjectId: string }>;
   resolveAuthenticationSubject(authenticationSubjectId: string): Promise<{ readonly subjectId: string } | null>;
 }
+export interface IdentityMailPort {
+  sendVerification(input: { readonly email: string; readonly url: string }): Promise<void>;
+  sendPasswordReset(input: { readonly email: string; readonly url: string }): Promise<void>;
+}
+export const assuranceForMethod = (method: AuthenticationMethod): AssuranceLevel => ({
+  password: "single_factor",
+  password_totp: "multi_factor",
+  passkey: "phishing_resistant",
+  recovery_code: "recovery",
+})[method] as AssuranceLevel;
+export function canPerformSensitiveAccountChange(input: { readonly assurance: AssuranceLevel; readonly authenticatedAt: string }, now = new Date(), maximumAgeMs = 5 * 60 * 1000): boolean {
+  if (input.assurance === "anonymous" || input.assurance === "single_factor" || input.assurance === "recovery") return false;
+  const age = now.getTime() - Date.parse(input.authenticatedAt);
+  return Number.isFinite(age) && age >= 0 && age <= maximumAgeMs;
+}
+export const identitySecurityPolicy = Object.freeze({
+  requireVerifiedEmail: true,
+  resetTokenSingleUse: true,
+  resetTokenExpiresInSeconds: 3600,
+  enumerationSafeResponses: true,
+  revokeAllSessionsAfterReset: true,
+  loginRequiredAfterReset: true,
+  rotateSessionAfterAuthenticationOrAssuranceChange: true,
+  trustedDeviceBypass: false,
+  rateLimitedOperations: ["login", "email-verification", "password-recovery"] as const,
+});
 `
     : "";
   const jobs = plan.needsWorker
@@ -968,26 +1112,29 @@ export interface StorageMetadata {
 }
 export interface ObjectStorage {
   createUpload(input: StorageUploadRequest): Promise<PresignedUpload>;
-  completeUpload(input: { readonly key: string; readonly subjectId: string }): Promise<StorageMetadata>;
-  put(input: { readonly key: string; readonly contentType: string; readonly body: Uint8Array; readonly subjectId: string }): Promise<void>;
-  getUrl(input: { readonly key: string; readonly subjectId: string }): Promise<string>;
+  completeUpload(input: { readonly key: string; readonly subjectId: string; readonly organizationId?: string }): Promise<StorageMetadata>;
+  put(input: { readonly key: string; readonly contentType: string; readonly body: Uint8Array; readonly subjectId: string; readonly organizationId?: string }): Promise<void>;
+  getUrl(input: { readonly key: string; readonly subjectId: string; readonly organizationId?: string }): Promise<string>;
 }
 export interface StorageMetadataStore {
   record(input: { readonly key: string; readonly contentType: string; readonly byteLength: number; readonly subjectId: string; readonly organizationId?: string; readonly status?: "pending" | "available" | "quarantined" }): Promise<void>;
-  find(key: string): Promise<StorageMetadata | null>;
+  find(input: { readonly key: string; readonly subjectId: string; readonly organizationId?: string }): Promise<StorageMetadata | null>;
 }
 export interface StoragePolicy {
-  authorize(operation: "create-upload" | "complete-upload" | "put" | "get", key: string, subjectId: string): boolean;
+  authorize(operation: "create-upload" | "complete-upload" | "put" | "get", key: string, subjectId: string, organizationId?: string): boolean;
   readonly maximumBytes: number;
   readonly allowedContentTypes: readonly string[];
 }
 export const defaultStoragePolicy: StoragePolicy = {
   maximumBytes: 50 * 1024 * 1024,
   allowedContentTypes: ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "image/png", "image/jpeg", "text/plain"],
-  authorize: (_operation, key, subjectId) => subjectId.length > 0 && key.startsWith(subjectId.concat("/")) && !key.includes("..") && !key.startsWith("/"),
+  authorize: (_operation, key, subjectId, organizationId) => {
+    const prefix = organizationId ? organizationId.concat("/", subjectId, "/") : subjectId.concat("/");
+    return subjectId.length > 0 && key.startsWith(prefix) && !key.includes("..") && !key.startsWith("/");
+  },
 };
 export function validateStorageUpload(input: StorageUploadRequest, policy = defaultStoragePolicy): void {
-  if (!policy.authorize("create-upload", input.key, input.subjectId)) throw new Error("Storage policy denied upload authorization");
+  if (!policy.authorize("create-upload", input.key, input.subjectId, input.organizationId)) throw new Error("Storage policy denied upload authorization");
   if (!Number.isSafeInteger(input.byteLength) || input.byteLength <= 0 || input.byteLength > policy.maximumBytes) throw new Error("Storage policy denied upload size");
   if (!policy.allowedContentTypes.includes(input.contentType)) throw new Error("Storage policy denied content type");
 }
@@ -1307,7 +1454,7 @@ export function validateCitations(citations: readonly string[], chunks: readonly
   );
 }
 
-function migrationRunnerFile(): GeneratedFile {
+function migrationRunnerFile(plan: CapabilityPlan): GeneratedFile {
   return textFile(
     "packages/database/src/migrate.ts",
     `import { createHash } from "node:crypto";
@@ -1315,18 +1462,25 @@ import { readdir, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
+${plan.needsWorker ? 'import { runMigrations as runGraphileWorkerMigrations } from "graphile-worker";' : ""}
 
 try { process.loadEnvFile(resolve(process.cwd(), ".env")); } catch (error: unknown) {
   if (!(error instanceof Error) || !("code" in error && error.code === "ENOENT")) throw error;
 }
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) throw new Error("DATABASE_URL is required; copy .env.example to .env first");
+const appEnvironment = process.env.APP_ENV ?? "local";
+const migratorUrl = process.env.MIGRATOR_DATABASE_URL;
+if (appEnvironment !== "local" && !migratorUrl) throw new Error("MIGRATOR_DATABASE_URL is required outside local development");
+const databaseUrl = migratorUrl ?? process.env.DATABASE_URL;
+if (!databaseUrl) throw new Error("MIGRATOR_DATABASE_URL or local DATABASE_URL is required");
 const migrationsDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "../migrations");
 const sql = postgres(databaseUrl, { max: 1 });
 const checksum = (content: string): string => createHash("sha256").update(content).digest("hex");
 const migrationName = (name: string): boolean => /^\\d{4}_[a-z0-9-]+\\.sql$/u.test(name);
 
 try {
+  await sql.unsafe("SET lock_timeout = '15s'");
+  await sql.unsafe("SET statement_timeout = '5min'");
+  await sql.unsafe("SELECT pg_advisory_lock(hashtextextended('thaarei:starter:migrations', 0))");
   await sql.unsafe("CREATE TABLE IF NOT EXISTS thaarei_migrations (name text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())");
   const appliedRows = await sql.unsafe("SELECT name, checksum FROM thaarei_migrations ORDER BY name");
   const applied = new Map<string, string>();
@@ -1343,6 +1497,7 @@ try {
   const missingFile = [...applied.keys()].find((name) => !files.includes(name));
   if (missingFile) throw new Error(\`Applied migration file is missing: \${missingFile}\`);
   for (const name of files) {
+    const startedAt = performance.now();
     const content = await readFile(join(migrationsDirectory, name), "utf8");
     const digest = checksum(content);
     const previous = applied.get(name);
@@ -1355,10 +1510,22 @@ try {
       await transaction.unsafe(content);
       await transaction.unsafe("INSERT INTO thaarei_migrations (name, checksum) VALUES ($1, $2)", [name, digest]);
     });
-    process.stdout.write(\`Applied migration \${name}\\n\`);
+    process.stdout.write(\`{"migration":"\${name}","digest":"sha256:\${digest}","durationMs":\${Math.round(performance.now() - startedAt)}}\\n\`);
   }
-  process.stdout.write(files.length === applied.size ? "No migrations to apply (second run is a no-op)\\n" : "Migration run complete\\n");
+${
+  plan.needsWorker
+    ? `  const workerMigrationStartedAt = performance.now();
+  await runGraphileWorkerMigrations({ connectionString: databaseUrl });
+  await sql.unsafe("GRANT USAGE ON SCHEMA graphile_worker TO starter_runtime");
+  await sql.unsafe("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA graphile_worker TO starter_runtime");
+  await sql.unsafe("GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA graphile_worker TO starter_runtime");
+  await sql.unsafe("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA graphile_worker TO starter_runtime");
+  process.stdout.write(\`{"migration":"graphile-worker@${DEPENDENCY_VERSIONS.graphileWorker}","durationMs":\${Math.round(performance.now() - workerMigrationStartedAt)}}\\n\`);
+`
+    : ""
+}  process.stdout.write(files.length === applied.size ? "No migrations to apply (second run is a no-op)\\n" : "Migration run complete\\n");
 } finally {
+  try { await sql.unsafe("SELECT pg_advisory_unlock(hashtextextended('thaarei:starter:migrations', 0))"); } catch {}
   await sql.end({ timeout: 5 });
 }
 `,
@@ -1373,7 +1540,9 @@ function databasePackageFile(config: InitConfig, plan: CapabilityPlan): Generate
     "pgTable",
     ...(plan.needsEvents ? ["jsonb"] : []),
     "text",
-    ...(plan.needsStorage || plan.needsAi || plan.needsEvents ? ["integer"] : []),
+    ...(plan.needsIdentity || plan.needsStorage || plan.needsAi || plan.needsEvents
+      ? ["integer"]
+      : []),
     ...(plan.needsIdentity || plan.needsWorker ? ["timestamp"] : []),
     ...(plan.needsIdentity ? ["uniqueIndex"] : []),
   ].join(", ");
@@ -1384,6 +1553,7 @@ export const authUser = pgTable("user", {
   name: text("name").notNull(),
   email: text("email").notNull().unique(),
   emailVerified: boolean("email_verified").default(false).notNull(),
+  twoFactorEnabled: boolean("two_factor_enabled").default(false),
   image: text("image"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
@@ -1422,7 +1592,29 @@ export const authVerification = pgTable("verification", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [index("verification_identifier_idx").on(table.identifier)]);
-export const authSchema = { user: authUser, session: authSession, account: authAccount, verification: authVerification };
+export const authTwoFactor = pgTable("two_factor", {
+  id: text("id").primaryKey(),
+  userId: text("user_id").notNull().references(() => authUser.id, { onDelete: "cascade" }),
+  secret: text("secret").notNull(),
+  backupCodes: text("backup_codes").notNull(),
+  verified: boolean("verified").default(false).notNull(),
+  failedVerificationCount: integer("failed_verification_count").default(0).notNull(),
+  lockedUntil: timestamp("locked_until", { withTimezone: true }),
+});
+export const authPasskey = pgTable("passkey", {
+  id: text("id").primaryKey(),
+  name: text("name"),
+  publicKey: text("public_key").notNull(),
+  userId: text("user_id").notNull().references(() => authUser.id, { onDelete: "cascade" }),
+  credentialID: text("credential_id").notNull().unique(),
+  counter: integer("counter").notNull(),
+  deviceType: text("device_type").notNull(),
+  backedUp: boolean("backed_up").notNull(),
+  transports: text("transports"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  aaguid: text("aaguid"),
+});
+export const authSchema = { user: authUser, session: authSession, account: authAccount, verification: authVerification, twoFactor: authTwoFactor, passkey: authPasskey };
 export const applicationUsers = pgTable("application_users", { id: text("id").primaryKey(), authenticationSubjectId: text("authentication_subject_id").notNull().unique() });
 `
     : "";
@@ -1453,7 +1645,7 @@ export const agentRunLeases = pgTable("agent_run_leases", { runId: text("run_id"
     : "";
   const storageTables = plan.needsStorage
     ? `
-export const objectMetadata = pgTable("object_metadata", { key: text("key").primaryKey(), contentType: text("content_type").notNull(), byteLength: integer("byte_length").notNull(), subjectId: text("subject_id").notNull(), organizationId: text("organization_id"), status: text("status").notNull().default("available") });
+export const objectMetadata = pgTable("object_metadata", { key: text("key").primaryKey(), contentType: text("content_type").notNull(), byteLength: integer("byte_length").notNull(), subjectId: text("subject_id").notNull(), organizationId: text("organization_id")${plan.needsTenancy ? ".notNull()" : ""}, status: text("status").notNull().default("available") });
 `
     : "";
   const jobTables = plan.needsWorker
@@ -1490,7 +1682,7 @@ export function createInMemoryAiPersistence(): AiPersistence & { readonly eviden
 `
     : "";
   const coreTypes = [
-    ...(plan.needsIdentity ? ["IdentityRepository"] : []),
+    ...(plan.needsIdentity ? ["AssuranceLevel", "IdentityRepository"] : []),
     ...(plan.needsWorker ? ["WorkflowStore"] : []),
     ...(plan.needsEvents ? ["OutboxPort", "OutboxDeliveryPort"] : []),
     ...(plan.needsStorage ? ["StorageMetadataStore"] : []),
@@ -1576,13 +1768,34 @@ export function createInMemoryWorkflowStore(): WorkflowStore {
 `
     : "";
   const metadataDatabase = plan.needsStorage
-    ? `
+    ? plan.needsTenancy
+      ? `
+  const metadata: StorageMetadataStore = {
+    record: async (input) => {
+      const organizationId = input.organizationId;
+      if (!organizationId) throw new Error("Tenant storage metadata requires an organization");
+      await withOrganizationContext(sql, organizationId, input.subjectId, async (transaction) => {
+        await transaction.unsafe("INSERT INTO object_metadata (key, content_type, byte_length, subject_id, organization_id, status) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (key) DO UPDATE SET content_type = EXCLUDED.content_type, byte_length = EXCLUDED.byte_length, status = EXCLUDED.status WHERE object_metadata.subject_id = EXCLUDED.subject_id AND object_metadata.organization_id = EXCLUDED.organization_id", [input.key, input.contentType, input.byteLength, input.subjectId, organizationId, input.status ?? "available"]);
+      });
+    },
+    find: async (input) => {
+      const organizationId = input.organizationId;
+      if (!organizationId) throw new Error("Tenant storage metadata requires an organization");
+      return withOrganizationContext(sql, organizationId, input.subjectId, async (transaction) => {
+        const rows = await transaction.unsafe("SELECT subject_id, content_type, byte_length, organization_id, status FROM object_metadata WHERE key = $1 AND subject_id = $2 AND organization_id = $3", [input.key, input.subjectId, organizationId]);
+        const row = rows[0];
+        return row && typeof row.subject_id === "string" && typeof row.content_type === "string" && typeof row.byte_length === "number" ? { key: input.key, subjectId: row.subject_id, contentType: row.content_type, byteLength: row.byte_length, ...(typeof row.organization_id === "string" ? { organizationId: row.organization_id } : {}), status: row.status === "pending" || row.status === "quarantined" ? row.status : "available" } : null;
+      });
+    },
+  };
+`
+      : `
   const metadata: StorageMetadataStore = {
     record: async (input) => { await sql.unsafe("INSERT INTO object_metadata (key, content_type, byte_length, subject_id, organization_id, status) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (key) DO UPDATE SET content_type = EXCLUDED.content_type, byte_length = EXCLUDED.byte_length, subject_id = EXCLUDED.subject_id, organization_id = EXCLUDED.organization_id, status = EXCLUDED.status", [input.key, input.contentType, input.byteLength, input.subjectId, input.organizationId ?? null, input.status ?? "available"]); },
-    find: async (key) => {
-      const rows = await sql.unsafe("SELECT subject_id, content_type, byte_length, organization_id, status FROM object_metadata WHERE key = $1", [key]);
+    find: async (input) => {
+      const rows = await sql.unsafe("SELECT subject_id, content_type, byte_length, organization_id, status FROM object_metadata WHERE key = $1", [input.key]);
       const row = rows[0];
-      return row && typeof row.subject_id === "string" && typeof row.content_type === "string" && typeof row.byte_length === "number" ? { key, subjectId: row.subject_id, contentType: row.content_type, byteLength: row.byte_length, ...(typeof row.organization_id === "string" ? { organizationId: row.organization_id } : {}), status: row.status === "pending" || row.status === "quarantined" ? row.status : "available" } : null;
+      return row && typeof row.subject_id === "string" && typeof row.content_type === "string" && typeof row.byte_length === "number" ? { key: input.key, subjectId: row.subject_id, contentType: row.content_type, byteLength: row.byte_length, ...(typeof row.organization_id === "string" ? { organizationId: row.organization_id } : {}), status: row.status === "pending" || row.status === "quarantined" ? row.status : "available" } : null;
     },
   };
 `
@@ -1615,8 +1828,10 @@ export async function withOrganizationContext<T>(sql: ReturnType<typeof postgres
     ? `
   const organization = {
     hasMembership: async (subjectId: string, organizationId: string): Promise<boolean> => {
-      const rows = await sql.unsafe("SELECT 1 FROM memberships WHERE user_id = $1 AND organization_id = $2 AND status = 'active' LIMIT 1", [subjectId, organizationId]);
-      return rows.length > 0;
+      return withOrganizationContext(sql, organizationId, subjectId, async (transaction) => {
+        const rows = await transaction.unsafe("SELECT 1 FROM memberships WHERE user_id = $1 AND organization_id = $2 AND status = 'active' LIMIT 1", [subjectId, organizationId]);
+        return rows.length > 0;
+      });
     },
   };
 `
@@ -1636,7 +1851,7 @@ export interface DatabaseRuntime {
 ${plan.needsTenancy ? "  readonly withOrganizationContext: <T>(organizationId: string, subjectId: string, callback: (transaction: postgres.TransactionSql) => Promise<T>) => Promise<T>;\n" : ""}
 ${plan.needsTenancy ? "  readonly organization: { readonly hasMembership: (subjectId: string, organizationId: string) => Promise<boolean>; };\n" : ""}
 ${plan.needsEvents ? "  readonly outbox: OutboxPort & OutboxDeliveryPort;\n" : ""}
-${plan.needsIdentity ? "  readonly authentication: { readonly database: ReturnType<typeof drizzle>; readonly schema: typeof authSchema };\n  readonly identity: IdentityRepository;\n" : ""}${plan.needsWorker ? "  readonly workflow: WorkflowStore;\n" : ""}${plan.needsStorage ? "  readonly metadata: StorageMetadataStore;\n" : ""}${plan.needsAi ? "  readonly ai: AiPersistence;\n" : ""}
+${plan.needsIdentity ? "  readonly authentication: { readonly database: ReturnType<typeof drizzle>; readonly schema: typeof authSchema; readonly recordAssurance: (sessionToken: string, assurance: AssuranceLevel) => Promise<void>; readonly resolveAssurance: (sessionToken: string) => Promise<{ readonly assurance: AssuranceLevel; readonly authenticatedAt: string } | null> };\n  readonly identity: IdentityRepository;\n" : ""}${plan.needsWorker ? "  readonly workflow: WorkflowStore;\n" : ""}${plan.needsStorage ? "  readonly metadata: StorageMetadataStore;\n" : ""}${plan.needsAi ? "  readonly ai: AiPersistence;\n" : ""}
 }
 export function databaseUrl(): string {
   const value = process.env.DATABASE_URL;
@@ -1648,7 +1863,7 @@ ${tenantRuntime}
 export function createDatabaseRuntime(url = databaseUrl()): DatabaseRuntime {
   const sql = postgres(url, { max: 2 });
 ${organizationDatabase}
-${plan.needsIdentity ? "  const authentication = { database: drizzle(sql, { schema: authSchema }), schema: authSchema };\n  const identityDatabase = drizzle(sql, { schema: { applicationUsers } });\n" : ""}${identityDatabase}${workflowDatabase}${eventDatabase}${metadataDatabase}${aiDatabase}
+${plan.needsIdentity ? '  const authentication = { database: drizzle(sql, { schema: authSchema }), schema: authSchema, recordAssurance: async (sessionToken: string, assurance: AssuranceLevel) => { await sql.unsafe("INSERT INTO authentication_assurance (session_token, assurance, authenticated_at) VALUES ($1, $2, now()) ON CONFLICT (session_token) DO UPDATE SET assurance = EXCLUDED.assurance, authenticated_at = EXCLUDED.authenticated_at", [sessionToken, assurance]); }, resolveAssurance: async (sessionToken: string) => { const rows = await sql.unsafe("SELECT assurance, authenticated_at FROM authentication_assurance WHERE session_token = $1", [sessionToken]); const row = rows[0]; return row && typeof row.assurance === "string" && row.authenticated_at instanceof Date ? { assurance: row.assurance as AssuranceLevel, authenticatedAt: row.authenticated_at.toISOString() } : null; } };\n  const identityDatabase = drizzle(sql, { schema: { applicationUsers } });\n' : ""}${identityDatabase}${workflowDatabase}${eventDatabase}${metadataDatabase}${aiDatabase}
   return {
     checkReadiness: async () => { await sql.unsafe("SELECT 1"); },
     close: async () => { await sql.end({ timeout: 5 }); },
@@ -1669,23 +1884,133 @@ function adaptersPackageFile(config: InitConfig, plan: CapabilityPlan): Generate
   const identity = plan.needsIdentity
     ? `
 import { betterAuth } from "better-auth";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
+import { twoFactor } from "better-auth/plugins";
+import { passkey } from "@better-auth/passkey";
+import { canPerformSensitiveAccountChange, type AssuranceLevel, type IdentityMailPort } from "${packageName(config, "core")}";
 ${sourceOfTruthBlock({ id: "starter.identity.authentication-adapter", keywords: "identity, authentication, better-auth, session", what: "Better Auth server adapter for authentication artifacts and session resolution.", why: "Authentication stays provider-owned while application identity and authorization remain separate.", when: "Compose the API authentication routes and request context.", how: "createBetterAuthAdapter", boundaries: "The adapter never grants application permissions from an authentication session alone." })}
-export function createBetterAuthAdapter(input: { readonly secret: string; readonly baseURL: string; readonly database: Parameters<typeof drizzleAdapter>[0]; readonly schema: Record<string, unknown>; readonly onUserCreated: (authenticationSubjectId: string) => Promise<void> }) {
+export function createIdentityMailAdapter(input: { readonly provider: "mailpit" | "resend"; readonly from: string; readonly mailpitUrl?: string; readonly resendApiKey?: string; readonly fetch?: typeof fetch }): IdentityMailPort {
+  const request = input.fetch ?? fetch;
+  const send = async (message: { readonly email: string; readonly url: string; readonly kind: "verification" | "password-reset" }): Promise<void> => {
+    const subject = message.kind === "verification" ? "Verify your email" : "Reset your password";
+    const endpoint = input.provider === "resend" ? "https://api.resend.com/emails" : \`\${input.mailpitUrl ?? "http://127.0.0.1:8025"}/api/v1/send\`;
+    if (input.provider === "resend" && !input.resendApiKey) throw new Error("IDENTITY_RESEND_API_KEY is required for Resend identity mail");
+    const response = await request(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(input.resendApiKey ? { authorization: \`Bearer \${input.resendApiKey}\` } : {}) },
+      body: JSON.stringify(input.provider === "resend"
+        ? { from: input.from, to: [message.email], subject, html: \`<p><a href="\${message.url}">\${subject}</a></p>\` }
+        : { From: { Email: input.from }, To: [{ Email: message.email }], Subject: subject, HTML: \`<p><a href="\${message.url}">\${subject}</a></p>\` }),
+    });
+    if (!response.ok) throw new Error(\`Identity mail provider rejected delivery: \${response.status}\`);
+  };
+  return {
+    sendVerification: (message) => send({ ...message, kind: "verification" }),
+    sendPasswordReset: (message) => send({ ...message, kind: "password-reset" }),
+  };
+}
+export function assuranceForCompletedAuthenticationPath(path: string): AssuranceLevel {
+  if (path === "/passkey/verify-authentication") return "phishing_resistant";
+  if (path === "/two-factor/verify-totp") return "multi_factor";
+  if (path === "/two-factor/verify-backup-code") return "recovery";
+  return "single_factor";
+}
+const sensitiveAccountPaths = new Set([
+  "/change-password",
+  "/change-email",
+  "/delete-user",
+  "/two-factor/enable",
+  "/two-factor/disable",
+  "/two-factor/generate-backup-codes",
+  "/passkey/add-passkey",
+  "/passkey/delete-passkey",
+]);
+export function requiresRecentAccountAssurance(path: string): boolean {
+  return sensitiveAccountPaths.has(path);
+}
+export function createBetterAuthAdapter(input: {
+  readonly appName: string;
+  readonly secret: string;
+  readonly baseURL: string;
+  readonly trustedOrigins: readonly string[];
+  readonly database: Parameters<typeof drizzleAdapter>[0];
+  readonly schema: Record<string, unknown>;
+  readonly identityMail: IdentityMailPort;
+  readonly onUserCreated: (authenticationSubjectId: string) => Promise<void>;
+  readonly recordAssurance: (sessionToken: string, assurance: AssuranceLevel) => Promise<void>;
+  readonly resolveAssurance: (sessionToken: string) => Promise<{ readonly assurance: AssuranceLevel; readonly authenticatedAt: string } | null>;
+}) {
   const auth = betterAuth({
+    appName: input.appName,
     secret: input.secret,
     baseURL: input.baseURL,
-    emailAndPassword: { enabled: true },
+    trustedOrigins: [...input.trustedOrigins],
+    emailAndPassword: {
+      enabled: true,
+      requireEmailVerification: true,
+      resetPasswordTokenExpiresIn: 3600,
+      revokeSessionsOnPasswordReset: true,
+      sendResetPassword: async ({ user, url }) => input.identityMail.sendPasswordReset({ email: user.email, url }),
+    },
+    emailVerification: {
+      sendOnSignUp: true,
+      autoSignInAfterVerification: false,
+      sendVerificationEmail: async ({ user, url }) => input.identityMail.sendVerification({ email: user.email, url }),
+    },
+    rateLimit: {
+      enabled: true,
+      window: 60,
+      max: 10,
+      customRules: {
+        "/sign-in/email": { window: 60, max: 5 },
+        "/send-verification-email": { window: 300, max: 3 },
+        "/request-password-reset": { window: 300, max: 3 },
+      },
+    },
+    plugins: [twoFactor({ issuer: input.appName }), passkey()],
+    hooks: {
+      before: createAuthMiddleware(async (context) => {
+        if (["/two-factor/verify-totp", "/two-factor/verify-backup-code"].includes(context.path)) {
+          const body = context.body as { trustDevice?: unknown } | undefined;
+          if (body?.trustDevice === true) throw new APIError("BAD_REQUEST", { message: "Trusted-device MFA bypass is disabled" });
+        }
+      }),
+      after: createAuthMiddleware(async (context) => {
+        const newSession = context.context.newSession;
+        if (!newSession) return;
+        const assurance = assuranceForCompletedAuthenticationPath(context.path);
+        await input.recordAssurance(newSession.session.token, assurance);
+      }),
+    },
     database: drizzleAdapter(input.database, { provider: "pg", schema: input.schema }),
     databaseHooks: { user: { create: { after: async (user) => input.onUserCreated(user.id) } } },
   });
+  const handler = async (request: Request): Promise<Response> => {
+    const pathname = new URL(request.url).pathname;
+    const path = pathname.startsWith("/api/auth") ? pathname.slice("/api/auth".length) : pathname;
+    if (requiresRecentAccountAssurance(path)) {
+      const session = await auth.api.getSession({ headers: request.headers });
+      if (!session?.session?.token) return new Response(null, { status: 401 });
+      const assurance = await input.resolveAssurance(session.session.token);
+      if (!assurance || !canPerformSensitiveAccountChange(assurance)) {
+        return Response.json({ code: "RECENT_ASSURANCE_REQUIRED" }, { status: 403 });
+      }
+    }
+    return auth.handler(request);
+  };
   return {
     auth,
-    handler: auth.handler,
+    handler,
     resolveSession: async (headers: Headers) => {
       const session = await auth.api.getSession({ headers });
-      return session?.user?.id ? { subjectId: session.user.id } : null;
+      if (!session?.user?.id) return null;
+      const assurance = await input.resolveAssurance(session.session.token);
+      return { subjectId: session.user.id, assurance: assurance?.assurance ?? "single_factor", authenticatedAt: assurance?.authenticatedAt ?? session.session.createdAt.toISOString() };
     },
+    listSessions: async (headers: Headers) => auth.api.listSessions({ headers }),
+    revokeSession: async (headers: Headers, token: string) => { await auth.api.revokeSession({ headers, body: { token } }); },
+    revokeAllSessions: async (headers: Headers) => { await auth.api.revokeSessions({ headers }); },
   };
 }
 `
@@ -1717,8 +2042,8 @@ export function createS3Storage(input: { readonly bucket: string; readonly regio
       return { url: result.url, fields: result.fields, key: value.key, expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString() };
     },
     completeUpload: async (value) => {
-    if (!policy.authorize("complete-upload", value.key, value.subjectId)) throw new Error("Storage policy denied upload completion");
-      const existing = await input.metadata.find(value.key);
+      if (!policy.authorize("complete-upload", value.key, value.subjectId, value.organizationId)) throw new Error("Storage policy denied upload completion");
+      const existing = await input.metadata.find({ key: value.key, subjectId: value.subjectId, ...(value.organizationId ? { organizationId: value.organizationId } : {}) });
       if (!existing || existing.subjectId !== value.subjectId) throw new Error("Storage upload metadata missing");
       const head = await send(new HeadObjectCommand({ Bucket: input.bucket, Key: value.key }));
       const byteLength = typeof (head as { readonly ContentLength?: unknown }).ContentLength === "number" ? (head as { readonly ContentLength: number }).ContentLength : existing.byteLength;
@@ -1727,15 +2052,15 @@ export function createS3Storage(input: { readonly bucket: string; readonly regio
       return { ...existing, byteLength, status: "available" };
     },
     put: async (value) => {
-      validateStorageUpload({ key: value.key, contentType: value.contentType, byteLength: value.body.byteLength, subjectId: value.subjectId }, policy);
-      const existing = await input.metadata.find(value.key);
+      validateStorageUpload({ key: value.key, contentType: value.contentType, byteLength: value.body.byteLength, subjectId: value.subjectId, ...(value.organizationId ? { organizationId: value.organizationId } : {}) }, policy);
+      const existing = await input.metadata.find({ key: value.key, subjectId: value.subjectId, ...(value.organizationId ? { organizationId: value.organizationId } : {}) });
       if (existing && existing.subjectId !== value.subjectId) throw new Error("Storage object ownership denied");
       await send(new PutObjectCommand({ Bucket: input.bucket, Key: value.key, ContentType: value.contentType, Body: value.body }));
-      await input.metadata.record({ key: value.key, contentType: value.contentType, byteLength: value.body.byteLength, subjectId: value.subjectId, status: "available" });
+      await input.metadata.record({ key: value.key, contentType: value.contentType, byteLength: value.body.byteLength, subjectId: value.subjectId, ...(value.organizationId ? { organizationId: value.organizationId } : {}), status: "available" });
     },
     getUrl: async (value) => {
-      if (!policy.authorize("get", value.key, value.subjectId)) throw new Error("Storage policy denied object read");
-      const metadata = await input.metadata.find(value.key);
+      if (!policy.authorize("get", value.key, value.subjectId, value.organizationId)) throw new Error("Storage policy denied object read");
+      const metadata = await input.metadata.find({ key: value.key, subjectId: value.subjectId, ...(value.organizationId ? { organizationId: value.organizationId } : {}) });
       if (!metadata || metadata.subjectId !== value.subjectId || metadata.status !== "available") throw new Error("Storage object ownership denied");
       return getSignedUrl(client, new GetObjectCommand({ Bucket: input.bucket, Key: value.key }), { expiresIn: 900 });
     },
@@ -1856,7 +2181,7 @@ function developerGuideFile(config: InitConfig, plan: CapabilityPlan): Generated
   const hasMobile = hasProfile(config, "mobile");
   const hasPython = hasProfile(config, "python");
   const modules = [
-    ["foundation", "ready baseline", "shared primitives"],
+    ["@thaarei-technology/foundation", "exact private dependency", "shared primitives"],
     ["core", "ready baseline", "domain rules and ports"],
     ["contracts", "ready baseline", "Zod-backed wire contracts"],
     ...(plan.needsDatabase
@@ -1920,7 +2245,7 @@ function developerGuideFile(config: InitConfig, plan: CapabilityPlan): Generated
           ] as const,
         ]
       : []),
-    ...(hasProfile(config, "durable-ai")
+    ...(hasProfile(config, "agentic-ai")
       ? [["durable AI", "scaffold", "durable job orchestration seam"] as const]
       : []),
     ...(plan.needsStorage
@@ -2096,7 +2421,7 @@ ${plan.needsStorage ? "    pnpm storage:up\n" : ""}`
     "docs/developer-guide.md",
     `# ${config.displayName} developer guide
 
-This private repository is self-contained. Selected profiles: ${config.profiles.map((profile) => `\`${profile}\``).join(", ")}.
+This private repository is independently owned. Resolved profiles: ${plan.canonicalProfiles.map((profile) => `\`${profile}\``).join(", ")}.
 
 ## Prerequisites
 
@@ -2147,19 +2472,25 @@ function environmentReferenceFile(config: InitConfig, plan: CapabilityPlan): Gen
       : "API port."
     : "Selected application port; the web app uses 3000.";
   const values = [
+    ["APP_ENV", "local", "Admission environment: local, ci, staging, or production."],
     ["NODE_ENV", "development", "Set by local development; production platform supplies it."],
     ["PORT", portExample, portPurpose],
     ...(plan.needsDatabase
       ? [
           [
             "DATABASE_URL",
-            "postgres://starter:starter_local@127.0.0.1:5432/starter",
-            "Use a private managed URL in production.",
+            "postgres://starter_runtime:starter_runtime_local@127.0.0.1:5432/starter",
+            "Non-owner runtime role; must not own schemas, migrate, or have BYPASSRLS.",
+          ],
+          [
+            "MIGRATOR_DATABASE_URL",
+            "postgres://starter_migrator:starter_migrator_local@127.0.0.1:5432/starter",
+            "Dedicated environment-specific migrator role; never expose to application processes.",
           ] as const,
         ]
       : []),
     ...(plan.needsIdentity
-      ? [
+      ? ([
           [
             "BETTER_AUTH_SECRET",
             "replace-with-a-local-secret",
@@ -2169,8 +2500,16 @@ function environmentReferenceFile(config: InitConfig, plan: CapabilityPlan): Gen
             "BETTER_AUTH_URL",
             hasProfile(config, "web") ? "http://127.0.0.1:3000" : "http://127.0.0.1:3001",
             "Configure the browser-visible origin that serves the authentication path.",
-          ] as const,
-        ]
+          ],
+          [
+            "IDENTITY_MAIL_PROVIDER",
+            "mailpit",
+            "Use mailpit only in local/CI and resend in staging/production.",
+          ],
+          ["IDENTITY_FROM_EMAIL", "identity@example.test", "Use a verified sender in production."],
+          ["IDENTITY_RESEND_API_KEY", "", "Required and secret when identity mail uses Resend."],
+          ["IDENTITY_MAILPIT_URL", "http://127.0.0.1:8025", "Local and CI only."],
+        ] as const)
       : []),
     ...(hasProfile(config, "web") && plan.needsApi
       ? [
@@ -2252,8 +2591,12 @@ function environmentReferenceFile(config: InitConfig, plan: CapabilityPlan): Gen
       : []),
     ...(hasProfile(config, "notifications")
       ? ([
-          ["RESEND_API_KEY", "fixture-only", "Required only for the configured Resend adapter."],
-          ["MAILPIT_URL", "http://127.0.0.1:8025", "Local Mailpit inspection endpoint."],
+          [
+            "RESEND_API_KEY",
+            "fixture-only",
+            "General notifications only; separate from identity mail.",
+          ],
+          ["MAILPIT_URL", "http://127.0.0.1:8025", "General-notification inspection endpoint."],
         ] as const)
       : []),
     ...(plan.providers.aiProviders.includes("openai")
@@ -2304,14 +2647,14 @@ ${rows}
   );
 }
 
-function localComposeFile(plan: CapabilityPlan): GeneratedFile {
+function localComposeFile(config: InitConfig, plan: CapabilityPlan): GeneratedFile {
   const selected = new Set(plan.canonicalProfiles);
-  const selectedProfile = (profile: Profile): boolean =>
-    selected.has(profile === "durable-ai" ? "agentic-ai" : profile);
+  const selectedProfile = (profile: Profile): boolean => selected.has(profile);
   const includeStorage = plan.needsStorage;
   const storageServices = includeStorage
     ? `
   object-storage:
+    profiles: ["experimental"]
     image: ${MINIO_IMAGE}
     command: server /data --console-address ":9001"
     environment:
@@ -2328,6 +2671,7 @@ function localComposeFile(plan: CapabilityPlan): GeneratedFile {
     volumes:
       - starter-object-storage:/data
   object-storage-init:
+    profiles: ["experimental"]
     image: ${MINIO_MC_IMAGE}
     depends_on:
       object-storage:
@@ -2354,8 +2698,9 @@ function localComposeFile(plan: CapabilityPlan): GeneratedFile {
       - starter-valkey-data:/data
 `
     : "";
-  const notificationServices = selectedProfile("notifications")
-    ? `
+  const notificationServices =
+    selectedProfile("identity") || selectedProfile("notifications")
+      ? `
   mailpit:
     image: ${IMAGE_CATALOG.mailpit.reference}@${IMAGE_CATALOG.mailpit.digest}
     ports:
@@ -2367,7 +2712,7 @@ function localComposeFile(plan: CapabilityPlan): GeneratedFile {
       timeout: 5s
       retries: 20
 `
-    : "";
+      : "";
   const observabilityServices = selectedProfile("observability")
     ? `
   otel-collector:
@@ -2386,17 +2731,18 @@ function localComposeFile(plan: CapabilityPlan): GeneratedFile {
     restart: unless-stopped
     environment:
       POSTGRES_DB: starter
-      POSTGRES_USER: starter
-      POSTGRES_PASSWORD: starter_local
+      POSTGRES_USER: starter_admin
+      POSTGRES_PASSWORD: starter_admin_local
     ports:
       - "127.0.0.1:\${POSTGRES_PORT:-5432}:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U starter -d starter"]
+      test: ["CMD-SHELL", "pg_isready -U starter_admin -d starter"]
       interval: 2s
       timeout: 5s
       retries: 20
     volumes:
       - starter-postgres-data:/var/lib/postgresql
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/001-roles.sql:ro
 `
     : "services:\n";
   const volumes = [
@@ -2406,7 +2752,114 @@ function localComposeFile(plan: CapabilityPlan): GeneratedFile {
   ];
   return textFile(
     "compose.yaml",
-    `${postgresService}${storageServices}${cacheServices}${notificationServices}${observabilityServices}${volumes.length > 0 ? `volumes:\n${volumes.join("\n")}\n` : ""}
+    `name: ${config.productId}\n${postgresService}${storageServices}${cacheServices}${notificationServices}${observabilityServices}${volumes.length > 0 ? `volumes:\n${volumes.join("\n")}\n` : ""}
+`,
+  );
+}
+
+function devCleanFile(config: InitConfig): GeneratedFile {
+  return textFile(
+    "tooling/dev-clean.ts",
+    `import { spawn } from "node:child_process";
+import { createInterface } from "node:readline/promises";
+
+if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("dev:clean requires an interactive terminal");
+const terminal = createInterface({ input: process.stdin, output: process.stdout });
+const answer = await terminal.question("Type ${config.productId} to delete this project's retained development volumes: ");
+terminal.close();
+if (answer !== "${config.productId}") throw new Error("Confirmation did not match; no volumes were deleted");
+const child = spawn("docker", ["compose", "down", "--volumes", "--remove-orphans"], { stdio: "inherit" });
+const exitCode = await new Promise<number>((resolveExit) => child.once("exit", (code) => resolveExit(code ?? 1)));
+if (exitCode !== 0) process.exitCode = exitCode;
+`,
+  );
+}
+
+function supplyChainWorkflowFile(plan: CapabilityPlan): GeneratedFile {
+  const matrix = plan.deployableApps.map((application) => ({
+    application,
+    dockerfile:
+      application === "python" ? "services/python/Dockerfile" : `apps/${application}/Dockerfile`,
+  }));
+  return textFile(
+    ".github/workflows/supply-chain.yml",
+    `name: Build and attest immutable images
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${JSON.stringify({ include: matrix })}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
+        with:
+          version: ${PNPM_VERSION}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm config set "//npm.pkg.github.com/:_authToken" "$GITHUB_TOKEN"
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm validate:starter
+      - name: Record dependency vulnerability report
+        run: ${plan.profiles.includes("mobile") ? "pnpm audit --prod --json > dependency-vulnerabilities.json || (cp dependency-vulnerabilities.json .thaarei/pnpm-audit.json && pnpm security:waiver-check)" : "pnpm audit --prod --json > dependency-vulnerabilities.json"}
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: \${{ github.actor }}
+          password: \${{ github.token }}
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - id: image
+        shell: bash
+        run: echo "image=ghcr.io/\${GITHUB_REPOSITORY,,}-\${{ matrix.application }}" >> "$GITHUB_OUTPUT"
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          file: \${{ matrix.dockerfile }}
+          push: true
+          tags: \${{ steps.image.outputs.image }}:\${{ github.sha }}
+      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        with:
+          image: \${{ steps.image.outputs.image }}@\${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          artifact-name: sbom-\${{ matrix.application }}.spdx.json
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
+        with:
+          subject-name: \${{ steps.image.outputs.image }}
+          subject-digest: \${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: Verify registry attestation before recording evidence
+        env:
+          GH_TOKEN: \${{ github.token }}
+        run: gh attestation verify "oci://\${{ steps.image.outputs.image }}@\${{ steps.build.outputs.digest }}" --repo "$GITHUB_REPOSITORY"
+      - name: Record immutable application digest
+        shell: bash
+        run: printf '{"application":"%s","image":"%s","digest":"%s","sourceCommit":"%s"}\\n' "\${{ matrix.application }}" "\${{ steps.image.outputs.image }}" "\${{ steps.build.outputs.digest }}" "$GITHUB_SHA" > application-image.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-evidence-\${{ matrix.application }}
+          path: |
+            application-image.json
+            dependency-vulnerabilities.json
+            sbom.spdx.json
+          if-no-files-found: error
+          retention-days: 30
 `,
   );
 }
@@ -2421,7 +2874,7 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
       version: PACKAGE_VERSION,
       type: "module",
       packageManager: `pnpm@${PNPM_VERSION}`,
-      engines: { node: "24.19.x" },
+      engines: { node: "24.20.x" },
       scripts: {
         build: hasProfile(config, "mobile")
           ? `turbo run build --filter=!${packageName(config, "mobile-app")}`
@@ -2429,7 +2882,11 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
         ...(hasProfile(config, "mobile")
           ? { "build:mobile": `pnpm --filter ${packageName(config, "mobile-app")} build` }
           : {}),
-        dev: "turbo run dev --parallel",
+        "dev:deps": `docker compose${resolveCapabilities(plan.profiles, plan.providers).definitions.some((definition) => definition.sourceMaturity === "experimental" && definition.localServices.length > 0) ? " --profile experimental" : ""} up -d`,
+        dev: `pnpm dev:deps && turbo run dev --parallel`,
+        "dev:full": `pnpm dev:deps && turbo run dev --parallel`,
+        "dev:down": "docker compose down --remove-orphans",
+        "dev:clean": "tsx tooling/dev-clean.ts",
         ...(plan.needsApi
           ? { "dev:api": `pnpm --filter ${packageName(config, "api-app")} dev` }
           : {}),
@@ -2465,6 +2922,9 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
         "check:source-of-truth": "tsx tooling/governance/src/cli.ts check:source-of-truth",
         ...(plan.needsDatabase ? { "check:migrations": "tsx tooling/check-migrations.ts" } : {}),
         "release:check": "tsx tooling/release/check-release.ts",
+        ...(hasProfile(config, "mobile")
+          ? { "security:waiver-check": "tsx tooling/security/check-waivers.ts" }
+          : {}),
         format: "biome format --write .",
         "format:check": "biome format .",
         "implementation:list": "tsx tooling/governance/src/cli.ts implementation:list",
@@ -2478,9 +2938,11 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
         test: "vitest run --passWithNoTests",
         typecheck: "turbo run typecheck",
         check: `pnpm format:check && pnpm lint && pnpm release:check && pnpm check:source-of-truth && pnpm check:boundaries && pnpm check:implementation${plan.needsDatabase ? " && pnpm check:migrations" : ""}${plan.needsExternalApi ? " && pnpm check:generated" : ""}${hasProfile(config, "python") ? " && pnpm check:python" : ""} && pnpm typecheck && pnpm build && pnpm test`,
+        "validate:starter": "pnpm check",
         "validate:product": "pnpm check",
       },
       devDependencies: {
+        "@thaarei-technology/tooling": TOOLING_VERSION,
         "@biomejs/biome": DEPENDENCY_VERSIONS.biome,
         ...(hasProfile(config, "external-api")
           ? { "@hey-api/openapi-ts": DEPENDENCY_VERSIONS.openapiClient }
@@ -2490,10 +2952,13 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
         turbo: DEPENDENCY_VERSIONS.turbo,
         typescript: DEPENDENCY_VERSIONS.typescript,
         vitest: DEPENDENCY_VERSIONS.vitest,
+        ...(config.deployment === "railway" ? { railway: DEPENDENCY_VERSIONS.railway } : {}),
       },
     }),
     jsonFile("pnpm-workspace.yaml", {
       packages: ["packages/*", "apps/*"],
+      forceLegacyDeploy: true,
+      allowBuilds: { esbuild: true },
       ...(hasProfile(config, "external-api")
         ? { overrides: { "js-yaml": DEPENDENCY_VERSIONS.jsYaml } }
         : {}),
@@ -2531,7 +2996,6 @@ import { defineConfig } from "vitest/config";
 const root = fileURLToPath(new URL(".", import.meta.url));
 const packages = ${JSON.stringify(
         [
-          "foundation",
           "core",
           "contracts",
           "adapters",
@@ -2581,7 +3045,10 @@ export default defineConfig({
       },
     }),
     textFile(".nvmrc", `${NODE_VERSION}\n`),
-    textFile(".npmrc", "save-exact=true\nprefer-frozen-lockfile=true\n"),
+    textFile(
+      ".npmrc",
+      "save-exact=true\nprefer-frozen-lockfile=true\n@thaarei-technology:registry=https://npm.pkg.github.com\nalways-auth=true\n",
+    ),
     textFile(".gitignore", "node_modules\ndist\n.next\n.turbo\n.env\n"),
     textFile(
       ".dockerignore",
@@ -2589,11 +3056,29 @@ export default defineConfig({
     ),
     textFile(
       "README.md",
-      `# ${config.displayName}\n\nPrivate, self-contained ${config.displayName} application. Selected profiles: ${config.profiles.join(", ") || "base"}.\n\n## Start here\n\nRead docs/developer-guide.md, copy .env.example to .env, then run pnpm install --frozen-lockfile and pnpm dev.${plan.needsDatabase ? " Data-enabled projects also run pnpm db:up and pnpm db:migrate." : ""}\n`,
+      `# ${config.displayName}\n\nPrivate, independently owned ${config.displayName} application. Resolved profiles: ${plan.canonicalProfiles.join(", ") || "base"}.\n\n## Start here\n\nRead docs/developer-guide.md, copy .env.example to .env, then run pnpm install --frozen-lockfile and pnpm dev.${plan.needsDatabase ? " Data-enabled projects also run pnpm db:up and pnpm db:migrate." : ""}\n`,
     ),
     developerGuideFile(config, plan),
     environmentReferenceFile(config, plan),
-    ...(plan.needsDatabase || plan.localServices.length > 0 ? [localComposeFile(plan)] : []),
+    ...(plan.needsDatabase || plan.localServices.length > 0
+      ? [localComposeFile(config, plan), devCleanFile(config)]
+      : []),
+    ...(plan.needsDatabase
+      ? [
+          textFile(
+            "docker/postgres/init.sql",
+            `CREATE ROLE starter_migrator LOGIN PASSWORD 'starter_migrator_local' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+CREATE ROLE starter_runtime LOGIN PASSWORD 'starter_runtime_local' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+	GRANT CONNECT ON DATABASE starter TO starter_migrator, starter_runtime;
+	GRANT CREATE ON DATABASE starter TO starter_migrator;
+GRANT CREATE, USAGE ON SCHEMA public TO starter_migrator;
+GRANT USAGE ON SCHEMA public TO starter_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE starter_migrator IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO starter_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE starter_migrator IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO starter_runtime;
+`,
+          ),
+        ]
+      : []),
     ...(hasProfile(config, "web")
       ? [
           textFile(
@@ -2612,8 +3097,9 @@ export default defineConfig({
     ),
     textFile(
       ".github/workflows/product-validation.yml",
-      `name: Starter validation\n\non:\n  push:\n  pull_request:\n\npermissions:\n  contents: read\n\njobs:\n  validate:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa\n        with:\n          version: ${PNPM_VERSION}\n      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020\n        with:\n          node-version-file: .nvmrc\n          cache: pnpm\n      - run: pnpm install --frozen-lockfile --ignore-scripts\n      - run: pnpm audit --prod --audit-level high${hasProfile(config, "mobile") ? " --ignore GHSA-w3rx-r6r6-pgpr --ignore GHSA-5p2g-fcmc-qvqq" : ""}\n${hasProfile(config, "python") ? "      - run: docker build --file services/python/Dockerfile .\n" : ""}      - run: pnpm validate:starter\n`,
+      `name: Starter validation\n\non:\n  push:\n  pull_request:\n\npermissions:\n  contents: read\n  packages: read\n\njobs:\n  validate:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa\n        with:\n          version: ${PNPM_VERSION}\n      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020\n        with:\n          node-version-file: .nvmrc\n          cache: pnpm\n      - run: pnpm config set "//npm.pkg.github.com/:_authToken" "$GITHUB_TOKEN"\n        env:\n          GITHUB_TOKEN: \${{ github.token }}\n      - run: pnpm install --frozen-lockfile --ignore-scripts\n      - run: ${hasProfile(config, "mobile") ? "pnpm audit --prod --audit-level high --json > .thaarei/pnpm-audit.json || pnpm security:waiver-check" : "pnpm audit --prod --audit-level high"}\n${hasProfile(config, "python") ? "      - run: docker build --file services/python/Dockerfile .\n" : ""}      - run: pnpm validate:starter\n`,
     ),
+    ...(plan.deployableApps.length > 0 ? [supplyChainWorkflowFile(plan)] : []),
     jsonFile(`${identity.namespace}/capabilities.json`, {
       schemaVersion: 2,
       requestedProfiles: config.profiles,
@@ -2626,7 +3112,7 @@ export default defineConfig({
     }),
     jsonFile("release-manifest.json", {
       $schema: "./tooling/release/release-manifest.schema.json",
-      schemaVersion: 1,
+      schemaVersion: 2,
       release: `${PACKAGE_VERSION}-dev.1`,
       status: "prerelease",
       releasedAt: null,
@@ -2711,12 +3197,15 @@ export default defineConfig({
                 gate: "web-developer-handoff",
                 status: "passed" as const,
                 evidence:
-                  "The starter's dedicated web, API, data, and identity fixture passed typed proxy, authentication, persistence, migration, build, and container checks under Node 24.19.0.",
+                  "The starter's dedicated web, API, data, and identity fixture passed typed proxy, authentication, persistence, migration, build, and container checks under Node 24.20.0.",
               },
             ]
           : []),
         {
-          gate: "deployment-and-recovery",
+          gate:
+            config.deployment === "railway"
+              ? "beta-deployment-and-recovery"
+              : "deployment-and-recovery",
           status: "blocked_external",
           evidence:
             "Requires a disposable selected deployment environment and restore/rollback proof.",
@@ -2724,31 +3213,72 @@ export default defineConfig({
         ...(hasProfile(config, "mobile") && hasProfile(config, "identity")
           ? [
               {
-                gate: "better-auth-expo-native-build",
+                gate: "experimental-better-auth-expo-native-build",
                 status: "blocked_external" as const,
                 evidence: "Requires iOS and Android development-build proof.",
               },
             ]
           : []),
       ],
+      qualifications: [
+        ...resolveCapabilities(plan.profiles, plan.providers).definitions.map((definition) => ({
+          id: definition.id,
+          sourceMaturity: definition.sourceMaturity,
+          productionPolicy: definition.productionPolicy,
+          qualification: definition.productionPolicy === "forbidden" ? "blocked" : "unqualified",
+          requiredGates: definition.requiredGates,
+        })),
+        {
+          id: `${config.deployment}-${config.topology ?? "standard"}`,
+          sourceMaturity: config.deployment === "railway" ? "beta" : "stable",
+          productionPolicy:
+            config.deployment === "railway"
+              ? "requires_product_qualification"
+              : "starter_qualified",
+          qualification: config.deployment === "railway" ? "blocked" : "unqualified",
+          requiredGates: ["deploy", "migration", "rollback", "restore", "monitoring"],
+        },
+      ],
+      evidence: [],
+      securityWaivers: hasProfile(config, "mobile")
+        ? [
+            {
+              id: "mobile-image-size-2026-09",
+              advisoryIds: ["GHSA-5p2g-fcmc-qvqq"],
+              affectedSubject: { kind: "fixture", id: "experimental-mobile" },
+              expiresAt: MOBILE_WAIVER_EXPIRES_AT,
+              blocksProduction: true,
+            },
+          ]
+        : [],
     }),
     jsonFile("tooling/release/release-manifest.schema.json", generatedReleaseSchema()),
     generatedReleaseChecker(),
+    ...(hasProfile(config, "mobile") ? [generatedSecurityWaiverChecker()] : []),
     ...(hasProfile(config, "mobile")
       ? [
           jsonFile(`${identity.namespace}/security-waivers.json`, {
             schemaVersion: 1,
             waivers: [
               {
-                package: "image-size",
-                advisories: ["GHSA-w3rx-r6r6-pgpr", "GHSA-5p2g-fcmc-qvqq"],
+                id: "mobile-image-size-2026-09",
+                advisoryIds: ["GHSA-5p2g-fcmc-qvqq"],
                 severity: "high",
-                path: "Expo and Metro build tooling",
-                reason:
-                  "The advisory's patched image-size 2.0.3 release is not published. Build inputs must be version-controlled project assets only.",
-                reviewBy: "2026-09-19",
+                affectedSubject: { kind: "fixture", id: "experimental-mobile" },
+                dependencyPath: ["expo", "@expo/metro-config", "image-size@2.0.2"],
+                reachability:
+                  "The parser is reachable only while Metro processes generated mobile build assets; it is absent from stable packages and stable generated repositories.",
+                controls: [
+                  "Never process untrusted image assets through the affected parser.",
+                  "Use version-controlled local build assets only.",
+                  "Do not deploy or promote the mobile artifact to production.",
+                ],
+                owner: config.technicalOwner,
+                reviewedAt: "2026-09-05T00:00:00.000Z",
+                expiresAt: MOBILE_WAIVER_EXPIRES_AT,
                 removalCondition:
                   "Remove the waiver and rerun the fixture matrix when Expo supports a published patched image-size release.",
+                blocksProduction: true,
               },
             ],
           }),
@@ -2756,7 +3286,6 @@ export default defineConfig({
       : []),
   ];
   const basePackages: Array<readonly [string, string, string]> = [
-    ["foundation", "foundation", "Foundation primitives shared by every application."],
     ["core", "core", "Provider-neutral domain ports and policy boundaries."],
     ["contracts", "contracts", "Wire-safe request, response, and job contracts."],
     ["adapters", "adapters", "Provider implementations behind domain ports."],
@@ -2774,16 +3303,35 @@ export default defineConfig({
   if (needsDesignTokens)
     basePackages.push(["design-tokens", "design-tokens", "Cross-platform design tokens."]);
   for (const [name, id, description] of basePackages) {
-    if (name === "foundation") {
-      files.push(packageManifest(config, name), packageTsconfig(name), foundationPackageFile());
-    } else if (name === "core") {
+    if (name === "core") {
       files.push(
         packageManifest(config, name, {
-          [packageName(config, "foundation")]: "workspace:*",
+          [packageName(config, "foundation")]: FOUNDATION_VERSION,
           ...(plan.needsEvents ? { zod: DEPENDENCY_VERSIONS.zod } : {}),
         }),
         packageTsconfig(name),
         corePackageFile(plan),
+        ...(plan.needsIdentity
+          ? [
+              textFile(
+                "packages/core/tests/identity-security.test.ts",
+                `import { expect, test } from "vitest";
+import { assuranceForMethod, canPerformSensitiveAccountChange, identitySecurityPolicy } from "../src/index.js";
+
+test("maps authentication methods to explicit assurance and restricts recovery", () => {
+  expect(assuranceForMethod("password_totp")).toBe("multi_factor");
+  expect(assuranceForMethod("passkey")).toBe("phishing_resistant");
+  expect(assuranceForMethod("recovery_code")).toBe("recovery");
+  const now = new Date("2026-09-05T00:04:00.000Z");
+  expect(canPerformSensitiveAccountChange({ assurance: "phishing_resistant", authenticatedAt: "2026-09-05T00:00:00.000Z" }, now)).toBe(true);
+  expect(canPerformSensitiveAccountChange({ assurance: "recovery", authenticatedAt: "2026-09-05T00:04:00.000Z" }, now)).toBe(false);
+  expect(identitySecurityPolicy.trustedDeviceBypass).toBe(false);
+  expect(identitySecurityPolicy.revokeAllSessionsAfterReset).toBe(true);
+});
+`,
+              ),
+            ]
+          : []),
         ...(plan.needsAi
           ? [
               textFile(
@@ -2944,6 +3492,8 @@ import { defaultStoragePolicy } from "../src/index.js";
 
 test("storage policy rejects cross-subject, unsafe, anonymous, and oversized writes", () => {
   expect(defaultStoragePolicy.authorize("get", "subject-1/file.txt", "subject-1")).toBe(true);
+  expect(defaultStoragePolicy.authorize("get", "org-1/subject-1/file.txt", "subject-1", "org-1")).toBe(true);
+  expect(defaultStoragePolicy.authorize("get", "org-2/subject-1/file.txt", "subject-1", "org-1")).toBe(false);
   expect(defaultStoragePolicy.authorize("get", "subject-1/file.txt", "subject-2")).toBe(false);
   expect(defaultStoragePolicy.authorize("get", "../secret", "subject-1")).toBe(false);
   expect(defaultStoragePolicy.authorize("put", "tenant/file.txt", "")).toBe(false);
@@ -2969,6 +3519,8 @@ test("storage policy rejects cross-subject, unsafe, anonymous, and oversized wri
         [packageName(config, "core")]: "workspace:*",
       };
       if (plan.needsIdentity) adapterDependencies["better-auth"] = DEPENDENCY_VERSIONS.betterAuth;
+      if (plan.needsIdentity)
+        adapterDependencies["@better-auth/passkey"] = DEPENDENCY_VERSIONS.betterAuthPasskey;
       if (plan.needsWorker)
         adapterDependencies["graphile-worker"] = DEPENDENCY_VERSIONS.graphileWorker;
       if (plan.needsStorage) {
@@ -2981,6 +3533,27 @@ test("storage policy rejects cross-subject, unsafe, anonymous, and oversized wri
         packageManifest(config, name, adapterDependencies),
         packageTsconfig(name),
         adaptersPackageFile(config, plan),
+        ...(plan.needsIdentity
+          ? [
+              textFile(
+                "packages/adapters/tests/identity-assurance.test.ts",
+                `import { expect, test } from "vitest";
+import { assuranceForCompletedAuthenticationPath, requiresRecentAccountAssurance } from "../src/index.js";
+
+test("maps completed authentication routes to assurance levels", () => {
+  expect(assuranceForCompletedAuthenticationPath("/passkey/verify-authentication")).toBe("phishing_resistant");
+  expect(assuranceForCompletedAuthenticationPath("/two-factor/verify-totp")).toBe("multi_factor");
+  expect(assuranceForCompletedAuthenticationPath("/two-factor/verify-backup-code")).toBe("recovery");
+  expect(assuranceForCompletedAuthenticationPath("/sign-in/email")).toBe("single_factor");
+});
+
+test("requires recent assurance before recovery-code rotation", () => {
+  expect(requiresRecentAccountAssurance("/two-factor/generate-backup-codes")).toBe(true);
+});
+`,
+              ),
+            ]
+          : []),
         ...(plan.needsStorage
           ? [
               textFile(
@@ -3014,24 +3587,28 @@ test("storage enforces ownership and propagates provider failures", async () => 
         packageManifest(config, name, {
           [packageName(config, "core")]: "workspace:*",
           "drizzle-orm": DEPENDENCY_VERSIONS.drizzle,
+          ...(plan.needsWorker ? { "graphile-worker": DEPENDENCY_VERSIONS.graphileWorker } : {}),
           postgres: DEPENDENCY_VERSIONS.postgres,
         }),
         packageTsconfig(name),
         databasePackageFile(config, plan),
-        migrationRunnerFile(),
+        migrationRunnerFile(plan),
         textFile(
           "packages/database/migrations/0000_starter.sql",
           `${[
             "CREATE TABLE starter_health (id text PRIMARY KEY);",
             ...(plan.needsIdentity
               ? [
-                  'CREATE TABLE "user" (id text PRIMARY KEY, name text NOT NULL, email text NOT NULL UNIQUE, email_verified boolean NOT NULL DEFAULT false, image text, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());',
+                  'CREATE TABLE "user" (id text PRIMARY KEY, name text NOT NULL, email text NOT NULL UNIQUE, email_verified boolean NOT NULL DEFAULT false, two_factor_enabled boolean DEFAULT false, image text, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());',
                   'CREATE TABLE "session" (id text PRIMARY KEY, expires_at timestamptz NOT NULL, token text NOT NULL UNIQUE, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), ip_address text, user_agent text, user_id text NOT NULL REFERENCES "user"(id) ON DELETE CASCADE);',
                   'CREATE INDEX session_user_id_idx ON "session" (user_id);',
                   'CREATE TABLE "account" (id text PRIMARY KEY, issuer text NOT NULL, account_id text NOT NULL, provider_id text NOT NULL, user_id text NOT NULL REFERENCES "user"(id) ON DELETE CASCADE, access_token text, refresh_token text, id_token text, access_token_expires_at timestamptz, refresh_token_expires_at timestamptz, scope text, password text, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), UNIQUE (issuer, account_id));',
                   'CREATE INDEX account_user_id_idx ON "account" (user_id);',
                   'CREATE TABLE "verification" (id text PRIMARY KEY, identifier text NOT NULL, value text NOT NULL, expires_at timestamptz NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now());',
                   'CREATE INDEX verification_identifier_idx ON "verification" (identifier);',
+                  'CREATE TABLE "two_factor" (id text PRIMARY KEY, user_id text NOT NULL REFERENCES "user"(id) ON DELETE CASCADE, secret text NOT NULL, backup_codes text NOT NULL, verified boolean NOT NULL DEFAULT false, failed_verification_count integer NOT NULL DEFAULT 0, locked_until timestamptz);',
+                  'CREATE TABLE "passkey" (id text PRIMARY KEY, name text, public_key text NOT NULL, user_id text NOT NULL REFERENCES "user"(id) ON DELETE CASCADE, credential_id text NOT NULL UNIQUE, counter integer NOT NULL, device_type text NOT NULL, backed_up boolean NOT NULL, transports text, created_at timestamptz DEFAULT now(), aaguid text);',
+                  "CREATE TABLE authentication_assurance (session_token text PRIMARY KEY REFERENCES \"session\"(token) ON DELETE CASCADE, assurance text NOT NULL CHECK (assurance IN ('single_factor', 'multi_factor', 'phishing_resistant', 'recovery')), authenticated_at timestamptz NOT NULL DEFAULT now());",
                   "CREATE TABLE application_users (id text PRIMARY KEY, authentication_subject_id text NOT NULL UNIQUE);",
                 ]
               : []),
@@ -3096,7 +3673,15 @@ test("storage enforces ownership and propagates provider failures", async () => 
               : []),
             ...(plan.needsStorage
               ? [
-                  "CREATE TABLE object_metadata (key text PRIMARY KEY, content_type text NOT NULL, byte_length integer NOT NULL CHECK (byte_length > 0), subject_id text NOT NULL, organization_id text, status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'available', 'quarantined')));",
+                  `CREATE TABLE object_metadata (key text PRIMARY KEY, content_type text NOT NULL, byte_length integer NOT NULL CHECK (byte_length > 0), subject_id text NOT NULL, organization_id text${plan.needsTenancy ? " NOT NULL" : ""}, status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'available', 'quarantined')));`,
+                  ...(plan.needsTenancy
+                    ? [
+                        "ALTER TABLE object_metadata ADD CONSTRAINT object_metadata_organization_fk FOREIGN KEY (organization_id) REFERENCES organizations(id);",
+                        "ALTER TABLE object_metadata ENABLE ROW LEVEL SECURITY;",
+                        "ALTER TABLE object_metadata FORCE ROW LEVEL SECURITY;",
+                        "CREATE POLICY object_metadata_tenant_isolation ON object_metadata USING (organization_id = app_current_organization_id()) WITH CHECK (organization_id = app_current_organization_id());",
+                      ]
+                    : []),
                 ]
               : []),
             ...(plan.needsSearch
@@ -3417,6 +4002,10 @@ test("generated external client reaches the registered Fastify route", async () 
 }
 
 function apiPackageFile(config: InitConfig, plan: CapabilityPlan): GeneratedFile {
+  const storageProcedure = plan.needsTenancy ? "organizationProcedure" : "authenticatedProcedure";
+  const storageOrganizationArgument = plan.needsTenancy
+    ? ", organizationId: ctx.organizationId"
+    : "";
   const contractImports = [
     "healthResponseSchema",
     ...(plan.needsExternalApi ? ["problemDetailsSchema"] : []),
@@ -3547,21 +4136,21 @@ ${
 }
 ${sourceOfTruthBlock({ id: "starter.api.transport", keywords: "api, fastify, trpc, health, readiness", what: "Thin Fastify and tRPC transport composition root.", why: "Separates request handling from domain and provider code.", when: "Use for first-party API routes and health probes.", how: "buildApi, appRouter", boundaries: "Do not place SQL, authorization policy, or provider SDK calls here." })}
 export const appRouter = t.router({
-  health: publicProcedure.query(() => healthResponseSchema.parse({ status: "ok", checkedAt: new Date().toISOString(), instanceId: process.env.STARTER_FIXTURE_ID ?? "local" })),
+  health: publicProcedure.query(() => healthResponseSchema.parse({ status: "ok", checkedAt: new Date().toISOString(), instanceId: process.env["${productIdentity(config).environmentPrefix}_FIXTURE_ID"] ?? "local" })),
   viewer: authenticatedProcedure.query(({ ctx }) => ({ subjectId: ctx.subjectId })),
 ${
   plan.needsStorage
-    ? `  storageUrl: authenticatedProcedure.input(z.object({ key: z.string().min(1) })).mutation(async ({ ctx, input }) => {
+    ? `  storageUrl: ${storageProcedure}.input(z.object({ key: z.string().min(1) })).mutation(async ({ ctx, input }) => {
     if (!ctx.storage) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Storage is not configured" });
-    return { url: await ctx.storage.getUrl({ key: input.key, subjectId: ctx.subjectId }) };
+    return { url: await ctx.storage.getUrl({ key: input.key, subjectId: ctx.subjectId${storageOrganizationArgument} }) };
   }),
-  storageUpload: authenticatedProcedure.input(z.object({ key: z.string().min(1), contentType: z.string().min(1), byteLength: z.number().int().positive(), organizationId: z.string().min(1).optional() }).strict()).mutation(async ({ ctx, input }) => {
+  storageUpload: ${storageProcedure}.input(z.object({ key: z.string().min(1), contentType: z.string().min(1), byteLength: z.number().int().positive() }).strict()).mutation(async ({ ctx, input }) => {
     if (!ctx.storage) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Storage is not configured" });
-    return ctx.storage.createUpload({ key: input.key, contentType: input.contentType, byteLength: input.byteLength, subjectId: ctx.subjectId, ...(input.organizationId ? { organizationId: input.organizationId } : {}) });
+    return ctx.storage.createUpload({ key: input.key, contentType: input.contentType, byteLength: input.byteLength, subjectId: ctx.subjectId${storageOrganizationArgument} });
   }),
-  storageComplete: authenticatedProcedure.input(z.object({ key: z.string().min(1) }).strict()).mutation(async ({ ctx, input }) => {
+  storageComplete: ${storageProcedure}.input(z.object({ key: z.string().min(1) }).strict()).mutation(async ({ ctx, input }) => {
     if (!ctx.storage) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Storage is not configured" });
-    return ctx.storage.completeUpload({ key: input.key, subjectId: ctx.subjectId });
+    return ctx.storage.completeUpload({ key: input.key, subjectId: ctx.subjectId${storageOrganizationArgument} });
   }),
 `
     : ""
@@ -3590,10 +4179,10 @@ async function readinessResponse(checks: readonly { readonly name: string; reado
   for (const check of checks) {
     try { await check.check(); } catch (error: unknown) {
       const detail = error instanceof Error ? error.message : "dependency check failed";
-      return healthResponseSchema.parse({ status: "degraded", checkedAt, instanceId: process.env.STARTER_FIXTURE_ID ?? "local", detail, failedDependency: check.name });
+      return healthResponseSchema.parse({ status: "degraded", checkedAt, instanceId: process.env["${productIdentity(config).environmentPrefix}_FIXTURE_ID"] ?? "local", detail, failedDependency: check.name });
     }
   }
-  return healthResponseSchema.parse({ status: "ok", checkedAt, instanceId: process.env.STARTER_FIXTURE_ID ?? "local" });
+  return healthResponseSchema.parse({ status: "ok", checkedAt, instanceId: process.env["${productIdentity(config).environmentPrefix}_FIXTURE_ID"] ?? "local" });
 }
 
 export function buildApi(dependencies: ApiDependencies${plan.needsIdentity ? "" : " = {}"}) {
@@ -3602,7 +4191,7 @@ export function buildApi(dependencies: ApiDependencies${plan.needsIdentity ? "" 
     prefix: "/trpc",
     trpcOptions: { router: appRouter, createContext: ({ req }: { readonly req: FastifyRequest }) => resolveContext(req, dependencies) },
   });
-  server.get("/health/live", async () => healthResponseSchema.parse({ status: "ok", checkedAt: new Date().toISOString(), instanceId: process.env.STARTER_FIXTURE_ID ?? "local" }));
+  server.get("/health/live", async () => healthResponseSchema.parse({ status: "ok", checkedAt: new Date().toISOString(), instanceId: process.env["${productIdentity(config).environmentPrefix}_FIXTURE_ID"] ?? "local" }));
   server.get("/health/ready", async (_request, reply) => {
     const checks = [
       ...(dependencies.database ? [{ name: "database", check: dependencies.database.checkReadiness }] : []),
@@ -3628,7 +4217,9 @@ function apiFiles(config: InitConfig): GeneratedFile[] {
       ? [`import { createDatabaseRuntime } from "${packageName(config, "database")}";`]
       : []),
     ...(plan.needsIdentity
-      ? [`import { createBetterAuthAdapter } from "${packageName(config, "adapters")}";`]
+      ? [
+          `import { createBetterAuthAdapter, createIdentityMailAdapter } from "${packageName(config, "adapters")}";`,
+        ]
       : []),
     ...(plan.needsStorage
       ? [`import { createS3Storage } from "${packageName(config, "adapters")}";`]
@@ -3640,7 +4231,8 @@ function apiFiles(config: InitConfig): GeneratedFile[] {
       : []),
     ...(plan.needsIdentity
       ? [
-          `  const authentication = createBetterAuthAdapter({ secret: environment.BETTER_AUTH_SECRET, baseURL: environment.BETTER_AUTH_URL, database: database.authentication.database, schema: database.authentication.schema, onUserCreated: async (authenticationSubjectId) => { await database.identity.ensureAuthenticationSubject(authenticationSubjectId); } });`,
+          `  const identityMail = createIdentityMailAdapter({ provider: environment.IDENTITY_MAIL_PROVIDER, from: environment.IDENTITY_FROM_EMAIL, ...(environment.IDENTITY_MAILPIT_URL ? { mailpitUrl: environment.IDENTITY_MAILPIT_URL } : {}), ...(environment.IDENTITY_RESEND_API_KEY ? { resendApiKey: environment.IDENTITY_RESEND_API_KEY } : {}) });`,
+          `  const authentication = createBetterAuthAdapter({ appName: ${stringLiteral(config.displayName)}, secret: environment.BETTER_AUTH_SECRET, baseURL: environment.BETTER_AUTH_URL, trustedOrigins: [new URL(environment.BETTER_AUTH_URL).origin], database: database.authentication.database, schema: database.authentication.schema, identityMail, onUserCreated: async (authenticationSubjectId) => { await database.identity.ensureAuthenticationSubject(authenticationSubjectId); }, recordAssurance: database.authentication.recordAssurance, resolveAssurance: database.authentication.resolveAssurance });`,
           "  const identity = database.identity;",
         ]
       : []),
@@ -3686,17 +4278,25 @@ function apiFiles(config: InitConfig): GeneratedFile[] {
       : []),
   ].join("\n");
   const capabilitySchemaFields = plan.capabilityEnvironment
-    .filter((item) => item.owner === "api")
+    .filter((item) => item.owner === "api" && !item.name.startsWith("IDENTITY_"))
     .map(
       (item) =>
         `  ${item.name}: ${item.required ? "z.string().min(1)" : 'z.string().optional().default("")'},`,
     );
   const environmentSchema = [
     "const environmentSchema = z.object({",
+    '  APP_ENV: z.enum(["local", "ci", "staging", "production"]).default("local"),',
     "  PORT: z.coerce.number().int().min(1).max(65535).default(3001),",
     ...(plan.needsDatabase ? ["  DATABASE_URL: z.string().min(1),"] : []),
     ...(plan.needsIdentity
-      ? ["  BETTER_AUTH_SECRET: z.string().min(1),", "  BETTER_AUTH_URL: z.string().url(),"]
+      ? [
+          "  BETTER_AUTH_SECRET: z.string().min(1),",
+          "  BETTER_AUTH_URL: z.string().url(),",
+          '  IDENTITY_MAIL_PROVIDER: z.enum(["mailpit", "resend"]),',
+          "  IDENTITY_FROM_EMAIL: z.string().email(),",
+          '  IDENTITY_RESEND_API_KEY: z.string().optional().default(""),',
+          "  IDENTITY_MAILPIT_URL: z.string().url().optional(),",
+        ]
       : []),
     ...(plan.needsAi
       ? ["  AI_MAX_TOOL_BUDGET_USD: z.coerce.number().positive().finite().max(100).default(1),"]
@@ -3711,12 +4311,9 @@ function apiFiles(config: InitConfig): GeneratedFile[] {
         ]
       : []),
     ...capabilitySchemaFields,
-    plan.needsStorage
+    plan.needsStorage || plan.needsIdentity
       ? `}).superRefine((value, context) => {
-  if (Boolean(value.STORAGE_ACCESS_KEY_ID) !== Boolean(value.STORAGE_SECRET_ACCESS_KEY)) {
-    context.addIssue({ code: "custom", message: "storage access key and secret must be supplied together" });
-  }
-});`
+${plan.needsStorage ? '  if (Boolean(value.STORAGE_ACCESS_KEY_ID) !== Boolean(value.STORAGE_SECRET_ACCESS_KEY)) context.addIssue({ code: "custom", message: "storage access key and secret must be supplied together" });\n' : ""}${plan.needsIdentity ? '  if ((value.APP_ENV === "staging" || value.APP_ENV === "production") && value.IDENTITY_MAIL_PROVIDER !== "resend") context.addIssue({ code: "custom", message: "emulated identity mail is forbidden outside local and CI" });\n  if (value.IDENTITY_MAIL_PROVIDER === "resend" && !value.IDENTITY_RESEND_API_KEY) context.addIssue({ code: "custom", message: "IDENTITY_RESEND_API_KEY is required for Resend" });\n' : ""}});`
       : "});",
     "const environment = environmentSchema.parse(process.env);",
   ].join("\n");
@@ -3749,13 +4346,20 @@ await startApi();
     ),
     textFile(
       "apps/api/Dockerfile",
-      `FROM ${NODE_IMAGE}
-WORKDIR /app
+      `FROM ${NODE_IMAGE} AS build
+WORKDIR /workspace
 COPY . .
 RUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts
 RUN pnpm --filter ${packageName(config, "api-app")}... build
+RUN pnpm --filter ${packageName(config, "api-app")} --prod deploy /runtime && rm -rf /runtime/src
+FROM ${NODE_IMAGE} AS runtime
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=build --chown=1000:1000 /runtime/ ./
+USER 1000:1000
 EXPOSE 3001
-CMD ["pnpm", "--filter", "${packageName(config, "api-app")}", "start"]
+STOPSIGNAL SIGTERM
+CMD ["node", "dist/index.js"]
 `,
     ),
   ];
@@ -3841,8 +4445,24 @@ ${
   });
   const healthServer = createServer(async (request, response) => {
     if (request.url !== "/health/ready") { response.writeHead(404).end(); return; }
-    try { await database.checkReadiness(); response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ status: "ok", checkedAt: new Date().toISOString(), instanceId: process.env.STARTER_FIXTURE_ID ?? "local" })); }
-    catch { response.writeHead(503, { "content-type": "application/json" }).end(JSON.stringify({ status: "degraded", checkedAt: new Date().toISOString(), instanceId: process.env.STARTER_FIXTURE_ID ?? "local" })); }
+    try {
+      await database.checkReadiness();
+      response.writeHead(200, { "content-type": "application/json" }).end(
+        JSON.stringify({
+          status: "ok",
+          checkedAt: new Date().toISOString(),
+          instanceId: process.env["${identity.environmentPrefix}_FIXTURE_ID"] ?? "local",
+        }),
+      );
+    } catch {
+      response.writeHead(503, { "content-type": "application/json" }).end(
+        JSON.stringify({
+          status: "degraded",
+          checkedAt: new Date().toISOString(),
+          instanceId: process.env["${identity.environmentPrefix}_FIXTURE_ID"] ?? "local",
+        }),
+      );
+    }
   });
   healthServer.listen(environment.WORKER_PORT, "0.0.0.0");
   try { await runner.promise; } finally { healthServer.close(); await database.close(); }
@@ -3853,12 +4473,19 @@ await startWorker();
     ),
     textFile(
       "apps/worker/Dockerfile",
-      `FROM ${NODE_IMAGE}
-WORKDIR /app
+      `FROM ${NODE_IMAGE} AS build
+WORKDIR /workspace
 COPY . .
 RUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts
 RUN pnpm --filter ${packageName(config, "worker-app")}... build
-CMD ["pnpm", "--filter", "${packageName(config, "worker-app")}", "start"]
+RUN pnpm --filter ${packageName(config, "worker-app")} --prod deploy /runtime && rm -rf /runtime/src
+FROM ${NODE_IMAGE} AS runtime
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=build --chown=1000:1000 /runtime/ ./
+USER 1000:1000
+STOPSIGNAL SIGTERM
+CMD ["node", "dist/index.js"]
 `,
     ),
   ];
@@ -3973,6 +4600,7 @@ function webFiles(config: InitConfig): GeneratedFile[] {
       name: packageName(config, "web-app"),
       private: true,
       version: PACKAGE_VERSION,
+      files: [".next", "public", "next.config.ts"],
       scripts: {
         build: "next build",
         dev: "next dev -p 3000",
@@ -4038,7 +4666,7 @@ function webFiles(config: InitConfig): GeneratedFile[] {
     ...(plan.needsApi ? webProxyFiles(plan.needsExternalApi) : []),
     textFile(
       "apps/web/Dockerfile",
-      `FROM ${NODE_IMAGE}\nWORKDIR /app\nCOPY . .\nRUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts\nRUN pnpm --filter ${packageName(config, "web-app")}... build\nEXPOSE 3000\nCMD ["pnpm", "--filter", "${packageName(config, "web-app")}", "start"]\n`,
+      `FROM ${NODE_IMAGE} AS build\nWORKDIR /workspace\nCOPY . .\nRUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts\nRUN pnpm --filter ${packageName(config, "web-app")}... build\nRUN pnpm --filter ${packageName(config, "web-app")} --prod deploy /runtime\nFROM ${NODE_IMAGE} AS runtime\nENV NODE_ENV=production\nWORKDIR /app\nCOPY --from=build --chown=1000:1000 /runtime/ ./\nUSER 1000:1000\nEXPOSE 3000\nSTOPSIGNAL SIGTERM\nCMD ["./node_modules/.bin/next", "start"]\n`,
     ),
   ];
 }
@@ -4125,7 +4753,7 @@ SERVICE_TOKEN = os.environ.get("PYTHON_SERVICE_TOKEN", "fixture-python-token")
 
 
 def health() -> dict[str, str]:
-    return {"status": "ok", "instanceId": os.environ.get("STARTER_FIXTURE_ID", "local")}
+    return {"status": "ok", "instanceId": os.environ.get("${productIdentity(config).environmentPrefix}_FIXTURE_ID", "local")}
 
 
 def extract_document(filename: str, content_type: str, body: bytes) -> dict[str, object]:
@@ -4225,6 +4853,10 @@ function environmentFile(config: InitConfig): GeneratedFile {
     PAYMENT_WEBHOOK_SECRET: "replace-with-a-local-secret",
     RESEND_API_KEY: "fixture-only",
     MAILPIT_URL: "http://127.0.0.1:8025",
+    IDENTITY_MAIL_PROVIDER: "mailpit",
+    IDENTITY_FROM_EMAIL: "identity@example.test",
+    IDENTITY_RESEND_API_KEY: "",
+    IDENTITY_MAILPIT_URL: "http://127.0.0.1:8025",
     VALKEY_URL: "redis://127.0.0.1:6379",
     OTEL_EXPORTER_OTLP_ENDPOINT: "http://127.0.0.1:4318",
     SENTRY_DSN: "",
@@ -4241,10 +4873,15 @@ function environmentFile(config: InitConfig): GeneratedFile {
     (item) => `${item.name}=${capabilityDefaults[item.name] ?? ""}`,
   );
   const lines = [
+    "APP_ENV=local",
     "NODE_ENV=development",
+    `${productIdentity(config).environmentPrefix}_FIXTURE_ID=local`,
     `PORT=${plan.needsApi ? "3001" : "3000"}`,
     ...(plan.needsDatabase
-      ? ["DATABASE_URL=postgres://starter:starter_local@127.0.0.1:5432/starter"]
+      ? [
+          "DATABASE_URL=postgres://starter_runtime:starter_runtime_local@127.0.0.1:5432/starter",
+          "MIGRATOR_DATABASE_URL=postgres://starter_migrator:starter_migrator_local@127.0.0.1:5432/starter",
+        ]
       : []),
     ...(plan.needsIdentity
       ? [
@@ -4277,11 +4914,21 @@ function deploymentFiles(config: InitConfig): GeneratedFile[] {
   const plan = createCapabilityPlan(config);
   const deployableApps = plan.deployableApps;
   const variablesFor = (name: string): readonly string[] => [
+    "APP_ENV",
     "NODE_ENV",
     name === "worker" ? "WORKER_PORT" : "PORT",
     ...(name === "web" && plan.needsApi ? ["API_INTERNAL_URL"] : []),
     ...((name === "api" || name === "worker") && plan.needsDatabase ? ["DATABASE_URL"] : []),
-    ...(name === "api" && plan.needsIdentity ? ["BETTER_AUTH_SECRET", "BETTER_AUTH_URL"] : []),
+    ...(name === "api" && plan.needsIdentity
+      ? [
+          "BETTER_AUTH_SECRET",
+          "BETTER_AUTH_URL",
+          "IDENTITY_MAIL_PROVIDER",
+          "IDENTITY_FROM_EMAIL",
+          "IDENTITY_RESEND_API_KEY",
+          "IDENTITY_MAILPIT_URL",
+        ]
+      : []),
     ...(name === "api" && plan.needsAi ? ["AI_MAX_TOOL_BUDGET_USD"] : []),
     ...(name === "api" && plan.providers.aiProviders.includes("openai")
       ? ["OPENAI_API_KEY", "OPENAI_BASE_URL"]
@@ -4333,6 +4980,7 @@ function deploymentFiles(config: InitConfig): GeneratedFile[] {
     return [
       jsonFile("deployment/dokploy/services.json", {
         controlPlane: "dokploy",
+        serverVersion: { candidate: "0.29.5", qualification: "unqualified" },
         repository: { branch: "main", autoDeployTrigger: "push-to-selected-branch" },
         services: services.map((service) => ({
           ...service,
@@ -4355,8 +5003,48 @@ function deploymentFiles(config: InitConfig): GeneratedFile[] {
           : {}),
       }),
       textFile(
+        "deployment/dokploy/adapter.ts",
+        `import { readFile } from "node:fs/promises";
+
+type Command = "plan" | "apply" | "inspect" | "promote" | "rollback" | "evidence";
+const command = process.argv[2] as Command | undefined;
+if (!command || !["plan", "apply", "inspect", "promote", "rollback", "evidence"].includes(command)) throw new Error("Expected plan, apply, inspect, promote, rollback, or evidence");
+const baseUrl = process.env.DOKPLOY_URL;
+const apiKey = process.env.DOKPLOY_API_KEY;
+if (!baseUrl || !apiKey) throw new Error("DOKPLOY_URL and DOKPLOY_API_KEY are required");
+const definition = JSON.parse(await readFile("deployment/dokploy/services.json", "utf8")) as { serverVersion: { candidate: string; qualification: string }; services: Array<{ name: string }> };
+if ((command === "promote" || command === "apply") && definition.serverVersion.qualification !== "qualified") throw new Error("Dokploy candidate version has not passed its disposable live qualification suite");
+const request = async (path: string, init?: RequestInit): Promise<unknown> => {
+  const response = await fetch(new URL(\`api/\${path}\`, baseUrl), { ...init, headers: { "content-type": "application/json", "x-api-key": apiKey, ...init?.headers } });
+  if (!response.ok) throw new Error(\`Dokploy \${path} failed with HTTP \${response.status}\`);
+  return response.json();
+};
+const evidence: unknown[] = [];
+for (const service of definition.services) {
+  const key = service.name.toUpperCase().replaceAll("-", "_");
+  const applicationId = process.env[\`DOKPLOY_\${key}_APPLICATION_ID\`];
+  const digest = process.env[\`RELEASE_\${key}_DIGEST\`];
+  if (!applicationId) throw new Error(\`Missing DOKPLOY_\${key}_APPLICATION_ID\`);
+  if (["apply", "promote"].includes(command) && (!digest || !/^sha256:[a-f0-9]{64}$/u.test(digest))) throw new Error(\`Missing immutable RELEASE_\${key}_DIGEST\`);
+  const deployments = await request(\`deployment.all?applicationId=\${encodeURIComponent(applicationId)}\`);
+  if (command === "plan" || command === "inspect" || command === "evidence") evidence.push({ service: service.name, applicationId, desiredDigest: digest ?? null, deployments });
+  if (command === "apply" || command === "promote") {
+    if (JSON.stringify(deployments).includes(String(digest))) evidence.push({ service: service.name, status: "unchanged", digest });
+    else evidence.push(await request("application.deploy", { method: "POST", body: JSON.stringify({ applicationId, imageDigest: digest }) }));
+  }
+  if (command === "rollback") {
+    const deploymentId = process.env[\`ROLLBACK_\${key}_DEPLOYMENT_ID\`];
+    const previousDigest = process.env[\`ROLLBACK_\${key}_DIGEST\`];
+    if (!deploymentId || !previousDigest) throw new Error("Rollback requires a release-manifest deployment id and compatible previous digest");
+    evidence.push(await request("application.redeploy", { method: "POST", body: JSON.stringify({ applicationId, deploymentId, imageDigest: previousDigest }) }));
+  }
+}
+process.stdout.write(\`{"command":"\${command}","observedAt":"\${new Date().toISOString()}","results":\${JSON.stringify(evidence)}}\\n\`);
+`,
+      ),
+      textFile(
         "deployment/dokploy/README.md",
-        "# Dokploy runbook\n\nCreate one Dokploy application per listed service. Configure the recorded branch and enable auto-deploy only for pushes to that branch. Build and promote registry images by digest, configure native domains and Traefik routing, then verify each health path. Use Dokploy-managed PostgreSQL when listed. Compose is reserved for a genuinely coupled dependency. Record the deployed digest and terminal deployment result in the active work item.\n",
+        "# Dokploy runbook\n\nThe adapter exposes idempotent plan/apply/inspect/promote/rollback/evidence command surfaces and uses administrator-controlled API access. The recorded server version is a candidate until its contract and disposable live suite qualify it; apply and promote fail closed before then. Keep stateful dependencies in separate projects, deploy applications by immutable digest, map rollback deployment IDs to the release manifest, and treat encrypted external restore exercises—not successful backup jobs—as recovery evidence.\n",
       ),
       textFile(
         "deployment/dokploy/rollback.md",
@@ -4377,6 +5065,32 @@ function deploymentFiles(config: InitConfig): GeneratedFile[] {
     ];
   }
   return [
+    textFile(
+      ".railway/railway.ts",
+      `import { defineRailway, ${plan.needsDatabase ? "postgres, " : ""}preserve, project, service } from "railway/iac";
+
+export default defineRailway((context) => {
+  if (context.environment !== "staging" && context.environment !== "production") throw new Error("Railway requires separate staging or production environments");
+${plan.needsDatabase ? '  const database = postgres("postgres");\n' : ""}${services
+  .map(
+    (item) => `  const ${item.name.replaceAll("-", "_")} = service(${JSON.stringify(item.name)}, {
+    build: ${JSON.stringify(item.name === "python" ? "python3 -m compileall -q services/python/src" : `pnpm --filter ${packageName(config, `${item.name}-app`)}... build`)},
+    start: ${JSON.stringify(item.name === "python" ? "cd services/python && python3 -m src.main" : `pnpm --filter ${packageName(config, `${item.name}-app`)} start`)},
+    healthcheck: ${JSON.stringify(item.healthCheck.path)},
+    ${item.name === "api" && plan.needsDatabase ? 'preDeploy: "pnpm db:migrate",\n    ' : ""}env: { APP_ENV: context.environment, NODE_ENV: "production", ${item.variables
+      .filter((name) => name !== "NODE_ENV" && name !== "APP_ENV")
+      .map((name) => `${name}: preserve()`)
+      .join(", ")} },
+  });`,
+  )
+  .join("\n")}
+  return project(${JSON.stringify(config.productId)}, { resources: [${[
+    ...(plan.needsDatabase ? ["database"] : []),
+    ...services.map((item) => item.name.replaceAll("-", "_")),
+  ].join(", ")}] });
+});
+`,
+    ),
     jsonFile("deployment/railway/services.json", {
       controlPlane: "railway",
       services: services.map((service) => ({
@@ -4398,7 +5112,7 @@ function deploymentFiles(config: InitConfig): GeneratedFile[] {
     }),
     textFile(
       "deployment/railway/README.md",
-      "# Railway runbook\n\nCreate one Railway service per listed application and copy its build command, start command, watch paths, variables, and health path. Provision managed PostgreSQL only when listed. Railway maps Compose services to separate Railway services; do not treat a production Compose file as the deployment unit. After a repository push, verify each service reaches terminal SUCCESS status and record the deployed commit separately from health evidence.\n",
+      "# Railway beta runbook\n\nKeep `.railway/railway.ts` as the only project configuration source. Use separate staging and production projects. Run `railway config plan --out railway-plan.json` and review it before a protected apply. Configure distinct runtime and migrator database roles, an independent export/restore path, and external uptime monitoring; Railway deployment health checks do not replace continuous monitoring. Production admission remains blocked until the exact recipe, provider, project, migration set, and image digests pass deploy, migration, rollback, restore, and monitoring gates.\n",
     ),
     ...(plan.needsDatabase
       ? [
@@ -4438,20 +5152,10 @@ function relativeFilePath(path: string): string {
 }
 
 function productizeGeneratedFile(config: InitConfig, file: GeneratedFile): GeneratedFile {
-  const identity = productIdentity(config);
-  const replace = (value: string): string =>
-    value
-      .replaceAll("OmniDesk", config.displayName)
-      .replaceAll("Thaarei", config.displayName)
-      .replaceAll(".thaarei", identity.namespace)
-      .replaceAll("workId: INIT-001", `workId: ${identity.workPrefix}-INIT-001`)
-      .replaceAll("## INIT-001:", `## ${identity.workPrefix}-INIT-001:`)
-      .replaceAll("starterHealth", `${identity.sqlPrefix}Health`)
-      .replaceAll("starter_health", `${identity.sqlPrefix}_health`)
-      .replaceAll("thaarei", identity.sqlPrefix)
-      .replaceAll("starter", config.productId)
-      .replaceAll("STARTER_FIXTURE", `${identity.environmentPrefix}_FIXTURE`);
-  return { path: replace(file.path), content: replace(file.content) };
+  return {
+    path: file.path,
+    content: file.content.replaceAll("OmniDesk", config.displayName),
+  };
 }
 
 function isMissingPath(error: unknown): boolean {
@@ -4460,6 +5164,22 @@ function isMissingPath(error: unknown): boolean {
 
 export function generateProject(config: InitConfig): GenerationResult {
   const plan = createCapabilityPlan(config);
+  const experimentalProfiles = resolveCapabilities(plan.profiles, plan.providers)
+    .definitions.filter((definition) => definition.sourceMaturity === "experimental")
+    .map((definition) => definition.id);
+  if (experimentalProfiles.length > 0 && config.allowExperimental !== true) {
+    throw new Error(
+      `Experimental profiles require explicit approval: ${experimentalProfiles.join(", ")}`,
+    );
+  }
+  if (config.deployment === "railway" && config.allowBetaTarget !== true) {
+    throw new Error("Railway is beta and requires explicit approval");
+  }
+  if (plan.profiles.includes("mobile") && Date.now() >= Date.parse(MOBILE_WAIVER_EXPIRES_AT)) {
+    throw new Error(
+      `Mobile generation is disabled because security waiver mobile-image-size-2026-09 expired at ${MOBILE_WAIVER_EXPIRES_AT}`,
+    );
+  }
   const files = baseFiles(config, plan);
   if (plan.needsApi) files.push(...apiFiles(config));
   if (plan.needsExternalApi) {
@@ -4476,12 +5196,22 @@ export function generateProject(config: InitConfig): GenerationResult {
   if (hasProfile(config, "web")) files.push(...webFiles(config));
   if (hasProfile(config, "mobile")) files.push(...mobileFiles(config));
   if (hasProfile(config, "python")) files.push(...pythonFiles(config));
-  files.push(environmentFile(config), ...deploymentFiles(config));
+  files.push(environmentFile(config), ...deploymentFiles(config), starterRecipe(config, plan));
   const unique = new Map<string, GeneratedFile>();
+  const caseInsensitivePaths = new Map<string, string>();
   for (const originalFile of files) {
     const file = productizeGeneratedFile(config, originalFile);
     const path = relativeFilePath(file.path);
     if (unique.has(path)) throw new Error(`Generator produced duplicate path: ${path}`);
+    const folded = path.toLocaleLowerCase("en-US");
+    const previous = caseInsensitivePaths.get(folded);
+    if (previous !== undefined && previous !== path)
+      throw new Error(
+        `Generator produced a case-insensitive path collision: ${previous} and ${path}`,
+      );
+    if (/(?<!\$)\{\{[^}]+\}\}|__[A-Z0-9_]+__/u.test(file.content))
+      throw new Error(`Generator left an unresolved template token in ${path}`);
+    caseInsensitivePaths.set(folded, path);
     unique.set(path, { path, content: file.content });
   }
   const withoutMarker = [...unique.values()].sort((left, right) =>
@@ -4495,6 +5225,51 @@ export function generateProject(config: InitConfig): GenerationResult {
     left.path.localeCompare(right.path),
   );
   return { config, files: finalFiles };
+}
+
+const HASH_IGNORED_DIRECTORIES = new Set([
+  ".git",
+  "node_modules",
+  "dist",
+  "build",
+  ".next",
+  ".turbo",
+  "coverage",
+]);
+
+export async function computeSemanticTreeHash(root: string): Promise<string> {
+  const entries: { readonly path: string; readonly mode: number; readonly content: Buffer }[] = [];
+  const visit = async (directory: string): Promise<void> => {
+    for (const entry of (await readdir(directory, { withFileTypes: true })).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    )) {
+      if (HASH_IGNORED_DIRECTORIES.has(entry.name)) continue;
+      const absolute = join(directory, entry.name);
+      const relativePath = relative(root, absolute).split("\\").join("/");
+      if (entry.isSymbolicLink())
+        throw new Error(`Generated output contains a symbolic link: ${relativePath}`);
+      if (entry.isDirectory()) await visit(absolute);
+      else if (entry.isFile()) {
+        const metadata = await stat(absolute);
+        let content = await readFile(absolute);
+        if (relativePath === ".thaarei/starter.json") {
+          const parsed = JSON.parse(content.toString("utf8")) as Record<string, unknown>;
+          parsed.generatedAt = "normalized";
+          parsed.generatedTreeHash = "normalized";
+          content = Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+        }
+        entries.push({ path: relativePath, mode: metadata.mode & 0o777, content });
+      }
+    }
+  };
+  await visit(resolve(root));
+  const hash = createHash("sha256");
+  for (const entry of entries.sort((left, right) => left.path.localeCompare(right.path))) {
+    hash.update(`${entry.path}\0${entry.mode.toString(8)}\0${entry.content.byteLength}\0`);
+    hash.update(entry.content);
+    hash.update("\0");
+  }
+  return `sha256:${hash.digest("hex")}`;
 }
 
 export async function writeGeneratedProject(result: GenerationResult): Promise<WriteResult> {

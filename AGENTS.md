@@ -1,6 +1,8 @@
 # Thaarei starter repository instructions
 
-This repository is the source for a private, self-contained client template.
+This repository is the source for a private starter that generates independently
+owned client repositories. Generated products own their source and behavior while
+consuming narrowly scoped, exact-version private foundation and tooling packages.
 The engineering contract is in [docs/engineering-starter-kit.md](docs/engineering-starter-kit.md).
 The generated-repository instructions are in [docs/template-AGENTS.md](docs/template-AGENTS.md).
 Read those files when changing the starter contract or its generated output.
@@ -20,7 +22,12 @@ that generated file by hand.
 
 ## Contract rules
 
-- Keep one private repository per client. Do not publish packages or add upstream synchronization.
+- Keep one private repository per client and do not add upstream synchronization.
+- Only `@thaarei-technology/create-app`, `@thaarei-technology/foundation`, and
+  `@thaarei-technology/tooling` may be published. Publish them privately to
+  `https://npm.pkg.github.com` only from the protected release workflow after
+  package contents, checksums, tests, and the release manifest pass. Generated
+  client workspace packages remain non-publishable.
 - Use the mandatory base plus selected capability profiles. Unused profiles add no packages, services, environment variables, or CI jobs.
 - Keep strict TypeScript, Zod at trust boundaries, explicit package boundaries, and fail-closed deployment configuration.
 - Keep domain rules in `packages/core`, persistence in `packages/database`, provider implementations in `packages/adapters`, and transport composition in `packages/api`.

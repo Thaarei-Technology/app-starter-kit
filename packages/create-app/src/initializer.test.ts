@@ -2,7 +2,12 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { DEPENDENCY_VERSIONS, IMAGE_CATALOG, resolveCapabilities } from "./capabilities.js";
+import {
+  DEPENDENCY_VERSIONS,
+  IMAGE_CATALOG,
+  PROFILE_NAMES,
+  resolveCapabilities,
+} from "./capabilities.js";
 import {
   generateProject,
   type InitConfig,
@@ -29,6 +34,8 @@ function config(profiles: readonly Profile[], mobile = false): InitConfig {
           androidApplicationId: "com.fixture.app",
         }
       : null,
+    allowExperimental: true,
+    allowBetaTarget: true,
   };
 }
 
@@ -87,7 +94,7 @@ describe("starter profile generation", () => {
     ["web-only", ["web"]],
     ["internal-tool", ["web", "api", "data"]],
     ["web-mobile", ["web", "mobile", "api", "data", "identity"]],
-    ["durable-agent", ["api", "data", "identity", "ai", "jobs", "durable-ai"]],
+    ["durable-agent", ["api", "data", "identity", "ai", "jobs", "agentic-ai"]],
     ["external-rest", ["api", "data", "external-api"]],
     ["dms-core", ["api", "data", "identity", "jobs", "external-api", "storage"]],
   ];
@@ -95,6 +102,7 @@ describe("starter profile generation", () => {
     "generates the approved %s fixture without source docs",
     (_name, profiles) => {
       const generated = generateProject(config(profiles, profiles.includes("mobile")));
+      const resolved = resolveCapabilities(profiles).profiles;
       const paths = generated.files.map((file) => file.path);
       expect(paths).toContain(".dockerignore");
       expect(generated.files.find((file) => file.path === ".dockerignore")?.content).toContain(
@@ -113,13 +121,13 @@ describe("starter profile generation", () => {
       }
       expect(paths).not.toContain("docs/engineering-starter-kit.md");
       expect(paths).not.toContain("templates/AGENTS.md");
-      if (!profiles.includes("mobile"))
+      if (!resolved.includes("mobile"))
         expect(paths.some((path) => path.startsWith("apps/mobile/"))).toBe(false);
-      if (!profiles.includes("web"))
+      if (!resolved.includes("web"))
         expect(paths.some((path) => path.startsWith("apps/web/"))).toBe(false);
-      if (!profiles.includes("jobs"))
+      if (!resolved.includes("jobs"))
         expect(paths.some((path) => path.startsWith("apps/worker/"))).toBe(false);
-      if (!profiles.includes("data") && !profiles.includes("storage"))
+      if (!resolved.includes("data") && !resolved.includes("storage"))
         expect(paths.some((path) => path.startsWith("packages/database/"))).toBe(false);
       for (const capability of ["identity", "jobs", "ai", "external-api", "storage"])
         expect(paths.some((path) => path.startsWith(`packages/${capability}/`))).toBe(false);
@@ -140,24 +148,21 @@ describe("starter profile generation", () => {
             ].some((owner) => path.startsWith(`packages/${owner}/`)),
           ),
       ).toBe(true);
-      const needsApi =
-        profiles.includes("api") ||
-        profiles.includes("identity") ||
-        profiles.includes("external-api");
+      const needsApi = resolved.includes("api");
       const needsClient =
         needsApi &&
-        (profiles.includes("web") ||
-          profiles.includes("mobile") ||
-          profiles.includes("external-api"));
+        (resolved.includes("web") ||
+          resolved.includes("mobile") ||
+          resolved.includes("external-api"));
       if (!needsApi) expect(paths.some((path) => path.startsWith("packages/api/"))).toBe(false);
-      if (needsApi && !profiles.includes("identity") && !profiles.includes("external-api")) {
+      if (needsApi && !resolved.includes("identity") && !resolved.includes("external-api")) {
         expect(
           generated.files.find((file) => file.path === "packages/api/src/index.ts")?.content,
         ).not.toContain("FastifyInstance");
       }
       if (!needsClient)
         expect(paths.some((path) => path.startsWith("packages/api-client/"))).toBe(false);
-      if (!profiles.includes("web") && !profiles.includes("mobile"))
+      if (!resolved.includes("web") && !resolved.includes("mobile"))
         expect(paths.some((path) => path.startsWith("packages/design-tokens/"))).toBe(false);
       expect(paths.some((path) => path.startsWith("deployment/dokploy/"))).toBe(true);
     },
@@ -191,7 +196,7 @@ describe("starter profile generation", () => {
       ]),
     );
     const webPaths = web.files.map((file) => file.path);
-    expect(webPaths.some((path) => path.startsWith("packages/api/"))).toBe(false);
+    expect(webPaths.some((path) => path.startsWith("packages/api/"))).toBe(true);
     expect(web.files.find((file) => file.path === ".env.example")?.content).not.toContain(
       "DATABASE_URL",
     );
@@ -207,18 +212,18 @@ describe("starter profile generation", () => {
         "react-native-unistyles",
       ]),
     );
-    expect(mobile.files.some((file) => file.path === ".product/security-waivers.json")).toBe(true);
-    expect(web.files.some((file) => file.path === ".product/security-waivers.json")).toBe(false);
+    expect(mobile.files.some((file) => file.path === ".thaarei/security-waivers.json")).toBe(true);
+    expect(web.files.some((file) => file.path === ".thaarei/security-waivers.json")).toBe(false);
   });
 
   test("generates database-owned transactional migrations without a custom outbox", () => {
     const generated = generateProject(config(["api", "data", "jobs"]));
     const migration = generated.files.find(
-      (file) => file.path === "packages/database/migrations/0000_product.sql",
+      (file) => file.path === "packages/database/migrations/0000_starter.sql",
     );
     const runner = generated.files.find((file) => file.path === "packages/database/src/migrate.ts");
     expect(runner?.content).toContain('createHash("sha256")');
-    expect(runner?.content).toContain("product_migrations");
+    expect(runner?.content).toContain("thaarei_migrations");
     expect(runner?.content).toMatch(/\.begin\(/u);
     expect(runner?.content).toMatch(/checksum/iu);
     expect(migration?.content).not.toMatch(/^BEGIN;/u);
@@ -264,7 +269,7 @@ describe("starter profile generation", () => {
     expect(webManifest).toContain("next dev -p 3000");
     expect(turbo).toContain('"persistent":true');
     expect(compose).toMatch(/127\.0\.0\.1:\$\{POSTGRES_PORT:-5432\}:5432/u);
-    expect(compose).toContain("product-postgres-data:/var/lib/postgresql");
+    expect(compose).toContain("starter-postgres-data:/var/lib/postgresql");
     expect(readme).toContain("pnpm dev");
     for (const profile of ["web", "api", "data", "identity"])
       expect(guide).toContain(`\`${profile}\``);
@@ -296,7 +301,7 @@ describe("starter profile generation", () => {
     expect(web).toContain("signIn.email");
   });
 
-  test("keeps the web-only handoff free of server capability artifacts", () => {
+  test("adds only the API dependency closure to a web-only request", () => {
     const generated = generateProject(config(["web"]));
     const paths = generated.files.map((file) => file.path);
     const content = generated.files.map((file) => file.content).join("\n");
@@ -306,16 +311,14 @@ describe("starter profile generation", () => {
       generated.files.find((file) => file.path === "docs/environment-reference.md")?.content ?? "";
     expect(paths).not.toContain("compose.yaml");
     expect(paths.some((path) => path.startsWith("packages/database/"))).toBe(false);
-    expect(paths.some((path) => path.startsWith("packages/api-client/"))).toBe(false);
-    expect(content).not.toMatch(
-      /db:up|db:migrate|db:down|DATABASE_URL|BETTER_AUTH|API_INTERNAL_URL/u,
-    );
+    expect(paths.some((path) => path.startsWith("packages/api-client/"))).toBe(true);
+    expect(content).not.toMatch(/db:up|db:migrate|db:down|DATABASE_URL|BETTER_AUTH/u);
     expect(guide).toContain("`web`");
-    for (const profile of ["`api`", "`data`", "`identity`", "`mobile`"])
+    expect(guide).toContain("`api`");
+    for (const profile of ["`data`", "`identity`", "`mobile`"])
       expect(guide).not.toContain(profile);
     expect(guide).not.toContain("authentication transport");
-    expect(environment).toContain("| PORT | 3000 |");
-    expect(environment).not.toContain("3001");
+    expect(environment).toContain("| PORT | 3001 |");
   });
 
   test("derives health types and keeps OpenAPI readiness fields in parity", () => {
@@ -388,7 +391,7 @@ describe("starter profile generation", () => {
     expect(compose).toContain("minio/minio:");
     expect(compose).toContain("object-storage-init:");
     expect(environment).toContain("STORAGE_ENDPOINT=http://127.0.0.1:9000");
-    expect(environment).toContain("STORAGE_BUCKET=product");
+    expect(environment).toContain("STORAGE_BUCKET=starter");
     expect(plainCompose).not.toContain("object-storage");
   });
 
@@ -453,13 +456,14 @@ describe("starter profile generation", () => {
     expect(paths.some((path) => path.startsWith("packages/jobs/"))).toBe(false);
   });
 
-  test("refuses internally inconsistent AI and storage generation plans", () => {
-    expect(() => generateProject(config(["api", "ai"]))).toThrow(
-      "ai requires api, data, and identity",
+  test("automatically closes AI and storage dependency paths", () => {
+    const ai = generatedJson(generateProject(config(["ai"])), ".thaarei/capabilities.json");
+    const storage = generatedJson(
+      generateProject(config(["storage"])),
+      ".thaarei/capabilities.json",
     );
-    expect(() => generateProject(config(["api", "data", "storage"]))).toThrow(
-      "storage requires api, data, and identity",
-    );
+    expect(JSON.stringify(ai)).toContain('"profiles":["api","data","identity","ai"]');
+    expect(JSON.stringify(storage)).toContain('"profiles":["api","data","identity","storage"]');
   });
 
   test("passes storage readiness to first-party and external health routes", () => {
@@ -486,7 +490,7 @@ describe("starter profile generation", () => {
       (file) => file.path === "apps/api/src/index.ts",
     )?.content;
     const migration = generated.files.find(
-      (file) => file.path === "packages/database/migrations/0000_product.sql",
+      (file) => file.path === "packages/database/migrations/0000_starter.sql",
     )?.content;
 
     expect(database).toContain('pgTable("session"');
@@ -522,9 +526,9 @@ describe("starter profile generation", () => {
     const outputDir = await mkdtemp(join(tmpdir(), "thaarei-starter-"));
     const generated = generateProject({ ...config(["web"]), outputDir });
     const written = await writeGeneratedProject(generated);
-    expect(written.files).toContain(".product/project.json");
+    expect(written.files).toContain(".thaarei/project.json");
     expect(
-      markerProfiles(JSON.parse(await readFile(join(outputDir, ".product/project.json"), "utf8"))),
+      markerProfiles(JSON.parse(await readFile(join(outputDir, ".thaarei/project.json"), "utf8"))),
     ).toEqual(["web"]);
     await expect(writeGeneratedProject(generated)).rejects.toThrow("already initialized");
   });
@@ -543,19 +547,9 @@ describe("starter profile generation", () => {
 });
 
 describe("starter profile validation", () => {
-  test("normalizes the deprecated durable-ai alias in the V2 capability manifest", () => {
-    const manifest = resolveCapabilities([
-      "api",
-      "data",
-      "identity",
-      "ai",
-      "jobs",
-      "events",
-      "durable-ai",
-    ]);
-    expect(manifest.profiles).toContain("agentic-ai");
-    expect(manifest.profiles).not.toContain("durable-ai");
-    expect(manifest.deprecatedAliases).toEqual(["durable-ai"]);
+  test("exposes only the final Starter 1.0 capability names", () => {
+    expect(PROFILE_NAMES).toContain("agentic-ai");
+    expect(PROFILE_NAMES).not.toContain("durable-ai");
   });
 
   test("generates image provenance from the shared catalog", () => {
@@ -612,10 +606,10 @@ describe("starter profile validation", () => {
     const identity = generateProject(config(["api", "data", "identity"]));
     const tenant = generateProject(config(["api", "data", "identity", "tenancy"]));
     const identityMigration =
-      identity.files.find((file) => file.path === "packages/database/migrations/0000_product.sql")
+      identity.files.find((file) => file.path === "packages/database/migrations/0000_starter.sql")
         ?.content ?? "";
     const tenantMigration =
-      tenant.files.find((file) => file.path === "packages/database/migrations/0000_product.sql")
+      tenant.files.find((file) => file.path === "packages/database/migrations/0000_starter.sql")
         ?.content ?? "";
     expect(identityMigration).not.toContain("CREATE TABLE organizations");
     for (const owner of [
@@ -637,16 +631,38 @@ describe("starter profile validation", () => {
       tenant.files.find((file) => file.path === "packages/database/src/index.ts")?.content ?? "";
     expect(tenantDatabase).toContain("callback(transaction)");
     expect(tenantDatabase).toContain("postgres.TransactionSql");
+    expect(tenantDatabase).toContain(
+      "return withOrganizationContext(sql, organizationId, subjectId",
+    );
+  });
+
+  test("binds tenant storage to verified organization context and RLS", () => {
+    const generated = generateProject(config(["api", "data", "identity", "tenancy", "storage"]));
+    const migration =
+      generated.files.find((file) => file.path === "packages/database/migrations/0000_starter.sql")
+        ?.content ?? "";
+    const database =
+      generated.files.find((file) => file.path === "packages/database/src/index.ts")?.content ?? "";
+    const api =
+      generated.files.find((file) => file.path === "packages/api/src/index.ts")?.content ?? "";
+
+    expect(migration).toContain("object_metadata_organization_fk");
+    expect(migration).toContain("ALTER TABLE object_metadata FORCE ROW LEVEL SECURITY");
+    expect(migration).toContain("CREATE POLICY object_metadata_tenant_isolation");
+    expect(database).toContain("withOrganizationContext(sql, organizationId, input.subjectId");
+    expect(api).toContain("storageUpload: organizationProcedure");
+    expect(api).toContain("organizationId: ctx.organizationId");
+    expect(api).not.toContain("organizationId: z.string().min(1).optional()");
   });
 
   test("generates transactional outbox, dead-letter, and inbox persistence only for events", () => {
     const jobs = generateProject(config(["data", "jobs"]));
     const events = generateProject(config(["data", "jobs", "events"]));
     const jobsMigration =
-      jobs.files.find((file) => file.path === "packages/database/migrations/0000_product.sql")
+      jobs.files.find((file) => file.path === "packages/database/migrations/0000_starter.sql")
         ?.content ?? "";
     const eventMigration =
-      events.files.find((file) => file.path === "packages/database/migrations/0000_product.sql")
+      events.files.find((file) => file.path === "packages/database/migrations/0000_starter.sql")
         ?.content ?? "";
     expect(jobsMigration).not.toContain("outbox_events");
     for (const table of [
@@ -683,7 +699,7 @@ describe("starter profile validation", () => {
     const core =
       generated.files.find((file) => file.path === "packages/core/src/index.ts")?.content ?? "";
     const migration =
-      generated.files.find((file) => file.path === "packages/database/migrations/0000_product.sql")
+      generated.files.find((file) => file.path === "packages/database/migrations/0000_starter.sql")
         ?.content ?? "";
     for (const logicalModel of [
       "chat.fast",
@@ -741,7 +757,7 @@ describe("starter profile validation", () => {
     expect(core).toContain("evaluateFeatureFlag");
     expect(core).toContain("canReadSearchDocument");
     expect(core).toContain("chunkText");
-    const manifest = generatedJson(platform, ".product/capabilities.json");
+    const manifest = generatedJson(platform, ".thaarei/capabilities.json");
     expect(JSON.stringify(manifest)).toContain("PAYMENT_WEBHOOK_SECRET");
     const release = JSON.stringify(generatedJson(platform, "release-manifest.json"));
     expect(release).toContain(IMAGE_CATALOG.valkey.digest);
@@ -768,31 +784,22 @@ describe("starter profile validation", () => {
     expect(compose).not.toContain("starter-postgres-data");
   });
 
-  test("rejects selecting a canonical profile and its deprecated alias together", () => {
-    expect(() =>
-      resolveCapabilities([
-        "api",
-        "data",
-        "identity",
-        "ai",
-        "jobs",
-        "events",
-        "agentic-ai",
-        "durable-ai",
-      ]),
-    ).toThrow("Duplicate capability selection after canonicalization");
+  test.each([
+    ["identity", ["api", "data", "identity"]],
+    ["jobs", ["data", "jobs"]],
+    ["tenancy", ["api", "data", "identity", "tenancy"]],
+  ] as const)("automatically adds %s dependencies", (profile, expected) => {
+    expect(validateInitOptions(options(profile)).profiles).toEqual(expected);
   });
 
-  test.each([
-    ["identity", "identity requires api and data profiles"],
-    ["jobs", "jobs requires data"],
-    ["external-api", "external-api requires api"],
-    ["ai", "ai requires api, data, and identity"],
-    ["storage", "storage requires api, data, and identity"],
-    ["durable-ai", "durable-ai requires ai and jobs"],
-    ["tenancy", "tenancy requires identity, api, and data"],
-  ])("rejects invalid %s combinations", (profile, message) => {
-    expect(() => validateInitOptions(options(profile))).toThrow(message);
+  test("requires opt-in for experimental profiles and rejects the removed alias", () => {
+    expect(() => validateInitOptions(options("external-api"))).toThrow("--allow-experimental");
+    expect(
+      validateInitOptions(options("external-api", { "allow-experimental": "true" })).profiles,
+    ).toEqual(["api", "external-api"]);
+    expect(() =>
+      validateInitOptions(options("durable-ai", { "allow-experimental": "true" })),
+    ).toThrow("removed in Starter 1.0");
   });
 
   test("requires mobile identifiers only for mobile", () => {
@@ -802,13 +809,14 @@ describe("starter profile validation", () => {
     expect(() =>
       validateInitOptions(
         options("mobile", {
+          "allow-experimental": "true",
           "mobile-scheme": "fixture",
           "ios-bundle-id": "com.fixture.app",
           "android-application-id": "com.fixture.app",
         }),
       ),
     ).not.toThrow();
-    expect(() => validateInitOptions(options("mobile"))).toThrow(
+    expect(() => validateInitOptions(options("mobile", { "allow-experimental": "true" }))).toThrow(
       "Missing required option: --mobile-scheme",
     );
   });
@@ -817,6 +825,7 @@ describe("starter profile validation", () => {
     expect(() =>
       validateInitOptions(
         options("mobile", {
+          "allow-experimental": "true",
           "mobile-scheme": "bad scheme",
           "ios-bundle-id": "com.fixture.app",
           "android-application-id": "com.fixture.app",
@@ -826,6 +835,7 @@ describe("starter profile validation", () => {
     expect(() =>
       validateInitOptions(
         options("mobile", {
+          "allow-experimental": "true",
           "mobile-scheme": "fixture",
           "ios-bundle-id": "com.fixture.app",
           "android-application-id": "Com.Fixture.App",
@@ -859,7 +869,10 @@ describe("starter profile validation", () => {
       ...config(["web"]),
       displayName: `Acme "<: 产品 🚀`,
     });
-    const page = generated.files.find((file) => file.path === "apps/web/app/page.tsx")?.content;
-    expect(page).toContain('{"Acme \\"<: 产品 🚀"}');
+    const web = generated.files
+      .filter((file) => file.path.startsWith("apps/web/"))
+      .map((file) => file.content)
+      .join("\n");
+    expect(web).toContain('Acme \\"<: 产品 🚀');
   });
 });

@@ -1,0 +1,41 @@
+{
+  "name": "@thaarei-technology/create-app",
+  "version": "1.0.0-dev.1",
+  "description": "Private Thaarei application generator and validator.",
+  "type": "module",
+  "bin": {
+    "thaarei-create-app": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./capabilities": {
+      "types": "./dist/capabilities.d.ts",
+      "import": "./dist/capabilities.js"
+    }
+  },
+  "files": [
+    "dist",
+    "assets",
+    "README.md"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted",
+    "tag": "next"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Thaarei-Technology/app-starter-kit.git",
+    "directory": "packages/create-app"
+  },
+  "scripts": {
+    "build": "tsx scripts/stage-assets.ts && tsc -p tsconfig.build.json",
+    "prepack": "pnpm build"
+  },
+  "engines": {
+    "node": "24.20.x"
+  }
+}

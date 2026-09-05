@@ -5,6 +5,8 @@
       "**/*.{css,js,jsx,json,jsonc,ts,tsx}",
       "!node_modules/**/*",
       "!dist/**/*",
+      "!**/dist/**/*",
+      "!packages/create-app/assets/**/*",
       "!.turbo/**/*",
       "!**/.turbo/**/*",
       "!.thaarei/fixtures/**/*",

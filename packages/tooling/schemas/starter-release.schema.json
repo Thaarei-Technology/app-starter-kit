@@ -1,0 +1,212 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://thaarei.example/schemas/starter-release.schema.json",
+  "title": "Thaarei Starter 1.0 release",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "release",
+    "status",
+    "releasedAt",
+    "runtime",
+    "approvedMajors",
+    "testedPackages",
+    "containerImages",
+    "enabledProfiles",
+    "compatibilityEvidence",
+    "packageVersions",
+    "qualifications",
+    "evidence",
+    "securityWaivers"
+  ],
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "maturity": { "enum": ["stable", "beta", "experimental"] },
+    "qualificationStatus": {
+      "enum": ["not_required", "unqualified", "qualified", "blocked", "expired"]
+    },
+    "evidenceStatus": { "enum": ["passed", "failed", "pending", "blocked_external", "waived"] },
+    "productionPolicy": {
+      "enum": ["starter_qualified", "requires_product_qualification", "forbidden"]
+    },
+    "qualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "sourceMaturity", "productionPolicy", "qualification", "requiredGates"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "sourceMaturity": { "$ref": "#/$defs/maturity" },
+        "productionPolicy": { "$ref": "#/$defs/productionPolicy" },
+        "qualification": { "$ref": "#/$defs/qualificationStatus" },
+        "requiredGates": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "subject",
+        "generatorVersion",
+        "recipeHash",
+        "sourceCommit",
+        "environment",
+        "provider",
+        "deploymentTarget",
+        "topology",
+        "artifactDigests",
+        "migrationDigests",
+        "gate",
+        "status",
+        "evidenceUri",
+        "verifier",
+        "observedAt",
+        "expiresAt"
+      ],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "subject": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "id", "version"],
+          "properties": {
+            "kind": { "enum": ["release", "profile", "provider", "deployment_target", "topology"] },
+            "id": { "type": "string", "minLength": 1 },
+            "version": { "type": "string", "minLength": 1 }
+          }
+        },
+        "generatorVersion": { "type": "string", "minLength": 1 },
+        "recipeHash": { "$ref": "#/$defs/sha256" },
+        "sourceCommit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "environment": { "enum": ["ci", "staging", "production", "recovery"] },
+        "provider": { "type": ["string", "null"] },
+        "deploymentTarget": { "enum": ["dokploy", "railway", null] },
+        "topology": { "type": ["string", "null"] },
+        "artifactDigests": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/sha256" }
+        },
+        "migrationDigests": { "type": "array", "items": { "$ref": "#/$defs/sha256" } },
+        "gate": { "type": "string", "minLength": 1 },
+        "status": { "$ref": "#/$defs/evidenceStatus" },
+        "evidenceUri": { "type": "string", "minLength": 1 },
+        "verifier": { "type": "string", "minLength": 1 },
+        "observedAt": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "waiver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "advisoryIds",
+        "affectedSubject",
+        "dependencyPath",
+        "reachability",
+        "controls",
+        "owner",
+        "reviewedAt",
+        "expiresAt",
+        "removalCondition",
+        "blocksProduction"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "advisoryIds": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "affectedSubject": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "id"],
+          "properties": {
+            "kind": { "enum": ["package", "profile", "fixture"] },
+            "id": { "type": "string", "minLength": 1 }
+          }
+        },
+        "dependencyPath": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "reachability": { "type": "string", "minLength": 1 },
+        "controls": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "owner": { "type": "string", "minLength": 1 },
+        "reviewedAt": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "removalCondition": { "type": "string", "minLength": 1 },
+        "blocksProduction": { "const": true }
+      }
+    }
+  },
+  "properties": {
+    "$schema": { "type": "string", "minLength": 1 },
+    "schemaVersion": { "const": 2 },
+    "release": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["prerelease", "released", "superseded"] },
+    "releasedAt": { "type": ["string", "null"], "format": "date-time" },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "pnpm"],
+      "properties": {
+        "node": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "pnpm": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" }
+      }
+    },
+    "approvedMajors": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "testedPackages": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "containerImages": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["reference", "digest"],
+        "properties": {
+          "reference": { "type": "string", "minLength": 1 },
+          "digest": { "$ref": "#/$defs/sha256" }
+        }
+      }
+    },
+    "enabledProfiles": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "compatibilityEvidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["gate", "status", "evidence"],
+        "properties": {
+          "gate": { "type": "string", "minLength": 1 },
+          "status": { "$ref": "#/$defs/evidenceStatus" },
+          "evidence": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "packageVersions": {
+      "type": "object",
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "qualifications": { "type": "array", "items": { "$ref": "#/$defs/qualification" } },
+    "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } },
+    "securityWaivers": { "type": "array", "items": { "$ref": "#/$defs/waiver" } }
+  }
+}

@@ -9,6 +9,19 @@ import { runInitializer } from "./index.js";
 
 const execFileAsync = promisify(execFile);
 const sourceRoot = resolve(import.meta.dirname, "../../..");
+const EXPERIMENTAL_PROFILES = new Set([
+  "mobile",
+  "external-api",
+  "storage",
+  "python",
+  "ai",
+  "agentic-ai",
+  "payments",
+  "notifications",
+  "search",
+  "rag",
+  "feature-flags",
+]);
 
 interface Fixture {
   readonly name: string;
@@ -35,13 +48,13 @@ const FIXTURES: readonly Fixture[] = [
   },
   {
     name: "durable-agentic-workflow",
-    profiles: "api,data,identity,ai,jobs,durable-ai",
+    profiles: "api,data,identity,ai,jobs,agentic-ai",
     deployment: "dokploy",
     mobile: false,
   },
   {
     name: "all-server-capabilities",
-    profiles: "web,api,data,identity,tenancy,jobs,events,ai,durable-ai,external-api,storage,python",
+    profiles: "web,api,data,identity,tenancy,jobs,events,ai,agentic-ai,external-api,storage,python",
     deployment: "railway",
     mobile: false,
   },
@@ -94,7 +107,9 @@ const FIXTURES: readonly Fixture[] = [
       "stripe,razorpay",
       "--ai-providers",
       "openai,anthropic",
-      "--email-provider",
+      "--identity-mail-provider",
+      "resend",
+      "--notification-provider",
       "resend",
       "--cache-provider",
       "valkey",
@@ -105,6 +120,7 @@ const FIXTURES: readonly Fixture[] = [
 ];
 
 function initializerArguments(fixture: Fixture, output: string): readonly string[] {
+  const selectedProfiles = fixture.profiles.split(",");
   return [
     "--product-id",
     `fixture-${fixture.name}`,
@@ -124,6 +140,10 @@ function initializerArguments(fixture: Fixture, output: string): readonly string
     "Fixture Operations",
     "--output",
     output,
+    ...(selectedProfiles.some((profile) => EXPERIMENTAL_PROFILES.has(profile))
+      ? ["--allow-experimental"]
+      : []),
+    ...(fixture.deployment === "railway" ? ["--allow-beta-target"] : []),
     ...(fixture.mobile
       ? [
           "--mobile-scheme",
@@ -161,7 +181,7 @@ async function waitForHttp(
     const exited = processes.find((process) => process.handle.exitCode !== null);
     if (exited) {
       throw new Error(
-        `${exited.name} exited before ${url} became ready (exit ${exited.handle.exitCode})`,
+        `${exited.name} exited before ${url} became ready (exit ${exited.handle.exitCode}): ${exited.output.slice(-20).join("")}`,
       );
     }
     try {
@@ -241,11 +261,12 @@ async function configureFixtureEnvironment(
     values[name] = value;
   }
   values[fixtureIdName] = fixtureInstanceId;
-  if (values.DATABASE_URL && ports.postgres) {
-    values.DATABASE_URL = values.DATABASE_URL.replace(
-      /127\.0\.0\.1:\d+/u,
-      `127.0.0.1:${ports.postgres}`,
-    );
+  if (ports.postgres) {
+    for (const name of ["DATABASE_URL", "MIGRATOR_DATABASE_URL"] as const) {
+      if (values[name]) {
+        values[name] = values[name].replace(/127\.0\.0\.1:\d+/u, `127.0.0.1:${ports.postgres}`);
+      }
+    }
   }
   const known = new Set(Object.keys(values));
   const lines = Object.entries(values).map(([name, value]) => `${name}=${value}`);
@@ -487,15 +508,23 @@ async function proveGeneratedReleaseContract(root: string): Promise<void> {
 }
 
 export async function validateFixtures(): Promise<void> {
-  for (const fixture of FIXTURES) {
-    const root = await mkdtemp(join(tmpdir(), `thaarei-${fixture.name}-`));
+  process.env.THAAREI_LOCAL_PACKAGE_ROOT = sourceRoot;
+  await runPnpm(sourceRoot, ["packages:build"]);
+  const requestedFixture = process.env.THAAREI_FIXTURE;
+  const fixtures = requestedFixture
+    ? FIXTURES.filter((fixture) => fixture.name === requestedFixture)
+    : FIXTURES;
+  if (fixtures.length === 0) throw new Error(`Unknown fixture: ${requestedFixture}`);
+  for (const fixture of fixtures) {
+    const fixtureParent = await mkdtemp(join(tmpdir(), `thaarei-${fixture.name}-`));
+    const root = join(fixtureParent, "generated");
     try {
       process.stdout.write(`Generating ${fixture.name} at ${root}\n`);
       await runInitializer(initializerArguments(fixture, root));
       const [installedAgents, expectedAgents] = await Promise.all([
         readFile(join(root, "AGENTS.md"), "utf8"),
         readFile(join(sourceRoot, "templates", "AGENTS.md"), "utf8").then((source) =>
-          source.replaceAll("{{PRODUCT_NAMESPACE}}", `.fixture-${fixture.name}`),
+          source.replaceAll("{{PRODUCT_NAMESPACE}}", ".thaarei"),
         ),
       ]);
       if (installedAgents !== expectedAgents)
@@ -507,13 +536,14 @@ export async function validateFixtures(): Promise<void> {
       }
       if (fixture.name === "full-profile-capabilities") {
         const manifest = JSON.parse(
-          await readFile(join(root, `.fixture-${fixture.name}`, "capabilities.json"), "utf8"),
+          await readFile(join(root, ".thaarei", "capabilities.json"), "utf8"),
         ) as {
           readonly profiles: readonly string[];
           readonly providers: {
             readonly paymentProviders: readonly string[];
             readonly aiProviders: readonly string[];
-            readonly emailProvider: string | null;
+            readonly identityMailProvider: string | null;
+            readonly notificationProvider: string | null;
             readonly cacheProvider: string | null;
             readonly observabilityExporters: readonly string[];
           };
@@ -527,7 +557,8 @@ export async function validateFixtures(): Promise<void> {
           JSON.stringify({
             paymentProviders: ["stripe", "razorpay"],
             aiProviders: ["openai", "anthropic"],
-            emailProvider: "resend",
+            identityMailProvider: "resend",
+            notificationProvider: "resend",
             cacheProvider: "valkey",
             observabilityExporters: ["otlp", "sentry"],
           })
@@ -536,12 +567,12 @@ export async function validateFixtures(): Promise<void> {
         }
       }
       if (fixture.name === "web-only") {
-        for (const unselected of ["api", "data", "identity", "mobile"]) {
+        for (const unselected of ["data", "identity", "mobile"]) {
           if (developerGuide.includes(`\`${unselected}\``))
             throw new Error(`web-only developer guide listed unselected profile ${unselected}`);
         }
         const marker = JSON.parse(
-          await readFile(join(root, `.fixture-${fixture.name}`, "project.json"), "utf8"),
+          await readFile(join(root, ".thaarei", "project.json"), "utf8"),
         ) as { readonly generatedFiles: readonly string[] };
         for (const forbidden of ["compose.yaml", "packages/database/src/migrate.ts"]) {
           if (marker.generatedFiles.includes(forbidden))
@@ -578,7 +609,7 @@ export async function validateFixtures(): Promise<void> {
       }
       process.stdout.write(`Validated ${fixture.name}\n`);
     } finally {
-      await rm(root, { recursive: true, force: true });
+      await rm(fixtureParent, { recursive: true, force: true });
     }
   }
 }

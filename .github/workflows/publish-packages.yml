@@ -1,0 +1,76 @@
+name: Publish private starter packages
+
+on:
+  push:
+    tags:
+      - "starter-v*"
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: starter-package-release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
+        with:
+          version: 11.22.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: "@thaarei-technology"
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm check:publication
+      - run: pnpm release:check
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm packages:pack-check -- --manifest package-release-manifest.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: package-release-manifest
+          path: package-release-manifest.json
+          if-no-files-found: error
+      - run: pnpm packages:build
+      - name: Select immutable dist-tag
+        id: channel
+        shell: bash
+        run: |
+          version=$(node -p "require('./package.json').version")
+          release_version=$(node -p "require('./starter-release.json').release")
+          release_status=$(node -p "require('./starter-release.json').status")
+          expected_ref="starter-v${version}"
+          if [[ "$GITHUB_REF_NAME" != "$expected_ref" ]]; then
+            echo "Release tag $GITHUB_REF_NAME does not match $expected_ref" >&2
+            exit 1
+          fi
+          if [[ "$version" != "$release_version" ]]; then
+            echo "Package version $version does not match release manifest $release_version" >&2
+            exit 1
+          fi
+          if [[ "$version" == *-* ]]; then
+            if [[ "$release_status" != "prerelease" ]]; then
+              echo "Prerelease package versions require manifest status prerelease" >&2
+              exit 1
+            fi
+            echo "tag=next" >> "$GITHUB_OUTPUT"
+          else
+            if [[ "$release_status" != "released" ]]; then
+              echo "Stable package versions require evidence-admitted manifest status released" >&2
+              exit 1
+            fi
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish allowlisted packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          pnpm --filter @thaarei-technology/foundation publish --no-git-checks --tag "${{ steps.channel.outputs.tag }}"
+          pnpm --filter @thaarei-technology/tooling publish --no-git-checks --tag "${{ steps.channel.outputs.tag }}"
+          pnpm --filter @thaarei-technology/create-app publish --no-git-checks --tag "${{ steps.channel.outputs.tag }}"

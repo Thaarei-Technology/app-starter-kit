@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { relative, resolve } from "node:path";
 import { checkBoundaries } from "./boundaries.js";
 import {

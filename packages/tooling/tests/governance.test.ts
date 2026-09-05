@@ -3,14 +3,14 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "vitest";
-import { checkBoundaries } from "../src/boundaries.js";
+import { checkBoundaries } from "../src/governance/boundaries.js";
 import {
   checkImplementation,
   createWorkItem,
   parseWorkItem,
   syncImplementation,
-} from "../src/implementation.js";
-import { checkSourceOfTruth } from "../src/source-of-truth.js";
+} from "../src/governance/implementation.js";
+import { checkSourceOfTruth } from "../src/governance/source-of-truth.js";
 
 const temporaryRoot = async (): Promise<string> => mkdtemp(join(tmpdir(), "thaarei-governance-"));
 
@@ -194,6 +194,29 @@ test("boundaries allow only the Better Auth browser client in packages/api-clien
   assert.ok(rejected.diagnostics.some((diagnostic) => diagnostic.code === "BOUNDARY_PROVIDER_SDK"));
 });
 
+test("boundaries allow Graphile Worker schema migration only in the database migrator", async () => {
+  const root = await temporaryRoot();
+  await mkdir(join(root, "packages", "database", "src"), { recursive: true });
+  await writeFile(
+    join(root, "packages", "database", "package.json"),
+    JSON.stringify({ name: "@test/database" }),
+  );
+  await writeFile(
+    join(root, "packages", "database", "src", "migrate.ts"),
+    'import { runMigrations } from "graphile-worker";\n',
+  );
+  assert.equal((await checkBoundaries(root)).ok, true);
+  await writeFile(
+    join(root, "packages", "database", "src", "runtime.ts"),
+    'import { run } from "graphile-worker";\n',
+  );
+  assert.ok(
+    (await checkBoundaries(root)).diagnostics.some(
+      (diagnostic) => diagnostic.code === "BOUNDARY_PROVIDER_SDK",
+    ),
+  );
+});
+
 test("provider matching does not classify unrelated names such as airtable", async () => {
   const root = await temporaryRoot();
   await mkdir(join(root, "packages", "core"), { recursive: true });
@@ -204,6 +227,23 @@ test("provider matching does not classify unrelated names such as airtable", asy
   await writeFile(join(root, "packages", "core", "unrelated.ts"), 'import "airtable";\n');
   const result = await checkBoundaries(root);
   assert.equal(result.ok, true);
+});
+
+test("starter generator and governance source may inspect provider import fixtures", async () => {
+  const root = await temporaryRoot();
+  for (const name of ["create-app", "tooling"] as const) {
+    const directory = join(root, "packages", name);
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      join(directory, "package.json"),
+      JSON.stringify({ name: `@thaarei-technology/${name}` }),
+    );
+    await writeFile(
+      join(directory, "fixture.ts"),
+      'import postgres from "postgres"; import "better-auth";\n',
+    );
+  }
+  assert.equal((await checkBoundaries(root)).ok, true);
 });
 
 test("core tests may import their own package source", async () => {

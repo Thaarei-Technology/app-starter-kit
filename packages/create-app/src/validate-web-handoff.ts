@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { runInitializer } from "./index.js";
@@ -13,6 +13,7 @@ const MAX_OUTPUT = 48 * 1024;
 const COMMAND_BUFFER = 8 * 1024 * 1024;
 const DB_WAIT_MS = 90_000;
 const APP_WAIT_MS = 90_000;
+const sourceRoot = resolve(import.meta.dirname, "../../..");
 
 interface CommandResult {
   readonly stdout: string;
@@ -165,12 +166,52 @@ function hasHealth(value: unknown): boolean {
 function cookieHeader(response: Response): string {
   const setCookies = response.headers.getSetCookie();
   if (setCookies.length === 0)
-    throw new Error("Better Auth signup did not establish a session cookie");
+    throw new Error("Better Auth authentication did not establish a session cookie");
   const cookies = setCookies
     .map((value) => value.split(";", 1)[0])
     .filter((value): value is string => typeof value === "string" && value.length > 0);
-  if (cookies.length === 0) throw new Error("Better Auth signup returned an empty session cookie");
+  if (cookies.length === 0)
+    throw new Error("Better Auth authentication returned an empty session cookie");
   return cookies.join("; ");
+}
+
+async function waitForMailLink(
+  mailpitUrl: string,
+  subjectFragment: string,
+  pathFragment: string,
+): Promise<string> {
+  const deadline = Date.now() + APP_WAIT_MS;
+  let lastFailure = "no matching message";
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${mailpitUrl}/api/v1/messages`);
+      const listing = (await jsonBody(response)) as JsonRecord;
+      const messages = Array.isArray(listing.messages)
+        ? listing.messages
+        : Array.isArray(listing.Messages)
+          ? listing.Messages
+          : [];
+      for (const candidate of messages) {
+        if (!isRecord(candidate)) continue;
+        const subject = String(candidate.Subject ?? candidate.subject ?? "");
+        if (!subject.includes(subjectFragment)) continue;
+        const id = candidate.ID ?? candidate.Id ?? candidate.id;
+        if (typeof id !== "string" && typeof id !== "number") continue;
+        const detailResponse = await fetch(`${mailpitUrl}/api/v1/message/${String(id)}`);
+        const detail = JSON.stringify(await jsonBody(detailResponse));
+        const links = detail.match(/https?:\/\/[^"\s<>]+/gu) ?? [];
+        const link = links
+          .map((value) => value.replace(/\\+$/u, "").replaceAll("&amp;", "&"))
+          .find((value) => value.includes(pathFragment));
+        if (link) return link;
+        lastFailure = `message ${String(id)} contained no ${pathFragment} link`;
+      }
+    } catch (error: unknown) {
+      lastFailure = errorMessage(error);
+    }
+    await delay(250);
+  }
+  throw new Error(`Mailpit did not receive ${subjectFragment}: ${lastFailure}`);
 }
 
 async function waitForUrl(
@@ -265,7 +306,7 @@ async function assertCount(
   const result = await compose(
     file,
     project,
-    ["exec", "-T", service, "psql", "-U", "starter", "-d", "starter", "-tAc", sql],
+    ["exec", "-T", service, "psql", "-U", "starter_admin", "-d", "starter", "-tAc", sql],
     env,
   );
   const count = Number(result.stdout.trim());
@@ -338,7 +379,10 @@ export async function validateWebHandoff(): Promise<void> {
   const WEB_PORT = await availablePort();
   const CONTAINER_API_PORT = await availablePort();
   const CONTAINER_WEB_PORT = await availablePort();
-  const fixtureRoot = await mkdtemp(join(tmpdir(), "thaarei-web-handoff-"));
+  const MAILPIT_SMTP_PORT = await availablePort();
+  const MAILPIT_UI_PORT = await availablePort();
+  const fixtureParent = await mkdtemp(join(tmpdir(), "thaarei-web-handoff-"));
+  const fixtureRoot = join(fixtureParent, "generated");
   const runId = `thaarei-web-handoff-${process.pid}-${Date.now()}`;
   const imageNames: readonly [string, string] = [`${runId}-api`, `${runId}-web`];
   const containerNames: readonly [string, string] = [`${runId}-api`, `${runId}-web`];
@@ -346,16 +390,23 @@ export async function validateWebHandoff(): Promise<void> {
   const environment: NodeJS.ProcessEnv = {
     ...process.env,
     COMPOSE_PROJECT_NAME: runId,
+    APP_ENV: "local",
     POSTGRES_PORT: String(POSTGRES_PORT),
-    POSTGRES_USER: "starter",
-    POSTGRES_PASSWORD: "starter",
+    POSTGRES_USER: "starter_admin",
+    POSTGRES_PASSWORD: "starter_admin_local",
     POSTGRES_DB: "starter",
-    DATABASE_URL: `postgresql://starter:starter_local@127.0.0.1:${POSTGRES_PORT}/starter`,
+    DATABASE_URL: `postgresql://starter_runtime:starter_runtime_local@127.0.0.1:${POSTGRES_PORT}/starter`,
+    MIGRATOR_DATABASE_URL: `postgresql://starter_migrator:starter_migrator_local@127.0.0.1:${POSTGRES_PORT}/starter`,
     BETTER_AUTH_SECRET: "local-web-handoff-secret-please-change",
     BETTER_AUTH_URL: `http://127.0.0.1:${WEB_PORT}`,
     API_INTERNAL_URL: `http://127.0.0.1:${API_PORT}`,
     PORT: String(API_PORT),
     NODE_ENV: "development",
+    IDENTITY_MAIL_PROVIDER: "mailpit",
+    IDENTITY_FROM_EMAIL: "identity@example.test",
+    IDENTITY_MAILPIT_URL: `http://127.0.0.1:${MAILPIT_UI_PORT}`,
+    MAILPIT_SMTP_PORT: String(MAILPIT_SMTP_PORT),
+    MAILPIT_UI_PORT: String(MAILPIT_UI_PORT),
   };
   let composePath: string | null = null;
   let postgresService: string | null = null;
@@ -363,20 +414,29 @@ export async function validateWebHandoff(): Promise<void> {
 
   try {
     process.stdout.write(`Generating web handoff fixture in ${fixtureRoot}\n`);
+    process.env.THAAREI_LOCAL_PACKAGE_ROOT = sourceRoot;
+    await pnpm(sourceRoot, ["packages:build"], process.env);
     await runInitializer(fixtureArguments(fixtureRoot));
     await writeFile(
       join(fixtureRoot, ".env"),
       `${[
+        "APP_ENV=local",
         "NODE_ENV=development",
         `PORT=${API_PORT}`,
         `DATABASE_URL=${environment.DATABASE_URL}`,
+        `MIGRATOR_DATABASE_URL=${environment.MIGRATOR_DATABASE_URL}`,
         `BETTER_AUTH_SECRET=${environment.BETTER_AUTH_SECRET}`,
         `BETTER_AUTH_URL=${environment.BETTER_AUTH_URL}`,
         `API_INTERNAL_URL=${environment.API_INTERNAL_URL}`,
+        `IDENTITY_MAIL_PROVIDER=${environment.IDENTITY_MAIL_PROVIDER}`,
+        `IDENTITY_FROM_EMAIL=${environment.IDENTITY_FROM_EMAIL}`,
+        `IDENTITY_MAILPIT_URL=${environment.IDENTITY_MAILPIT_URL}`,
         `POSTGRES_PORT=${environment.POSTGRES_PORT}`,
         `POSTGRES_USER=${environment.POSTGRES_USER}`,
         `POSTGRES_PASSWORD=${environment.POSTGRES_PASSWORD}`,
         `POSTGRES_DB=${environment.POSTGRES_DB}`,
+        `MAILPIT_SMTP_PORT=${environment.MAILPIT_SMTP_PORT}`,
+        `MAILPIT_UI_PORT=${environment.MAILPIT_UI_PORT}`,
       ].join("\n")}\n`,
       "utf8",
     );
@@ -389,7 +449,7 @@ export async function validateWebHandoff(): Promise<void> {
     postgresService =
       services.find((service) => /postgres|database|db/i.test(service)) ?? services[0] ?? null;
     if (!postgresService) throw new Error("Generated Compose configuration declared no service");
-    await pnpm(fixtureRoot, ["db:up"], environment);
+    await pnpm(fixtureRoot, ["dev:deps"], environment);
     const logicalVolumeNames = await composeNames(composePath, runId, "volumes", environment);
     const resolvedVolumes: string[] = [];
     for (const logicalVolume of logicalVolumeNames) {
@@ -408,6 +468,12 @@ export async function validateWebHandoff(): Promise<void> {
     }
     volumeNames = resolvedVolumes;
     await waitForPostgres(composePath, runId, postgresService, environment);
+    await waitForUrl(
+      `${environment.IDENTITY_MAILPIT_URL}/api/v1/info`,
+      200,
+      APP_WAIT_MS,
+      "Mailpit",
+    );
     await pnpm(fixtureRoot, ["db:migrate"], environment);
     const secondMigration = await pnpm(fixtureRoot, ["db:migrate"], environment);
     const migrationOutput = `${secondMigration.stdout}\n${secondMigration.stderr}`;
@@ -550,7 +616,29 @@ process.stdout.write("Generated API client runtime proof passed\\n");
       throw new Error(
         `Better Auth signup failed with status ${signup.status}: ${bounded(await signup.text())}`,
       );
-    const sessionCookie = cookieHeader(signup);
+    if (signup.headers.getSetCookie().length > 0)
+      throw new Error("Unverified signup unexpectedly received an authenticated session");
+    const verificationLink = await waitForMailLink(
+      String(environment.IDENTITY_MAILPIT_URL),
+      "Verify your email",
+      "/api/auth/verify-email",
+    );
+    const verification = await fetch(verificationLink, { redirect: "manual" });
+    if (verification.status < 200 || verification.status >= 400)
+      throw new Error(
+        `Email verification failed with status ${verification.status} for ${verificationLink}: ${bounded(await verification.text())}`,
+      );
+    const signIn = await fetch(`http://127.0.0.1:${WEB_PORT}/api/auth/sign-in/email`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: `http://127.0.0.1:${WEB_PORT}`,
+      },
+      body: JSON.stringify({ email, password: "local-web-handoff-password" }),
+    });
+    if (signIn.status < 200 || signIn.status >= 300)
+      throw new Error(`Verified login failed with status ${signIn.status}`);
+    const sessionCookie = cookieHeader(signIn);
     const authenticatedViewer = await fetch(
       `http://127.0.0.1:${WEB_PORT}/trpc/viewer?input=${encodeURIComponent("{}")}`,
       {
@@ -559,6 +647,63 @@ process.stdout.write("Generated API client runtime proof passed\\n");
     );
     if (authenticatedViewer.status !== 200 || !hasSubject(await jsonBody(authenticatedViewer)))
       throw new Error("Authenticated viewer did not return an application subject");
+
+    const recoveryEndpoint = `http://127.0.0.1:${WEB_PORT}/api/auth/request-password-reset`;
+    const recoveryHeaders = {
+      "content-type": "application/json",
+      origin: `http://127.0.0.1:${WEB_PORT}`,
+    };
+    const knownRecovery = await fetch(recoveryEndpoint, {
+      method: "POST",
+      headers: recoveryHeaders,
+      body: JSON.stringify({ email, redirectTo: `http://127.0.0.1:${WEB_PORT}/reset-password` }),
+    });
+    const unknownRecovery = await fetch(recoveryEndpoint, {
+      method: "POST",
+      headers: recoveryHeaders,
+      body: JSON.stringify({
+        email: `unknown-${email}`,
+        redirectTo: `http://127.0.0.1:${WEB_PORT}/reset-password`,
+      }),
+    });
+    if (knownRecovery.status !== unknownRecovery.status)
+      throw new Error("Password recovery leaked account existence through status behavior");
+    const resetLink = await waitForMailLink(
+      String(environment.IDENTITY_MAILPIT_URL),
+      "Reset your password",
+      "/reset-password",
+    );
+    const resetUrl = new URL(resetLink);
+    const resetPathToken = resetUrl.pathname.split("/").filter(Boolean).at(-1);
+    const resetToken =
+      resetUrl.searchParams.get("token") ??
+      new URLSearchParams(resetUrl.hash.slice(1)).get("token") ??
+      (resetPathToken && resetPathToken !== "reset-password" ? resetPathToken : null);
+    if (!resetToken)
+      throw new Error(`Password recovery link omitted its reset token: ${resetLink}`);
+    const reset = await fetch(`http://127.0.0.1:${WEB_PORT}/api/auth/reset-password`, {
+      method: "POST",
+      headers: recoveryHeaders,
+      body: JSON.stringify({ newPassword: "new-local-web-handoff-password", token: resetToken }),
+    });
+    if (reset.status < 200 || reset.status >= 300)
+      throw new Error(
+        `Password reset failed with status ${reset.status}: ${bounded(await reset.text())}`,
+      );
+    const revokedViewer = await fetch(
+      `http://127.0.0.1:${WEB_PORT}/trpc/viewer?input=${encodeURIComponent("{}")}`,
+      { headers: { cookie: sessionCookie } },
+    );
+    if (revokedViewer.status !== 401)
+      throw new Error("Password reset did not revoke the existing authenticated session");
+    const postResetLogin = await fetch(`http://127.0.0.1:${WEB_PORT}/api/auth/sign-in/email`, {
+      method: "POST",
+      headers: recoveryHeaders,
+      body: JSON.stringify({ email, password: "new-local-web-handoff-password" }),
+    });
+    if (postResetLogin.status < 200 || postResetLogin.status >= 300)
+      throw new Error("Ordinary login with the reset password failed");
+    cookieHeader(postResetLogin);
     await assertCount(
       composePath,
       runId,
@@ -609,11 +754,17 @@ process.stdout.write("Generated API client runtime proof passed\\n");
             "--env",
             `PORT=${CONTAINER_API_PORT}`,
             "--env",
-            `DATABASE_URL=postgresql://starter:starter_local@${postgresService}:5432/starter`,
+            `DATABASE_URL=postgresql://starter_runtime:starter_runtime_local@${postgresService}:5432/starter`,
             "--env",
             "BETTER_AUTH_SECRET=local-web-handoff-secret-please-change",
             "--env",
             `BETTER_AUTH_URL=http://${containerNames[1]}:${CONTAINER_WEB_PORT}`,
+            "--env",
+            "IDENTITY_MAIL_PROVIDER=mailpit",
+            "--env",
+            "IDENTITY_FROM_EMAIL=identity@example.test",
+            "--env",
+            `IDENTITY_MAILPIT_URL=http://${runId}-mailpit:8025`,
           ]
         : [
             "--env",
@@ -690,7 +841,7 @@ process.stdout.write("Generated API client runtime proof passed\\n");
         () => undefined,
       );
     }
-    await rm(fixtureRoot, { recursive: true, force: true });
+    await rm(fixtureParent, { recursive: true, force: true });
   }
 }
 
@@ -699,4 +850,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     process.stderr.write(`validate:web-handoff: ${bounded(errorMessage(error))}\n`);
     process.exitCode = 1;
   });
+  process.exit(process.exitCode ?? 0);
 }

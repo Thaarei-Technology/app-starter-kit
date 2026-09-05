@@ -1,5 +1,5 @@
 /**
- * V2 capability registry and release catalog.
+ * Starter 1.0 capability registry and release catalog.
  *
  * This module is intentionally dependency-free. The initializer, generated
  * manifests, local services, deployment emitters, and release checker can all
@@ -18,7 +18,6 @@ export const PROFILE_NAMES = [
   "events",
   "ai",
   "agentic-ai",
-  "durable-ai",
   "external-api",
   "storage",
   "python",
@@ -33,14 +32,54 @@ export const PROFILE_NAMES = [
 ] as const;
 
 export type Profile = (typeof PROFILE_NAMES)[number];
-export type CanonicalProfile = Exclude<Profile, "durable-ai">;
+export type CanonicalProfile = Profile;
+export type SourceMaturity = "stable" | "beta" | "experimental";
+export type ProductionPolicy = "starter_qualified" | "requires_product_qualification" | "forbidden";
+
+export const PRESETS = {
+  "web-app": [
+    "web",
+    "api",
+    "data",
+    "identity",
+    "jobs",
+    "events",
+    "cache",
+    "rate-limit",
+    "observability",
+  ],
+  "multi-tenant-web-app": [
+    "web",
+    "api",
+    "data",
+    "identity",
+    "tenancy",
+    "jobs",
+    "events",
+    "cache",
+    "rate-limit",
+    "observability",
+  ],
+  "api-service": [
+    "api",
+    "data",
+    "identity",
+    "jobs",
+    "events",
+    "cache",
+    "rate-limit",
+    "observability",
+  ],
+} as const satisfies Readonly<Record<string, readonly CanonicalProfile[]>>;
+export type Preset = keyof typeof PRESETS;
 
 export type ProviderCapability = "payment" | "ai" | "email" | "cache" | "observability";
 
 export interface ProviderSelection {
   readonly paymentProviders: readonly ("stripe" | "razorpay")[];
   readonly aiProviders: readonly ("openai" | "anthropic")[];
-  readonly emailProvider: "resend" | null;
+  readonly identityMailProvider: "resend" | null;
+  readonly notificationProvider: "resend" | null;
   readonly cacheProvider: "valkey" | null;
   readonly observabilityExporters: readonly ("otlp" | "sentry")[];
 }
@@ -69,6 +108,9 @@ export interface LocalServiceDefinition {
 
 export interface CapabilityDefinition {
   readonly id: CanonicalProfile;
+  readonly sourceMaturity: SourceMaturity;
+  readonly productionPolicy: ProductionPolicy;
+  readonly requiredGates: readonly string[];
   readonly requires: readonly CanonicalProfile[];
   readonly conflicts: readonly CanonicalProfile[];
   readonly packages: readonly GeneratedPackage[];
@@ -103,8 +145,8 @@ const environment = (
 
 export const IMAGE_CATALOG = {
   node: {
-    reference: "node:24.19.0-bookworm-slim",
-    digest: "sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03",
+    reference: "node:24.20.0-bookworm-slim",
+    digest: "sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e",
   },
   postgresql: {
     reference: "postgres:18.3-bookworm",
@@ -147,13 +189,15 @@ export const DEPENDENCY_VERSIONS = {
   trpcServer: "11.18.0",
   fastify: "5.12.1",
   next: "16.3.1",
-  expo: "57.0.18",
+  expo: "57.0.20",
   react: "19.2.3",
   drizzle: "0.45.2",
   postgres: "3.4.9",
   graphileWorker: "0.17.3",
   ai: "7.0.68",
   betterAuth: "1.7.1",
+  betterAuthPasskey: "1.7.1",
+  railway: "3.11.0",
   zod: "4.4.3",
   biome: "2.5.9",
   turbo: "2.10.10",
@@ -164,13 +208,13 @@ export const DEPENDENCY_VERSIONS = {
   baseUi: "1.7.0",
   tanstackQuery: "5.101.4",
   tanstackForm: "1.33.5",
-  expoRouter: "57.0.17",
+  expoRouter: "57.0.19",
   reactNative: "0.86.3",
   unistyles: "3.3.0",
   reanimated: "4.5.1",
   gestureHandler: "2.32.0",
-  secureStore: "57.0.2",
-  notifications: "57.0.15",
+  secureStore: "57.0.3",
+  notifications: "57.0.17",
   trpcClient: "11.18.0",
   pino: "10.3.1",
   fastifySwagger: "9.8.1",
@@ -191,6 +235,39 @@ const definition = (
   extras: Partial<Omit<CapabilityDefinition, "id" | "requires" | "conflicts">> = {},
 ): CapabilityDefinition => ({
   id,
+  sourceMaturity: [
+    "mobile",
+    "external-api",
+    "storage",
+    "python",
+    "ai",
+    "agentic-ai",
+    "payments",
+    "notifications",
+    "search",
+    "rag",
+    "feature-flags",
+  ].includes(id)
+    ? "experimental"
+    : "stable",
+  productionPolicy:
+    id === "mobile"
+      ? "forbidden"
+      : [
+            "external-api",
+            "storage",
+            "python",
+            "ai",
+            "agentic-ai",
+            "payments",
+            "notifications",
+            "search",
+            "rag",
+            "feature-flags",
+          ].includes(id)
+        ? "requires_product_qualification"
+        : "starter_qualified",
+  requiredGates: ["generation", "typecheck", "test"],
   requires,
   conflicts: [],
   packages: [],
@@ -221,7 +298,42 @@ export const CAPABILITY_REGISTRY: Readonly<Record<CanonicalProfile, CapabilityDe
   mobile: definition("mobile", ["api"], { apps: ["mobile"], fixtures: ["mobile-session"] }),
   api: definition("api", [], { apps: ["api"] }),
   data: definition("data", [], { releaseDependencies: ["drizzle-orm", "postgres"] }),
-  identity: definition("identity", ["api", "data"], { fixtures: ["authentication"] }),
+  identity: definition("identity", ["api", "data"], {
+    fixtures: ["authentication", "email-verification", "password-recovery", "assurance"],
+    environment: [
+      environment(
+        "IDENTITY_MAIL_PROVIDER",
+        "api",
+        true,
+        false,
+        "mailpit locally and in CI; resend in staging and production.",
+      ),
+      environment(
+        "IDENTITY_FROM_EMAIL",
+        "api",
+        true,
+        false,
+        "Verified sender for identity-only transactional mail.",
+      ),
+      environment(
+        "IDENTITY_RESEND_API_KEY",
+        "api",
+        false,
+        true,
+        "Required when IDENTITY_MAIL_PROVIDER is resend.",
+      ),
+      environment(
+        "IDENTITY_MAILPIT_URL",
+        "api",
+        false,
+        false,
+        "Local and CI Mailpit API endpoint.",
+      ),
+    ],
+    localServices: [
+      service("mailpit", "mailpit", "wget -qO- http://localhost:8025/api/v1/info", "identity"),
+    ],
+  }),
   tenancy: definition("tenancy", ["identity", "api", "data"], {
     fixtures: ["tenant-isolation", "rls", "organization-admin"],
     documentation: ["authorization-and-rls"],
@@ -325,27 +437,24 @@ export const CAPABILITY_REGISTRY: Readonly<Record<CanonicalProfile, CapabilityDe
   }),
 };
 
-export const canonicalProfile = (profile: Profile): CanonicalProfile =>
-  profile === "durable-ai" ? "agentic-ai" : profile;
+export const canonicalProfile = (profile: Profile): CanonicalProfile => profile;
 
 export function canonicalizeProfiles(profiles: readonly Profile[]): {
   readonly profiles: readonly CanonicalProfile[];
   readonly deprecatedAliases: readonly Profile[];
 } {
-  const aliases = profiles.filter((profile): profile is "durable-ai" => profile === "durable-ai");
   const selected = new Set<CanonicalProfile>(profiles.map(canonicalProfile));
   return {
-    profiles: PROFILE_NAMES.filter(
-      (profile): profile is CanonicalProfile => profile !== "durable-ai" && selected.has(profile),
-    ),
-    deprecatedAliases: aliases,
+    profiles: PROFILE_NAMES.filter((profile) => selected.has(profile)),
+    deprecatedAliases: [],
   };
 }
 
 const providerDefaults: ProviderSelection = {
   paymentProviders: [],
   aiProviders: [],
-  emailProvider: null,
+  identityMailProvider: null,
+  notificationProvider: null,
   cacheProvider: null,
   observabilityExporters: [],
 };
@@ -353,7 +462,8 @@ const providerDefaults: ProviderSelection = {
 export const defaultProviders = (): ProviderSelection => ({
   paymentProviders: [...providerDefaults.paymentProviders],
   aiProviders: [...providerDefaults.aiProviders],
-  emailProvider: providerDefaults.emailProvider,
+  identityMailProvider: providerDefaults.identityMailProvider,
+  notificationProvider: providerDefaults.notificationProvider,
   cacheProvider: providerDefaults.cacheProvider,
   observabilityExporters: [...providerDefaults.observabilityExporters],
 });
@@ -361,7 +471,6 @@ export const defaultProviders = (): ProviderSelection => ({
 export function resolveCapabilities(
   requested: readonly Profile[],
   providers: ProviderSelection = defaultProviders(),
-  options: { readonly strict?: boolean } = {},
 ): CapabilityManifest {
   const canonicalRequested = requested.map(canonicalProfile);
   if (new Set(canonicalRequested).size !== canonicalRequested.length) {
@@ -372,7 +481,8 @@ export function resolveCapabilities(
   const providerProfileRequirements: readonly [string, CanonicalProfile, boolean][] = [
     ["payment provider", "payments", providers.paymentProviders.length > 0],
     ["AI provider", "ai", providers.aiProviders.length > 0],
-    ["email provider", "notifications", providers.emailProvider !== null],
+    ["identity mail provider", "identity", providers.identityMailProvider !== null],
+    ["notification provider", "notifications", providers.notificationProvider !== null],
     ["cache provider", "cache", providers.cacheProvider !== null],
     ["observability exporter", "observability", providers.observabilityExporters.length > 0],
   ];
@@ -392,8 +502,10 @@ export function resolveCapabilities(
   if (providers.aiProviders.some((provider) => !knownProviders.ai.has(provider))) {
     throw new Error("Unsupported AI provider");
   }
-  if (!knownProviders.email.has(providers.emailProvider))
-    throw new Error("Unsupported email provider");
+  if (!knownProviders.email.has(providers.identityMailProvider))
+    throw new Error("Unsupported identity mail provider");
+  if (!knownProviders.email.has(providers.notificationProvider))
+    throw new Error("Unsupported notification provider");
   if (!knownProviders.cache.has(providers.cacheProvider))
     throw new Error("Unsupported cache provider");
   if (
@@ -410,18 +522,7 @@ export function resolveCapabilities(
     if (!entry) throw new Error(`Unknown capability profile: ${profile}`);
     visiting.add(profile);
     for (const required of entry.requires) {
-      if (!selected.has(required)) {
-        if (options.strict !== false) {
-          // The deprecated alias preserves the V1 durable-ai selection for one
-          // release while its generated metadata is already canonicalized.
-          const legacyDurableAlias =
-            canonical.deprecatedAliases.length > 0 &&
-            profile === "agentic-ai" &&
-            required === "events";
-          if (!legacyDurableAlias) throw new Error(`${profile} requires ${required}`);
-          continue;
-        } else continue;
-      }
+      selected.add(required);
       visit(required);
     }
     for (const conflict of entry.conflicts) {
@@ -431,9 +532,7 @@ export function resolveCapabilities(
     resolved.add(profile);
   };
   for (const profile of canonical.profiles) visit(profile);
-  const ordered = PROFILE_NAMES.filter(
-    (profile): profile is CanonicalProfile => profile !== "durable-ai" && resolved.has(profile),
-  );
+  const ordered = PROFILE_NAMES.filter((profile) => resolved.has(profile));
   const definitions = ordered.map((profile) => CAPABILITY_REGISTRY[profile]);
   const packages = definitions.flatMap((entry) => entry.packages);
   const apps = [...new Set(definitions.flatMap((entry) => entry.apps))];
@@ -463,7 +562,7 @@ export function resolveCapabilities(
 }
 
 export const releaseCatalog = {
-  runtime: { node: "24.19.0", pnpm: "11.22.0" },
+  runtime: { node: "24.20.0", pnpm: "11.22.0" },
   images: IMAGE_CATALOG,
   dependencies: DEPENDENCY_VERSIONS,
 } as const;

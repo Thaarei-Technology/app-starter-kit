@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import type { Dirent } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { builtinModules } from "node:module";
@@ -5,13 +6,19 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
+import {
+  profileQualificationSchema,
+  qualificationEvidenceSchema,
+  securityWaiverSchema,
+} from "../qualification.js";
+import { PUBLISHABLE_PACKAGES } from "../publication.js";
 
 const versionRecordSchema = z.record(z.string(), z.string().min(1));
 
 const releaseSchema = z
   .object({
     $schema: z.string().min(1),
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     release: z.string().min(1),
     status: z.enum(["prerelease", "released", "superseded"]),
     releasedAt: z.string().datetime().nullable(),
@@ -34,14 +41,19 @@ const releaseSchema = z
     compatibilityEvidence: z.array(
       z.object({
         gate: z.string().min(1),
-        status: z.enum(["passed", "failed", "pending", "blocked_external"]),
+        status: z.enum(["passed", "failed", "pending", "blocked_external", "waived"]),
         evidence: z.string().min(1),
       }),
     ),
+    packageVersions: z.record(z.string(), z.string().min(1)),
+    qualifications: z.array(profileQualificationSchema),
+    evidence: z.array(qualificationEvidenceSchema),
+    securityWaivers: z.array(securityWaiverSchema),
   })
   .strict();
 
 const packageSchema = z.object({
+  version: z.string().min(1),
   packageManager: z.string().min(1),
   engines: z.object({ node: z.string().min(1) }),
   devDependencies: versionRecordSchema,
@@ -58,6 +70,20 @@ const DEPENDENCY_FIELDS = [
   "devDependencies",
   "optionalDependencies",
   "peerDependencies",
+] as const;
+const REQUIRED_STABLE_QUALIFICATIONS = [
+  "web",
+  "api",
+  "data",
+  "identity",
+  "tenancy",
+  "jobs",
+  "events",
+  "cache",
+  "rate-limit",
+  "observability",
+  "dokploy-standard",
+  "dokploy-hardened",
 ] as const;
 
 type PackageManifest = {
@@ -162,6 +188,20 @@ export async function checkRelease(root: string): Promise<ReleaseCheckResult> {
   const packageData = packageResult.data;
   const workspace = workspaceResult.data;
 
+  for (const packageName of PUBLISHABLE_PACKAGES) {
+    if (manifest.packageVersions[packageName] !== manifest.release) {
+      errors.push(`${packageName} must use the lockstep release version ${manifest.release}`);
+    }
+  }
+  if (packageData.version !== manifest.release) {
+    errors.push(`package.json version must match starter-release.json release ${manifest.release}`);
+  }
+  for (const packageName of Object.keys(manifest.packageVersions)) {
+    if (!(PUBLISHABLE_PACKAGES as readonly string[]).includes(packageName)) {
+      errors.push(`release manifest contains an unapproved publishable package: ${packageName}`);
+    }
+  }
+
   if (packageData.packageManager !== `pnpm@${manifest.runtime.pnpm}`) {
     errors.push("packageManager must match starter-release.json runtime.pnpm");
   }
@@ -226,11 +266,71 @@ export async function checkRelease(root: string): Promise<ReleaseCheckResult> {
   if (manifest.status === "released" && manifest.releasedAt === null) {
     errors.push("releasedAt is required when status is released");
   }
-  if (
-    manifest.status === "released" &&
-    manifest.compatibilityEvidence.some((evidence) => evidence.status !== "passed")
-  ) {
-    errors.push("every compatibility gate must pass before release promotion");
+  if (manifest.status === "released") {
+    const qualificationIds = new Set(
+      manifest.qualifications.map((qualification) => qualification.id),
+    );
+    for (const id of REQUIRED_STABLE_QUALIFICATIONS) {
+      if (!qualificationIds.has(id)) errors.push(`missing required stable qualification: ${id}`);
+    }
+    const stableFailures = manifest.qualifications.filter(
+      (qualification) =>
+        qualification.sourceMaturity === "stable" && qualification.qualification !== "qualified",
+    );
+    if (stableFailures.length > 0) {
+      errors.push(
+        "every stable profile and deployment topology must be qualified before release promotion",
+      );
+    }
+    const now = Date.now();
+    for (const qualification of manifest.qualifications.filter(
+      (entry) => entry.sourceMaturity === "stable",
+    )) {
+      const topology = qualification.id.startsWith("dokploy-")
+        ? qualification.id.slice("dokploy-".length)
+        : null;
+      for (const gate of qualification.requiredGates) {
+        const hasCurrentEvidence = manifest.evidence.some((evidence) => {
+          if (
+            evidence.subject.id !== qualification.id ||
+            evidence.subject.version !== manifest.release ||
+            evidence.generatorVersion !== manifest.release ||
+            evidence.gate !== gate ||
+            evidence.status !== "passed" ||
+            Date.parse(evidence.observedAt) > now ||
+            (evidence.expiresAt !== null && Date.parse(evidence.expiresAt) <= now)
+          ) {
+            return false;
+          }
+          if (topology !== null) {
+            return (
+              evidence.subject.kind === "topology" &&
+              evidence.deploymentTarget === "dokploy" &&
+              evidence.topology === topology
+            );
+          }
+          return evidence.subject.kind === "profile";
+        });
+        if (!hasCurrentEvidence) {
+          errors.push(`${qualification.id} is missing current release evidence for ${gate}`);
+        }
+      }
+    }
+    if (
+      manifest.compatibilityEvidence.some(
+        (evidence) =>
+          evidence.status !== "passed" &&
+          !evidence.gate.startsWith("experimental-") &&
+          !evidence.gate.startsWith("beta-"),
+      )
+    ) {
+      errors.push("every stable compatibility gate must pass before release promotion");
+    }
+  }
+  const now = Date.now();
+  for (const waiver of manifest.securityWaivers) {
+    if (Date.parse(waiver.expiresAt) <= now && waiver.affectedSubject.kind === "package")
+      errors.push(`expired package security waiver: ${waiver.id}`);
   }
   if (manifest.status === "prerelease" && manifest.releasedAt !== null) {
     errors.push("releasedAt must remain null while status is prerelease");

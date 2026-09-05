@@ -1,16 +1,17 @@
 {
-  "$schema": "./tooling/release/starter-release.schema.json",
-  "schemaVersion": 1,
-  "release": "0.2.0-dev.1",
+  "$schema": "./packages/tooling/schemas/starter-release.schema.json",
+  "schemaVersion": 2,
+  "release": "1.0.0-dev.1",
   "status": "prerelease",
   "releasedAt": null,
   "runtime": {
-    "node": "24.19.0",
+    "node": "24.20.0",
     "pnpm": "11.22.0"
   },
   "approvedMajors": {
     "@biomejs/biome": 2,
     "@base-ui/react": 1,
+    "@better-auth/passkey": 1,
     "@aws-sdk/client-s3": 3,
     "@aws-sdk/s3-presigned-post": 3,
     "@aws-sdk/s3-request-presigner": 3,
@@ -37,6 +38,7 @@
     "js-yaml": 4,
     "next": 16,
     "pino": 10,
+    "railway": 3,
     "postgres": 3,
     "react": 19,
     "react-native": 0,
@@ -55,6 +57,7 @@
   "testedPackages": {
     "@biomejs/biome": "2.5.9",
     "@base-ui/react": "1.7.0",
+    "@better-auth/passkey": "1.7.1",
     "@aws-sdk/client-s3": "3.1113.0",
     "@aws-sdk/s3-presigned-post": "3.1113.0",
     "@aws-sdk/s3-request-presigner": "3.1113.0",
@@ -72,15 +75,16 @@
     "ai": "7.0.68",
     "better-auth": "1.7.1",
     "drizzle-orm": "0.45.2",
-    "expo": "57.0.18",
-    "expo-notifications": "57.0.15",
-    "expo-router": "57.0.17",
-    "expo-secure-store": "57.0.2",
+    "expo": "57.0.20",
+    "expo-notifications": "57.0.17",
+    "expo-router": "57.0.19",
+    "expo-secure-store": "57.0.3",
     "fastify": "5.12.1",
     "graphile-worker": "0.17.3",
     "js-yaml": "4.3.1",
     "next": "16.3.1",
     "pino": "10.3.1",
+    "railway": "3.11.0",
     "postgres": "3.4.9",
     "react": "19.2.3",
     "react-native": "0.86.3",
@@ -98,8 +102,8 @@
   },
   "containerImages": {
     "node": {
-      "reference": "node:24.19.0-bookworm-slim",
-      "digest": "sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03"
+      "reference": "node:24.20.0-bookworm-slim",
+      "digest": "sha256:ba849c60be29959425b8734d57b8b4b7d56f98edd9504c9af091d5281095a71e"
     },
     "postgresql": {
       "reference": "postgres:18.3-bookworm",
@@ -147,14 +151,14 @@
       "evidence": "The dedicated web, API, data, and identity fixture passed generated checks, typed proxy health, anonymous rejection, Better Auth session establishment, application identity persistence, two migration runs, and web/API container health under Node 24.19.0. Evidence is recorded in .thaarei/work/STARTER-003.md."
     },
     {
-      "gate": "better-auth-expo-sdk-57-native-build",
+      "gate": "experimental-better-auth-expo-sdk-57-native-build",
       "status": "blocked_external",
       "evidence": "Requires iOS and Android development-build proof."
     },
     {
-      "gate": "expo-metro-image-size-security-patch",
-      "status": "blocked_external",
-      "evidence": "Two high-severity image-size advisories are narrowly waived for the mobile build path because the stated patched release 2.0.3 is not published. Generated repositories record the waiver and require version-controlled build assets."
+      "gate": "experimental-expo-metro-image-size-security-patch",
+      "status": "waived",
+      "evidence": "GHSA-5p2g-fcmc-qvqq is narrowly waived only for the generated experimental mobile fixture. Mobile is production-forbidden and generation is disabled after waiver expiry."
     },
     {
       "gate": "python-container-build",
@@ -167,9 +171,134 @@
       "evidence": "Requires a disposable Dokploy environment."
     },
     {
-      "gate": "railway-live-service-mapping",
+      "gate": "beta-railway-live-service-mapping",
       "status": "blocked_external",
       "evidence": "Requires a disposable Railway project."
+    }
+  ],
+  "packageVersions": {
+    "@thaarei-technology/create-app": "1.0.0-dev.1",
+    "@thaarei-technology/foundation": "1.0.0-dev.1",
+    "@thaarei-technology/tooling": "1.0.0-dev.1"
+  },
+  "qualifications": [
+    {
+      "id": "web",
+      "sourceMaturity": "stable",
+      "productionPolicy": "starter_qualified",
+      "qualification": "unqualified",
+      "requiredGates": ["generation", "typecheck", "test"]
+    },
+    {
+      "id": "api",
+      "sourceMaturity": "stable",
+      "productionPolicy": "starter_qualified",
+      "qualification": "unqualified",
+      "requiredGates": ["generation", "typecheck", "test"]
+    },
+    {
+      "id": "data",
+      "sourceMaturity": "stable",
+      "productionPolicy": "starter_qualified",
+      "qualification": "unqualified",
+      "requiredGates": ["migration", "rls", "rollback", "restore"]
+    },
+    {
+      "id": "identity",
+      "sourceMaturity": "stable",
+      "productionPolicy": "starter_qualified",
+      "qualification": "unqualified",
+      "requiredGates": ["verification", "recovery", "assurance", "session-revocation"]
+    },
+    {
+      "id": "tenancy",
+      "sourceMaturity": "stable",
+      "productionPolicy": "starter_qualified",
+      "qualification": "unqualified",
+      "requiredGates": ["rls", "cross-tenant-isolation"]
+    },
+    {
+      "id": "jobs",
+      "sourceMaturity": "stable",
+      "productionPolicy": "starter_qualified",
+      "qualification": "unqualified",
+      "requiredGates": ["transactional-enqueue", "idempotency"]
+    },
+    {
+      "id": "events",
+      "sourceMaturity": "stable",
+      "productionPolicy": "starter_qualified",
+      "qualification": "unqualified",
+      "requiredGates": ["outbox", "inbox"]
+    },
+    {
+      "id": "cache",
+      "sourceMaturity": "stable",
+      "productionPolicy": "starter_qualified",
+      "qualification": "unqualified",
+      "requiredGates": ["generation", "test"]
+    },
+    {
+      "id": "rate-limit",
+      "sourceMaturity": "stable",
+      "productionPolicy": "starter_qualified",
+      "qualification": "unqualified",
+      "requiredGates": ["generation", "test"]
+    },
+    {
+      "id": "observability",
+      "sourceMaturity": "stable",
+      "productionPolicy": "starter_qualified",
+      "qualification": "unqualified",
+      "requiredGates": ["trace", "metrics", "alerts"]
+    },
+    {
+      "id": "dokploy-standard",
+      "sourceMaturity": "stable",
+      "productionPolicy": "starter_qualified",
+      "qualification": "blocked",
+      "requiredGates": ["deploy", "migration", "rollback", "restore", "monitoring"]
+    },
+    {
+      "id": "dokploy-hardened",
+      "sourceMaturity": "stable",
+      "productionPolicy": "starter_qualified",
+      "qualification": "blocked",
+      "requiredGates": ["deploy", "migration", "rollback", "restore", "monitoring"]
+    },
+    {
+      "id": "railway",
+      "sourceMaturity": "beta",
+      "productionPolicy": "requires_product_qualification",
+      "qualification": "blocked",
+      "requiredGates": ["deploy", "migration", "rollback", "restore", "monitoring"]
+    },
+    {
+      "id": "mobile",
+      "sourceMaturity": "experimental",
+      "productionPolicy": "forbidden",
+      "qualification": "blocked",
+      "requiredGates": ["native-build", "security"]
+    }
+  ],
+  "evidence": [],
+  "securityWaivers": [
+    {
+      "id": "mobile-image-size-2026-09",
+      "advisoryIds": ["GHSA-5p2g-fcmc-qvqq"],
+      "affectedSubject": { "kind": "fixture", "id": "experimental-mobile" },
+      "dependencyPath": ["expo", "@expo/metro-config", "image-size@2.0.2"],
+      "reachability": "The vulnerable parser is reachable only while processing local Metro build assets in the experimental generated mobile fixture.",
+      "controls": [
+        "Do not process untrusted image assets through the affected parser.",
+        "Use only version-controlled local build assets.",
+        "Do not promote or deploy the mobile artifact to production."
+      ],
+      "owner": "Starter maintainers",
+      "reviewedAt": "2026-09-05T00:00:00.000Z",
+      "expiresAt": "2026-10-05T00:00:00.000Z",
+      "removalCondition": "Remove when Expo no longer resolves an affected image-size release or remove the mobile profile.",
+      "blocksProduction": true
     }
   ]
 }

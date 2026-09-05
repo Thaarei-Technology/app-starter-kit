@@ -4,6 +4,20 @@
 
 Canonical records: `.thaarei/work/*.md`.
 
+## STARTER-009: Record the approved App Starter Kit 1.0 implementation plan
+
+- Status: complete
+- Owner: primary-agent
+- Updated: 2026-09-05
+- Paths: docs/APP_STARTER_KIT_1_0_IMPLEMENTATION_PLAN.md, .thaarei/work/STARTER-009.md, IMPLEMENTATION.md
+
+## STARTER-010: Implement the Starter Kit 1.0 remediation plan
+
+- Status: complete
+- Owner: primary-agent
+- Updated: 2026-09-05
+- Paths: AGENTS.md, docs/, packages/, .github/workflows/publish-packages.yml, .nvmrc, templates/, package.json, pnpm-workspace.yaml, starter-release.json, IMPLEMENTATION.md
+
 ## STARTER-008: Add the approved DMS Core starter fixture and Expo SDK 57 patch pins
 
 - Status: complete
@@ -24,17 +38,3 @@ Canonical records: `.thaarei/work/*.md`.
 - Owner: primary-agent
 - Updated: 2026-08-21
 - Paths: .thaarei/work/STARTER-006.md, tooling/starter-init/src/, tooling/governance/src/, tooling/release/, starter-release.json, docs/, templates/, IMPLEMENTATION.md
-
-## STARTER-004: Add the client-project creation guide
-
-- Status: complete
-- Owner: primary-agent
-- Updated: 2026-08-20
-- Paths: README.md, docs/create-client-project.md, docs/engineering-starter-kit.md, .thaarei/work/STARTER-004.md, IMPLEMENTATION.md
-
-## STARTER-005: Prove all-server-profile LMS bootstrap and runtime composition
-
-- Status: complete
-- Owner: primary-agent
-- Updated: 2026-08-20
-- Paths: tooling/starter-init/src/generator.ts, tooling/starter-init/src/initializer.test.ts, tooling/starter-init/src/validate-fixtures.ts, templates/, .thaarei/work/STARTER-005.md, IMPLEMENTATION.md
