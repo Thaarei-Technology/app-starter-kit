@@ -7,5 +7,6 @@ coverage/
 !.env.example
 .thaarei/fixtures/
 .thaarei/generated/
+.artifacts/
 *.log
 .DS_Store

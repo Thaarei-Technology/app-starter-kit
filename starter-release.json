@@ -15,9 +15,17 @@
     "@aws-sdk/client-s3": 3,
     "@aws-sdk/s3-presigned-post": 3,
     "@aws-sdk/s3-request-presigner": 3,
+    "@axe-core/playwright": 4,
     "@fastify/swagger": 9,
     "@fastify/swagger-ui": 6,
     "@hey-api/openapi-ts": 0,
+    "@opentelemetry/api": 1,
+    "@opentelemetry/exporter-metrics-otlp-http": 0,
+    "@opentelemetry/exporter-trace-otlp-http": 0,
+    "@opentelemetry/resources": 2,
+    "@opentelemetry/sdk-metrics": 2,
+    "@opentelemetry/sdk-node": 0,
+    "@playwright/test": 1,
     "@tailwindcss/postcss": 4,
     "@tanstack/react-form": 1,
     "@tanstack/react-query": 5,
@@ -26,6 +34,7 @@
     "@types/node": 24,
     "@types/react": 19,
     "@types/react-dom": 19,
+    "@vitest/coverage-v8": 4,
     "ai": 7,
     "better-auth": 1,
     "drizzle-orm": 0,
@@ -61,9 +70,17 @@
     "@aws-sdk/client-s3": "3.1113.0",
     "@aws-sdk/s3-presigned-post": "3.1113.0",
     "@aws-sdk/s3-request-presigner": "3.1113.0",
+    "@axe-core/playwright": "4.13.0",
     "@fastify/swagger": "9.8.1",
     "@fastify/swagger-ui": "6.1.1",
     "@hey-api/openapi-ts": "0.99.0",
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/exporter-metrics-otlp-http": "0.222.0",
+    "@opentelemetry/exporter-trace-otlp-http": "0.222.0",
+    "@opentelemetry/resources": "2.11.0",
+    "@opentelemetry/sdk-metrics": "2.11.0",
+    "@opentelemetry/sdk-node": "0.222.0",
+    "@playwright/test": "1.63.0",
     "@tailwindcss/postcss": "4.3.3",
     "@tanstack/react-form": "1.33.5",
     "@tanstack/react-query": "5.101.4",
@@ -72,6 +89,7 @@
     "@types/node": "24.13.3",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
+    "@vitest/coverage-v8": "4.1.11",
     "ai": "7.0.68",
     "better-auth": "1.7.1",
     "drizzle-orm": "0.45.2",
@@ -136,6 +154,30 @@
     "otelCollector": {
       "reference": "otel/opentelemetry-collector-contrib:0.146.0",
       "digest": "sha256:9742116fb9441d82900be0f35be168e14714fa64ff1f0f7aa182cfcf676832b1"
+    },
+    "gitleaks": {
+      "reference": "ghcr.io/gitleaks/gitleaks:v8.30.1",
+      "digest": "sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f"
+    },
+    "semgrep": {
+      "reference": "semgrep/semgrep:1.176.0",
+      "digest": "sha256:12672acdb0949e19f9f6a4c2b288edd0b404f268f0ca7738a2c06f372f50362e"
+    },
+    "trivy": {
+      "reference": "aquasec/trivy:0.74.0",
+      "digest": "sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969"
+    },
+    "zap": {
+      "reference": "ghcr.io/zaproxy/zaproxy:2.17.0",
+      "digest": "sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef"
+    },
+    "k6": {
+      "reference": "grafana/k6:2.2.0",
+      "digest": "sha256:9bd01d6941fca969cb61bb57d2da5ee9b385fe2aa8881df3798c196564d6ace6"
+    },
+    "playwright": {
+      "reference": "mcr.microsoft.com/playwright:v1.63.0-noble",
+      "digest": "sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27"
     }
   },
   "enabledProfiles": [],
@@ -143,12 +185,22 @@
     {
       "gate": "source-template-validation",
       "status": "passed",
-      "evidence": "Pinned Node 24.19.0 source validation and the current 13-fixture matrix, including the exact DMS Core profile, are recorded in .thaarei/work/STARTER-008.md. Earlier baseline evidence remains in .thaarei/work/STARTER-001.md through .thaarei/work/STARTER-003.md, .thaarei/work/STARTER-005.md, and .thaarei/work/STARTER-006.md."
+      "evidence": "Pinned Node 24.20.0 source and final 13-fixture validation is recorded in .thaarei/work/STARTER-016.md; earlier baseline evidence remains in STARTER-001 through STARTER-003, STARTER-005, STARTER-006, and STARTER-008."
     },
     {
       "gate": "web-developer-handoff",
       "status": "passed",
-      "evidence": "The dedicated web, API, data, and identity fixture passed generated checks, typed proxy health, anonymous rejection, Better Auth session establishment, application identity persistence, two migration runs, and web/API container health under Node 24.19.0. Evidence is recorded in .thaarei/work/STARTER-003.md."
+      "evidence": "The dedicated web, API, data, and identity fixture passed generated checks, typed proxy health, anonymous rejection, Better Auth session establishment, application identity persistence, two migration runs, and web/API container health under Node 24.20.0. Evidence is recorded in .thaarei/work/STARTER-003.md."
+    },
+    {
+      "gate": "production-hardening-local-deep-validation",
+      "status": "passed",
+      "evidence": "STARTER-012 through STARTER-014 record pinned source security scans, coverage thresholds, production browser hydration and accessibility, OpenTelemetry collector receipt, k6 failure-rate checks, ZAP passive DAST, and PostgreSQL backup/restore proof."
+    },
+    {
+      "gate": "immutable-image-attestation-and-inspection",
+      "status": "blocked_external",
+      "evidence": "The release-candidate workflow is executable, but exact GHCR digest scan, SBOM, attestation verification, and runtime inspection require protected registry credentials."
     },
     {
       "gate": "experimental-better-auth-expo-sdk-57-native-build",
@@ -285,10 +337,17 @@
   "securityWaivers": [
     {
       "id": "mobile-image-size-2026-09",
+      "scanner": "pnpm-audit",
+      "findingId": "GHSA-5p2g-fcmc-qvqq",
       "advisoryIds": ["GHSA-5p2g-fcmc-qvqq"],
+      "severity": "high",
+      "affectedPath": "generated apps/mobile transitive Metro build dependency",
+      "affectedArtifact": "generated-experimental-mobile-fixture",
+      "evidenceDigest": "sha256:84f526a95e79f294bed88c718016538fb0bb9130b9539b82958653aacfbaec4b",
       "affectedSubject": { "kind": "fixture", "id": "experimental-mobile" },
       "dependencyPath": ["expo", "@expo/metro-config", "image-size@2.0.2"],
       "reachability": "The vulnerable parser is reachable only while processing local Metro build assets in the experimental generated mobile fixture.",
+      "mitigation": "Restrict the affected parser to version-controlled trusted build assets and block every production use of the mobile profile.",
       "controls": [
         "Do not process untrusted image assets through the affected parser.",
         "Use only version-controlled local build assets.",

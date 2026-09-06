@@ -180,6 +180,30 @@ export const IMAGE_CATALOG = {
     reference: "otel/opentelemetry-collector-contrib:0.146.0",
     digest: "sha256:9742116fb9441d82900be0f35be168e14714fa64ff1f0f7aa182cfcf676832b1",
   },
+  gitleaks: {
+    reference: "ghcr.io/gitleaks/gitleaks:v8.30.1",
+    digest: "sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f",
+  },
+  semgrep: {
+    reference: "semgrep/semgrep:1.176.0",
+    digest: "sha256:12672acdb0949e19f9f6a4c2b288edd0b404f268f0ca7738a2c06f372f50362e",
+  },
+  trivy: {
+    reference: "aquasec/trivy:0.74.0",
+    digest: "sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969",
+  },
+  zap: {
+    reference: "ghcr.io/zaproxy/zaproxy:2.17.0",
+    digest: "sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef",
+  },
+  k6: {
+    reference: "grafana/k6:2.2.0",
+    digest: "sha256:9bd01d6941fca969cb61bb57d2da5ee9b385fe2aa8881df3798c196564d6ace6",
+  },
+  playwright: {
+    reference: "mcr.microsoft.com/playwright:v1.63.0-noble",
+    digest: "sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27",
+  },
 } as const;
 
 // Exact package pins are shared by generated manifests and release metadata.
@@ -227,6 +251,15 @@ export const DEPENDENCY_VERSIONS = {
   awsPresignedPost: "3.1113.0",
   reactTypes: "19.2.18",
   reactDomTypes: "19.2.4",
+  openTelemetryApi: "1.9.1",
+  openTelemetrySdkNode: "0.222.0",
+  openTelemetryTraceExporter: "0.222.0",
+  openTelemetryMetricsExporter: "0.222.0",
+  openTelemetrySdkMetrics: "2.11.0",
+  openTelemetryResources: "2.11.0",
+  vitestCoverage: "4.1.11",
+  playwright: "1.63.0",
+  axePlaywright: "4.13.0",
 } as const;
 
 const definition = (
@@ -415,7 +448,7 @@ export const CAPABILITY_REGISTRY: Readonly<Record<CanonicalProfile, CapabilityDe
       environment(
         "OTEL_EXPORTER_OTLP_ENDPOINT",
         "api",
-        false,
+        true,
         false,
         "OpenTelemetry Collector endpoint.",
       ),

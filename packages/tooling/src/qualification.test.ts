@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { evaluateProductionAdmission, qualificationEvidenceSchema } from "./qualification.js";
+import {
+  evaluateProductionAdmission,
+  qualificationEvidenceSchema,
+  securityWaiverSchema,
+} from "./qualification.js";
 
 const digest = `sha256:${"a".repeat(64)}`;
 const evidence = qualificationEvidenceSchema.parse({
@@ -34,6 +38,57 @@ const expected = {
 };
 
 describe("production admission", () => {
+  it("represents typed hardening evidence for artifacts", () => {
+    expect(
+      qualificationEvidenceSchema.parse({
+        ...evidence,
+        subject: { kind: "artifact", id: "api-image", version: "1.0.0-dev.1" },
+        gate: "exact-image-scan",
+        evidenceType: "image_scan",
+      }).evidenceType,
+    ).toBe("image_scan");
+  });
+
+  it("requires scanner-bound waiver evidence", () => {
+    expect(() =>
+      securityWaiverSchema.parse({
+        id: "waiver",
+        advisoryIds: ["GHSA-example"],
+        affectedSubject: { kind: "fixture", id: "mobile" },
+        dependencyPath: ["mobile", "dependency"],
+        reachability: "Build-time only.",
+        controls: ["Trusted local assets only."],
+        owner: "Security",
+        reviewedAt: "2026-09-05T00:00:00.000Z",
+        expiresAt: "2026-10-05T00:00:00.000Z",
+        removalCondition: "Patched dependency.",
+        blocksProduction: true,
+      }),
+    ).toThrow();
+    expect(
+      securityWaiverSchema.parse({
+        id: "waiver",
+        scanner: "pnpm-audit",
+        findingId: "GHSA-example",
+        advisoryIds: ["GHSA-example"],
+        severity: "high",
+        affectedPath: "apps/mobile",
+        affectedArtifact: "experimental-mobile-fixture",
+        evidenceDigest: digest,
+        affectedSubject: { kind: "fixture", id: "mobile" },
+        dependencyPath: ["mobile", "dependency"],
+        reachability: "Build-time only.",
+        mitigation: "Use trusted local assets and block production promotion.",
+        controls: ["Trusted local assets only."],
+        owner: "Security",
+        reviewedAt: "2026-09-05T00:00:00.000Z",
+        expiresAt: "2026-10-05T00:00:00.000Z",
+        removalCondition: "Patched dependency.",
+        blocksProduction: true,
+      }).evidenceDigest,
+    ).toBe(digest);
+  });
+
   it("accepts current exact stable evidence", () => {
     expect(
       evaluateProductionAdmission({

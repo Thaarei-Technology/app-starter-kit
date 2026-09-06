@@ -1,0 +1,10 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Generated artifacts and dependency caches never contain source credentials."
+paths = [
+  '''(^|/)\.artifacts/''',
+  '''(^|/)node_modules/''',
+  '''(^|/)dist/''',
+]

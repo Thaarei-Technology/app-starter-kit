@@ -31,7 +31,16 @@ export const qualificationEvidenceSchema = z
   .object({
     schemaVersion: z.literal(1),
     subject: z.object({
-      kind: z.enum(["release", "profile", "provider", "deployment_target", "topology"]),
+      kind: z.enum([
+        "release",
+        "profile",
+        "provider",
+        "deployment_target",
+        "topology",
+        "repository",
+        "application",
+        "artifact",
+      ]),
       id: z.string().min(1),
       version: z.string().min(1),
     }),
@@ -45,6 +54,22 @@ export const qualificationEvidenceSchema = z
     artifactDigests: z.record(z.string(), sha256Schema),
     migrationDigests: z.array(sha256Schema),
     gate: z.string().min(1),
+    evidenceType: z
+      .enum([
+        "security",
+        "browser",
+        "accessibility",
+        "coverage",
+        "telemetry",
+        "image_scan",
+        "sbom",
+        "recovery",
+        "deployment",
+        "approval",
+        "migration",
+        "monitoring",
+      ])
+      .optional(),
     status: evidenceStatusSchema,
     evidenceUri: z.string().min(1),
     verifier: z.string().min(1),
@@ -68,13 +93,20 @@ export type ProfileQualification = z.infer<typeof profileQualificationSchema>;
 export const securityWaiverSchema = z
   .object({
     id: z.string().min(1),
+    scanner: z.string().min(1),
+    findingId: z.string().min(1),
     advisoryIds: z.array(z.string().min(1)).min(1),
+    severity: z.enum(["low", "medium", "high", "critical"]),
+    affectedPath: z.string().min(1),
+    affectedArtifact: z.string().min(1),
+    evidenceDigest: sha256Schema,
     affectedSubject: z.object({
       kind: z.enum(["package", "profile", "fixture"]),
       id: z.string().min(1),
     }),
     dependencyPath: z.array(z.string().min(1)).min(1),
     reachability: z.string().min(1),
+    mitigation: z.string().min(1),
     controls: z.array(z.string().min(1)).min(1),
     owner: z.string().min(1),
     reviewedAt: z.string().datetime(),

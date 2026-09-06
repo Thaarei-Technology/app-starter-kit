@@ -10,6 +10,7 @@
       "!.turbo/**/*",
       "!**/.turbo/**/*",
       "!.thaarei/fixtures/**/*",
+      "!.artifacts/**/*",
       "!**/generated/**/*"
     ]
   },

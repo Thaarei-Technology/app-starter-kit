@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
+import { parse as parseYaml } from "yaml";
 import {
   DEPENDENCY_VERSIONS,
   IMAGE_CATALOG,
@@ -112,6 +113,29 @@ describe("starter profile generation", () => {
         generated.files.find((file) => file.path === ".github/workflows/product-validation.yml")
           ?.content,
       ).toContain("pnpm install --frozen-lockfile --ignore-scripts");
+      expect(paths).toEqual(
+        expect.arrayContaining([
+          ".github/workflows/security.yml",
+          "tooling/security/gitleaks.toml",
+          "tooling/security/semgrep.yml",
+        ]),
+      );
+      const rootPackage = jsonRecord(generatedJson(generated, "package.json"), "package.json");
+      expect(JSON.stringify(rootPackage)).toContain("security:secrets:full");
+      expect(JSON.stringify(rootPackage)).toContain("validate:deep");
+      const release = jsonRecord(
+        generatedJson(generated, "release-manifest.json"),
+        "release-manifest.json",
+      );
+      const recipe = jsonRecord(
+        generatedJson(generated, ".thaarei/starter.json"),
+        ".thaarei/starter.json",
+      );
+      expect(recipe.recipeHash).toMatch(/^sha256:[a-f0-9]{64}$/u);
+      for (const tool of ["gitleaks", "semgrep", "trivy", "zap", "k6", "playwright"])
+        expect(JSON.stringify(release)).toContain(
+          IMAGE_CATALOG[tool as keyof typeof IMAGE_CATALOG].digest,
+        );
       for (const file of generated.files.filter(
         (candidate) =>
           candidate.path.endsWith("Dockerfile") && candidate.path !== "services/python/Dockerfile",
@@ -213,6 +237,12 @@ describe("starter profile generation", () => {
       ]),
     );
     expect(mobile.files.some((file) => file.path === ".thaarei/security-waivers.json")).toBe(true);
+    const waiverFile = jsonRecord(
+      generatedJson(mobile, ".thaarei/security-waivers.json"),
+      "security waivers",
+    );
+    expect(JSON.stringify(waiverFile)).toContain('"scanner":"pnpm-audit"');
+    expect(JSON.stringify(waiverFile)).toMatch(/sha256:[a-f0-9]{64}/u);
     expect(web.files.some((file) => file.path === ".thaarei/security-waivers.json")).toBe(false);
   });
 
@@ -249,6 +279,8 @@ describe("starter profile generation", () => {
       "";
     const api =
       generated.files.find((file) => file.path === "packages/api/src/index.ts")?.content ?? "";
+    const apiApplication =
+      generated.files.find((file) => file.path === "apps/api/src/index.ts")?.content ?? "";
     const web = generated.files
       .filter((file) => file.path.startsWith("apps/web/"))
       .map((file) => file.content)
@@ -293,12 +325,66 @@ describe("starter profile generation", () => {
     expect(api).toMatch(/export type AppRouter = typeof appRouter/u);
     expect(api).not.toContain("readonly authentication?:");
     expect(api).not.toContain("readonly identity?:");
+    expect(apiApplication).toContain(
+      "BETTER_AUTH_SECRET must be a non-placeholder secret of at least 32 characters outside local and CI",
+    );
     expect(release).toContain('"gate":"web-developer-handoff"');
     expect(release).toContain('"status":"passed"');
     expect(web).toContain("API_INTERNAL_URL");
     expect(web).toContain("path.map((segment) => encodeURIComponent(segment))");
+    expect(web).toContain("readBoundedBody(request.body, 1_048_576)");
+    expect(web).toContain("readBoundedBody(upstream.body, 2_097_152)");
+    expect(web).not.toContain("request.arrayBuffer()");
     expect(web).toContain("signUp.email");
     expect(web).toContain("signIn.email");
+    expect(web).toContain("authClient.signOut()");
+    const deepRunner =
+      generated.files.find((file) => file.path === "tooling/deep-web.ts")?.content ?? "";
+    expect(deepRunner).toContain("BETTER_AUTH_URL");
+    const browser =
+      generated.files.find((file) => file.path === "tests/e2e/public.spec.ts")?.content ?? "";
+    expect(browser).toContain("waitForVerificationUrl");
+    expect(browser).toContain("password recovery responses do not disclose account existence");
+    expect(browser).toContain('request.post("/api/auth/sign-up/email"');
+    expect(browser).toContain("expect(await absent.json()).toEqual(await existing.json())");
+    const identityAdapter =
+      generated.files.find((file) => file.path === "packages/adapters/src/index.ts")?.content ?? "";
+    expect(identityAdapter).toContain("canBootstrapStrongFactor");
+    expect(identityAdapter).toContain("auth.api.listPasskeys");
+  });
+
+  test("generates fail-closed immutable image and Dokploy qualification controls", () => {
+    const generated = generateProject(config(["web", "api", "data", "identity", "jobs"]));
+    const supplyChain =
+      generated.files.find((file) => file.path === ".github/workflows/supply-chain.yml")?.content ??
+      "";
+    const runtimeInspector =
+      generated.files.find((file) => file.path === "tooling/runtime/inspect-image.ts")?.content ??
+      "";
+    const dokployAdapter =
+      generated.files.find((file) => file.path === "deployment/dokploy/adapter.ts")?.content ?? "";
+    const dokployServices = JSON.stringify(
+      generatedJson(generated, "deployment/dokploy/services.json"),
+    );
+
+    expect(supplyChain).toContain("TRIVY_USERNAME");
+    expect(supplyChain).toContain("TRIVY_PASSWORD");
+    expect(() => parseYaml(supplyChain)).not.toThrow();
+    expect(supplyChain).toContain(
+      `pnpm runtime:inspect -- "\${{ steps.image.outputs.image }}@\${{ steps.build.outputs.digest }}" "\${{ matrix.application }}"`,
+    );
+    expect(runtimeInspector).toContain('"--read-only", "--cap-drop", "ALL"');
+    expect(runtimeInspector).toContain("await waitForHealthy()");
+    expect(runtimeInspector).toContain('["stop", "--signal", "SIGTERM"');
+    expect(runtimeInspector).toContain('"graceful-sigterm"');
+    expect(dokployServices).toContain('"applicationMode":"docker-provider"');
+    expect(dokployAdapter).toContain('request("application.update"');
+    expect(dokployAdapter).toContain("waitForDeployment");
+    expect(dokployAdapter).toContain("previousDeploymentIds");
+    expect(dokployAdapter).toContain('request("rollback.rollback"');
+    expect(dokployAdapter).toContain("initiating and approving actor identities");
+    expect(dokployAdapter).not.toContain("JSON.stringify(deployments).includes");
+    expect(dokployAdapter).not.toContain("imageDigest");
   });
 
   test("adds only the API dependency closure to a web-only request", () => {
@@ -319,6 +405,23 @@ describe("starter profile generation", () => {
       expect(guide).not.toContain(profile);
     expect(guide).not.toContain("authentication transport");
     expect(environment).toContain("| PORT | 3001 |");
+  });
+
+  test("uses a nonce CSP and runs deep web checks against a production server", () => {
+    const generated = generateProject(config(["web"]));
+    const proxy = generated.files.find((file) => file.path === "apps/web/proxy.ts")?.content ?? "";
+    const nextConfig =
+      generated.files.find((file) => file.path === "apps/web/next.config.ts")?.content ?? "";
+    const deepRunner =
+      generated.files.find((file) => file.path === "tooling/deep-web.ts")?.content ?? "";
+
+    expect(proxy).toContain("crypto.randomUUID()");
+    expect(proxy).toMatch(/'nonce-\$\{nonce\}'/u);
+    expect(proxy).toContain("'strict-dynamic'");
+    expect(nextConfig).not.toContain("unsafe-inline");
+    expect(deepRunner).toContain('["@fixture/web-app", "build"]');
+    expect(deepRunner).toContain('"next", "start"');
+    expect(deepRunner).not.toContain('"next", "dev"');
   });
 
   test("derives health types and keeps OpenAPI readiness fields in parity", () => {

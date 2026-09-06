@@ -1,17 +1,17 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import {
   DEPENDENCY_VERSIONS,
+  type EnvironmentVariableDefinition,
   IMAGE_CATALOG,
-  resolveCapabilities,
   type Profile,
   type ProviderSelection,
-  type EnvironmentVariableDefinition,
+  resolveCapabilities,
 } from "./capabilities.js";
 
-export { PRESETS, PROFILE_NAMES } from "./capabilities.js";
 export type { Preset, Profile, ProviderSelection } from "./capabilities.js";
+export { PRESETS, PROFILE_NAMES } from "./capabilities.js";
 export type Deployment = "dokploy" | "railway";
 
 export interface MobileSettings {
@@ -72,6 +72,7 @@ export interface StarterRecipe {
   readonly deployment: { readonly target: Deployment; readonly topology: "standard" | "hardened" };
   readonly environments: readonly ["local", "ci", "staging", "production"];
   readonly providers: ProviderSelection;
+  readonly recipeHash: string;
   readonly generatedTreeHash: string;
   readonly generatedAt: string;
 }
@@ -102,6 +103,8 @@ const GENERATOR_VERSION = "1.0.0-dev.1";
 const FOUNDATION_VERSION = "1.0.0-dev.1";
 const TOOLING_VERSION = "1.0.0-dev.1";
 const MOBILE_WAIVER_EXPIRES_AT = "2026-10-05T00:00:00.000Z";
+const MOBILE_WAIVER_EVIDENCE_DIGEST =
+  "sha256:84f526a95e79f294bed88c718016538fb0bb9130b9539b82958653aacfbaec4b";
 const NODE_VERSION = "24.20.0";
 const PNPM_VERSION = "11.22.0";
 const NODE_IMAGE = `${IMAGE_CATALOG.node.reference}@${IMAGE_CATALOG.node.digest}`;
@@ -314,7 +317,13 @@ function createCapabilityPlan(config: InitConfig): CapabilityPlan {
     needsSearch,
     needsRag,
     needsAdapters:
-      needsIdentity || needsAi || needsStorage || needsPayments || needsNotifications || needsCache,
+      needsIdentity ||
+      needsAi ||
+      needsStorage ||
+      needsPayments ||
+      needsNotifications ||
+      needsCache ||
+      needsObservability,
     deployableApps,
     apiEnvironment,
     workerEnvironment,
@@ -333,7 +342,7 @@ function jsonFile(path: string, value: unknown): GeneratedFile {
 
 function starterRecipe(config: InitConfig, plan: CapabilityPlan): GeneratedFile {
   const definitions = resolveCapabilities(plan.profiles, plan.providers).definitions;
-  const recipe: StarterRecipe = {
+  const recipeCore = {
     schemaVersion: 1,
     generatorVersion: GENERATOR_VERSION,
     application: {
@@ -358,6 +367,10 @@ function starterRecipe(config: InitConfig, plan: CapabilityPlan): GeneratedFile 
     deployment: { target: config.deployment, topology: config.topology ?? "standard" },
     environments: ["local", "ci", "staging", "production"],
     providers: plan.providers,
+  } as const;
+  const recipe: StarterRecipe = {
+    ...recipeCore,
+    recipeHash: `sha256:${createHash("sha256").update(JSON.stringify(recipeCore)).digest("hex")}`,
     generatedTreeHash: "pending",
     generatedAt: "pending",
   };
@@ -492,6 +505,7 @@ function testedPackages(config: InitConfig): Readonly<Record<string, string>> {
     turbo: DEPENDENCY_VERSIONS.turbo,
     typescript: DEPENDENCY_VERSIONS.typescript,
     vitest: DEPENDENCY_VERSIONS.vitest,
+    "@vitest/coverage-v8": DEPENDENCY_VERSIONS.vitestCoverage,
   };
   if (hasProfile(config, "api")) {
     Object.assign(packages, {
@@ -533,14 +547,26 @@ function testedPackages(config: InitConfig): Readonly<Record<string, string>> {
       "@aws-sdk/s3-presigned-post": DEPENDENCY_VERSIONS.awsPresignedPost,
     });
   }
+  if (hasProfile(config, "observability")) {
+    Object.assign(packages, {
+      "@opentelemetry/api": DEPENDENCY_VERSIONS.openTelemetryApi,
+      "@opentelemetry/exporter-metrics-otlp-http": DEPENDENCY_VERSIONS.openTelemetryMetricsExporter,
+      "@opentelemetry/exporter-trace-otlp-http": DEPENDENCY_VERSIONS.openTelemetryTraceExporter,
+      "@opentelemetry/resources": DEPENDENCY_VERSIONS.openTelemetryResources,
+      "@opentelemetry/sdk-metrics": DEPENDENCY_VERSIONS.openTelemetrySdkMetrics,
+      "@opentelemetry/sdk-node": DEPENDENCY_VERSIONS.openTelemetrySdkNode,
+    });
+  }
   if (hasProfile(config, "web")) {
     Object.assign(packages, {
+      "@axe-core/playwright": DEPENDENCY_VERSIONS.axePlaywright,
       "@base-ui/react": DEPENDENCY_VERSIONS.baseUi,
       "@tailwindcss/postcss": DEPENDENCY_VERSIONS.tailwindPostcss,
       "@tanstack/react-form": DEPENDENCY_VERSIONS.tanstackForm,
       "@tanstack/react-query": DEPENDENCY_VERSIONS.tanstackQuery,
       "@types/react": DEPENDENCY_VERSIONS.reactTypes,
       "@types/react-dom": DEPENDENCY_VERSIONS.reactDomTypes,
+      "@playwright/test": DEPENDENCY_VERSIONS.playwright,
       next: DEPENDENCY_VERSIONS.next,
       react: DEPENDENCY_VERSIONS.react,
       "react-dom": DEPENDENCY_VERSIONS.react,
@@ -732,8 +758,160 @@ function generatedReleaseSchema(): Readonly<Record<string, unknown>> {
           },
         },
       },
-      evidence: { type: "array" },
-      securityWaivers: { type: "array" },
+      evidence: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: [
+            "schemaVersion",
+            "subject",
+            "generatorVersion",
+            "recipeHash",
+            "sourceCommit",
+            "environment",
+            "provider",
+            "deploymentTarget",
+            "topology",
+            "artifactDigests",
+            "migrationDigests",
+            "gate",
+            "status",
+            "evidenceUri",
+            "verifier",
+            "observedAt",
+            "expiresAt",
+          ],
+          properties: {
+            schemaVersion: { const: 1 },
+            subject: {
+              type: "object",
+              additionalProperties: false,
+              required: ["kind", "id", "version"],
+              properties: {
+                kind: {
+                  enum: [
+                    "release",
+                    "profile",
+                    "provider",
+                    "deployment_target",
+                    "topology",
+                    "repository",
+                    "application",
+                    "artifact",
+                  ],
+                },
+                id: { type: "string", minLength: 1 },
+                version: { type: "string", minLength: 1 },
+              },
+            },
+            generatorVersion: { type: "string", minLength: 1 },
+            recipeHash: { type: "string", pattern: "^sha256:[a-f0-9]{64}$" },
+            sourceCommit: { type: "string", pattern: "^[a-f0-9]{40}$" },
+            environment: { enum: ["ci", "staging", "production", "recovery"] },
+            provider: { type: ["string", "null"] },
+            deploymentTarget: { enum: ["dokploy", "railway", null] },
+            topology: { type: ["string", "null"] },
+            artifactDigests: {
+              type: "object",
+              additionalProperties: { type: "string", pattern: "^sha256:[a-f0-9]{64}$" },
+            },
+            migrationDigests: {
+              type: "array",
+              items: { type: "string", pattern: "^sha256:[a-f0-9]{64}$" },
+            },
+            gate: { type: "string", minLength: 1 },
+            evidenceType: {
+              enum: [
+                "security",
+                "browser",
+                "accessibility",
+                "coverage",
+                "telemetry",
+                "image_scan",
+                "sbom",
+                "recovery",
+                "deployment",
+                "approval",
+                "migration",
+                "monitoring",
+              ],
+            },
+            status: { enum: ["passed", "failed", "pending", "blocked_external", "waived"] },
+            evidenceUri: { type: "string", minLength: 1 },
+            verifier: { type: "string", minLength: 1 },
+            observedAt: { type: "string", format: "date-time" },
+            expiresAt: { type: ["string", "null"], format: "date-time" },
+          },
+        },
+      },
+      securityWaivers: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          required: [
+            "id",
+            "scanner",
+            "findingId",
+            "advisoryIds",
+            "severity",
+            "affectedPath",
+            "affectedArtifact",
+            "evidenceDigest",
+            "affectedSubject",
+            "dependencyPath",
+            "reachability",
+            "mitigation",
+            "controls",
+            "owner",
+            "reviewedAt",
+            "expiresAt",
+            "removalCondition",
+            "blocksProduction",
+          ],
+          properties: {
+            id: { type: "string", minLength: 1 },
+            scanner: { type: "string", minLength: 1 },
+            findingId: { type: "string", minLength: 1 },
+            advisoryIds: {
+              type: "array",
+              minItems: 1,
+              items: { type: "string", minLength: 1 },
+            },
+            severity: { enum: ["low", "medium", "high", "critical"] },
+            affectedPath: { type: "string", minLength: 1 },
+            affectedArtifact: { type: "string", minLength: 1 },
+            evidenceDigest: { type: "string", pattern: "^sha256:[a-f0-9]{64}$" },
+            affectedSubject: {
+              type: "object",
+              additionalProperties: false,
+              required: ["kind", "id"],
+              properties: {
+                kind: { enum: ["package", "profile", "fixture"] },
+                id: { type: "string", minLength: 1 },
+              },
+            },
+            dependencyPath: {
+              type: "array",
+              minItems: 1,
+              items: { type: "string", minLength: 1 },
+            },
+            reachability: { type: "string", minLength: 1 },
+            mitigation: { type: "string", minLength: 1 },
+            controls: {
+              type: "array",
+              minItems: 1,
+              items: { type: "string", minLength: 1 },
+            },
+            owner: { type: "string", minLength: 1 },
+            reviewedAt: { type: "string", format: "date-time" },
+            expiresAt: { type: "string", format: "date-time" },
+            removalCondition: { type: "string", minLength: 1 },
+            blocksProduction: { const: true },
+          },
+        },
+      },
     },
   };
 }
@@ -827,7 +1005,18 @@ if (isRecord(release)) {
   if (release.status === "prerelease" && release.releasedAt !== null) errors.push("releasedAt must remain null while status is prerelease");
   if (!Array.isArray(release.qualifications)) errors.push("qualifications must be an array");
   if (!Array.isArray(release.evidence)) errors.push("evidence must be an array");
+  if (Array.isArray(release.evidence)) for (const [index, item] of release.evidence.entries()) {
+    unknownKeys(item, ["schemaVersion", "subject", "generatorVersion", "recipeHash", "sourceCommit", "environment", "provider", "deploymentTarget", "topology", "artifactDigests", "migrationDigests", "gate", "evidenceType", "status", "evidenceUri", "verifier", "observedAt", "expiresAt"], \`evidence[\${index}]\`);
+    const subject = isRecord(item) && isRecord(item.subject) ? item.subject : {};
+    const artifacts = isRecord(item) && isRecord(item.artifactDigests) ? item.artifactDigests : {};
+    const valid = isRecord(item) && item.schemaVersion === 1 && isRecord(item.subject) && ["release", "profile", "provider", "deployment_target", "topology", "repository", "application", "artifact"].includes(String(subject.kind)) && typeof subject.id === "string" && typeof subject.version === "string" && typeof item.generatorVersion === "string" && /^sha256:[a-f0-9]{64}$/u.test(String(item.recipeHash ?? "")) && /^[a-f0-9]{40}$/u.test(String(item.sourceCommit ?? "")) && ["ci", "staging", "production", "recovery"].includes(String(item.environment)) && (item.provider === null || typeof item.provider === "string") && (item.deploymentTarget === null || ["dokploy", "railway"].includes(String(item.deploymentTarget))) && (item.topology === null || typeof item.topology === "string") && Object.values(artifacts).every((digest) => /^sha256:[a-f0-9]{64}$/u.test(String(digest))) && Array.isArray(item.migrationDigests) && item.migrationDigests.every((digest) => /^sha256:[a-f0-9]{64}$/u.test(String(digest))) && typeof item.gate === "string" && (item.evidenceType === undefined || ["security", "browser", "accessibility", "coverage", "telemetry", "image_scan", "sbom", "recovery", "deployment", "approval", "migration", "monitoring"].includes(String(item.evidenceType))) && ["passed", "failed", "pending", "blocked_external", "waived"].includes(String(item.status)) && typeof item.evidenceUri === "string" && typeof item.verifier === "string" && isDateTime(item.observedAt) && (item.expiresAt === null || isDateTime(item.expiresAt));
+    if (!valid) errors.push(\`evidence[\${index}] is invalid\`);
+  }
   if (!Array.isArray(release.securityWaivers)) errors.push("securityWaivers must be an array");
+  if (Array.isArray(release.securityWaivers)) for (const [index, waiver] of release.securityWaivers.entries()) {
+    unknownKeys(waiver, ["id", "scanner", "findingId", "advisoryIds", "severity", "affectedPath", "affectedArtifact", "evidenceDigest", "affectedSubject", "dependencyPath", "reachability", "mitigation", "controls", "owner", "reviewedAt", "expiresAt", "removalCondition", "blocksProduction"], \`securityWaivers[\${index}]\`);
+    if (!isRecord(waiver) || typeof waiver.id !== "string" || typeof waiver.scanner !== "string" || typeof waiver.findingId !== "string" || !Array.isArray(waiver.advisoryIds) || waiver.advisoryIds.length === 0 || !waiver.advisoryIds.every((item) => typeof item === "string" && item.length > 0) || !["low", "medium", "high", "critical"].includes(String(waiver.severity)) || typeof waiver.affectedPath !== "string" || typeof waiver.affectedArtifact !== "string" || !/^sha256:[a-f0-9]{64}$/u.test(String(waiver.evidenceDigest ?? "")) || !Array.isArray(waiver.dependencyPath) || waiver.dependencyPath.length === 0 || typeof waiver.mitigation !== "string" || !Array.isArray(waiver.controls) || waiver.controls.length === 0 || !isDateTime(waiver.reviewedAt) || !isDateTime(waiver.expiresAt) || waiver.blocksProduction !== true) errors.push(\`securityWaivers[\${index}] is invalid\`);
+  }
   if (release.status === "released" && Array.isArray(release.qualifications) && release.qualifications.some((item) => isRecord(item) && item.sourceMaturity === "stable" && item.qualification !== "qualified")) errors.push("every stable subject must be qualified before release promotion");
   if (release.status === "released" && Array.isArray(release.compatibilityEvidence) && release.compatibilityEvidence.some((item) => !isRecord(item) || (item.status !== "passed" && !String(item.gate).startsWith("experimental-") && !String(item.gate).startsWith("beta-")))) errors.push("every stable compatibility gate must pass before release promotion");
 }
@@ -870,11 +1059,13 @@ function generatedSecurityWaiverChecker(): GeneratedFile {
     "tooling/security/check-waivers.ts",
     `import { readFile } from "node:fs/promises";
 
-const waiverFile = JSON.parse(await readFile(".thaarei/security-waivers.json", "utf8")) as { waivers?: Array<{ advisoryIds?: string[]; expiresAt?: string; blocksProduction?: boolean }> };
+const waiverFile = JSON.parse(await readFile(".thaarei/security-waivers.json", "utf8")) as { waivers?: Array<{ scanner?: string; findingId?: string; advisoryIds?: string[]; severity?: string; affectedPath?: string; affectedArtifact?: string; mitigation?: string; evidenceDigest?: string; expiresAt?: string; blocksProduction?: boolean }> };
 const auditText = await readFile(".thaarei/pnpm-audit.json", "utf8");
 const active = waiverFile.waivers?.[0];
 if (!active?.expiresAt || Date.parse(active.expiresAt) <= Date.now()) throw new Error("The experimental mobile security waiver is expired; generation and validation are disabled");
 if (active.blocksProduction !== true) throw new Error("The experimental mobile waiver must block production");
+if (active.scanner !== "pnpm-audit" || active.findingId !== "GHSA-5p2g-fcmc-qvqq" || active.severity !== "high" || active.affectedPath !== "generated apps/mobile transitive Metro build dependency" || active.affectedArtifact !== "generated-experimental-mobile-fixture" || !active.mitigation) throw new Error("The experimental mobile waiver does not match the qualified scanner finding");
+if (!/^sha256:[a-f0-9]{64}$/u.test(active.evidenceDigest ?? "")) throw new Error("The experimental mobile waiver is missing its evidence digest");
 const observed = new Set(auditText.match(/GHSA-[a-z0-9-]+/giu) ?? []);
 if (observed.size === 0) throw new Error("Audit failed without a recognized advisory identifier");
 const allowed = new Set(active.advisoryIds ?? []);
@@ -994,6 +1185,11 @@ export const assuranceForMethod = (method: AuthenticationMethod): AssuranceLevel
 })[method] as AssuranceLevel;
 export function canPerformSensitiveAccountChange(input: { readonly assurance: AssuranceLevel; readonly authenticatedAt: string }, now = new Date(), maximumAgeMs = 5 * 60 * 1000): boolean {
   if (input.assurance === "anonymous" || input.assurance === "single_factor" || input.assurance === "recovery") return false;
+  const age = now.getTime() - Date.parse(input.authenticatedAt);
+  return Number.isFinite(age) && age >= 0 && age <= maximumAgeMs;
+}
+export function canBootstrapStrongFactor(input: { readonly assurance: AssuranceLevel; readonly authenticatedAt: string }, hasExistingStrongFactor: boolean, now = new Date(), maximumAgeMs = 5 * 60 * 1000): boolean {
+  if (hasExistingStrongFactor || input.assurance !== "single_factor") return false;
   const age = now.getTime() - Date.parse(input.authenticatedAt);
   return Number.isFinite(age) && age >= 0 && age <= maximumAgeMs;
 }
@@ -1881,6 +2077,59 @@ function adaptersPackageFile(config: InitConfig, plan: CapabilityPlan): Generate
     ...(plan.needsStorage ? ["createS3Storage"] : []),
     ...(plan.needsAi ? ["createAiSdkModel"] : []),
   ].join(", ");
+  const outboundHttp =
+    plan.needsIdentity || plan.needsPayments || plan.needsNotifications
+      ? `${sourceOfTruthBlock({ id: "starter.adapters.outbound-http", keywords: "http, retry, timeout, response-limit, idempotency", what: "Bounded outbound HTTP execution policy for provider adapters.", why: "Provider calls need consistent cancellation, retry, and memory limits without leaking credentials or URLs.", when: "Use for every direct HTTP provider call owned by adapters.", how: "createBoundedHttpClient", boundaries: "Only adapters perform provider HTTP; callers supply idempotency and correlation identifiers." })}
+export function createBoundedHttpClient(input: {
+  readonly fetchImpl?: typeof fetch;
+  readonly timeoutMs?: number;
+  readonly maximumResponseBytes?: number;
+  readonly maximumRetries?: number;
+  readonly sleep?: (milliseconds: number) => Promise<void>;
+  readonly random?: () => number;
+}) {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const timeoutMs = Math.min(Math.max(input.timeoutMs ?? 10_000, 100), 120_000);
+  const maximumResponseBytes = Math.min(Math.max(input.maximumResponseBytes ?? 2_097_152, 1024), 10_485_760);
+  const maximumRetries = Math.min(Math.max(input.maximumRetries ?? 2, 0), 3);
+  const sleep = input.sleep ?? ((milliseconds: number) => new Promise<void>((resolveSleep) => setTimeout(resolveSleep, milliseconds)));
+  const random = input.random ?? Math.random;
+  return async (url: string | URL, init: RequestInit = {}, correlationId?: string): Promise<Response> => {
+    const target = new URL(url);
+    if (target.protocol !== "https:" && target.protocol !== "http:") throw new Error("Outbound URL protocol is forbidden");
+    if (target.username || target.password) throw new Error("Outbound URL credentials are forbidden");
+    const method = (init.method ?? "GET").toUpperCase();
+    const headers = new Headers(init.headers);
+    if (correlationId) headers.set("x-request-id", correlationId);
+    headers.set("user-agent", "thaarei-starter/1.0");
+    const retryableMethod = ["GET", "HEAD", "PUT", "DELETE", "OPTIONS"].includes(method) || headers.has("idempotency-key") || headers.has("x-idempotency-key");
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= maximumRetries; attempt += 1) {
+      try {
+        const timeoutSignal = AbortSignal.timeout(timeoutMs);
+        const signal = init.signal ? AbortSignal.any([init.signal, timeoutSignal]) : timeoutSignal;
+        const response = await fetchImpl(url, { ...init, headers, signal });
+        const declaredLength = Number(response.headers.get("content-length") ?? "0");
+        if (!Number.isSafeInteger(declaredLength) || declaredLength < 0 || declaredLength > maximumResponseBytes) throw new Error("Provider response exceeded configured limit");
+        if (retryableMethod && attempt < maximumRetries && (response.status === 429 || response.status >= 500)) {
+          await response.body?.cancel();
+          await sleep(Math.round(100 * 2 ** attempt + random() * 50));
+          continue;
+        }
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        if (bytes.byteLength > maximumResponseBytes) throw new Error("Provider response exceeded configured limit");
+        return new Response(bytes, { status: response.status, statusText: response.statusText, headers: response.headers });
+      } catch (error: unknown) {
+        lastError = error;
+        if (!retryableMethod || attempt >= maximumRetries) break;
+        await sleep(Math.round(100 * 2 ** attempt + random() * 50));
+      }
+    }
+    throw new Error("Outbound provider request failed", { cause: lastError });
+  };
+}
+`
+      : "";
   const identity = plan.needsIdentity
     ? `
 import { betterAuth } from "better-auth";
@@ -1888,10 +2137,10 @@ import { APIError, createAuthMiddleware } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { twoFactor } from "better-auth/plugins";
 import { passkey } from "@better-auth/passkey";
-import { canPerformSensitiveAccountChange, type AssuranceLevel, type IdentityMailPort } from "${packageName(config, "core")}";
+import { canBootstrapStrongFactor, canPerformSensitiveAccountChange, type AssuranceLevel, type IdentityMailPort } from "${packageName(config, "core")}";
 ${sourceOfTruthBlock({ id: "starter.identity.authentication-adapter", keywords: "identity, authentication, better-auth, session", what: "Better Auth server adapter for authentication artifacts and session resolution.", why: "Authentication stays provider-owned while application identity and authorization remain separate.", when: "Compose the API authentication routes and request context.", how: "createBetterAuthAdapter", boundaries: "The adapter never grants application permissions from an authentication session alone." })}
 export function createIdentityMailAdapter(input: { readonly provider: "mailpit" | "resend"; readonly from: string; readonly mailpitUrl?: string; readonly resendApiKey?: string; readonly fetch?: typeof fetch }): IdentityMailPort {
-  const request = input.fetch ?? fetch;
+  const request = createBoundedHttpClient({ ...(input.fetch ? { fetchImpl: input.fetch } : {}) });
   const send = async (message: { readonly email: string; readonly url: string; readonly kind: "verification" | "password-reset" }): Promise<void> => {
     const subject = message.kind === "verification" ? "Verify your email" : "Reset your password";
     const endpoint = input.provider === "resend" ? "https://api.resend.com/emails" : \`\${input.mailpitUrl ?? "http://127.0.0.1:8025"}/api/v1/send\`;
@@ -1926,6 +2175,7 @@ const sensitiveAccountPaths = new Set([
   "/passkey/add-passkey",
   "/passkey/delete-passkey",
 ]);
+const bootstrapStrongFactorPaths = new Set(["/two-factor/enable", "/passkey/add-passkey"]);
 export function requiresRecentAccountAssurance(path: string): boolean {
   return sensitiveAccountPaths.has(path);
 }
@@ -1993,7 +2243,14 @@ export function createBetterAuthAdapter(input: {
       const session = await auth.api.getSession({ headers: request.headers });
       if (!session?.session?.token) return new Response(null, { status: 401 });
       const assurance = await input.resolveAssurance(session.session.token);
-      if (!assurance || !canPerformSensitiveAccountChange(assurance)) {
+      let bootstrapAllowed = false;
+      if (assurance && bootstrapStrongFactorPaths.has(path)) {
+        const hasExistingStrongFactor = path === "/two-factor/enable"
+          ? (session.user as { twoFactorEnabled?: boolean }).twoFactorEnabled === true
+          : (await auth.api.listPasskeys({ headers: request.headers })).length > 0;
+        bootstrapAllowed = canBootstrapStrongFactor(assurance, hasExistingStrongFactor);
+      }
+      if (!assurance || (!canPerformSensitiveAccountChange(assurance) && !bootstrapAllowed)) {
         return Response.json({ code: "RECENT_ASSURANCE_REQUIRED" }, { status: 403 });
       }
     }
@@ -2080,7 +2337,7 @@ export function createAiSdkModel(model: LanguageModel) {
     plan.needsPayments || plan.needsNotifications || plan.needsCache || plan.needsObservability
       ? `
 export function createJsonProvider(input: { readonly baseUrl: string; readonly apiKey: string; readonly fetchImpl?: typeof fetch }) {
-  const fetchImpl = input.fetchImpl ?? fetch;
+  const fetchImpl = createBoundedHttpClient({ ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}) });
   return { request: async (path: string, body: Readonly<Record<string, unknown>>) => {
     const response = await fetchImpl(new URL(path, input.baseUrl), { method: "POST", headers: { "content-type": "application/json", authorization: \`Bearer \${input.apiKey}\` }, body: JSON.stringify(body) });
     if (!response.ok) throw new Error(\`provider request failed: \${response.status}\`);
@@ -2130,7 +2387,7 @@ ${
 }${
   plan.needsPayments
     ? `export function createStripePaymentAdapter(input: { readonly secretKey: string; readonly fetchImpl?: typeof fetch }) {
-  const fetchImpl = input.fetchImpl ?? fetch;
+  const fetchImpl = createBoundedHttpClient({ ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}) });
   return { refund: async (paymentId: string, amountMinor?: number) => {
     const body = amountMinor === undefined ? "" : \`amount=\${amountMinor}\`;
     const payload = [body, body ? "&" : "", "payment_intent=", encodeURIComponent(paymentId)].join("");
@@ -2140,7 +2397,7 @@ ${
   } };
 }
 export function createRazorpayPaymentAdapter(input: { readonly keyId: string; readonly keySecret: string; readonly fetchImpl?: typeof fetch }) {
-  const fetchImpl = input.fetchImpl ?? fetch;
+  const fetchImpl = createBoundedHttpClient({ ...(input.fetchImpl ? { fetchImpl: input.fetchImpl } : {}) });
   return { refund: async (paymentId: string, amountMinor: number) => {
     const response = await fetchImpl(["https://api.razorpay.com/v1/payments/", encodeURIComponent(paymentId), "/refund"].join(""), { method: "POST", headers: { authorization: \`Basic \${Buffer.from([input.keyId, input.keySecret].join(":")).toString("base64") }\`, "content-type": "application/json", "x-idempotency-key": paymentId }, body: JSON.stringify({ amount: amountMinor }) });
     if (!response.ok) throw new Error(\`razorpay refund failed: \${response.status}\`);
@@ -2151,8 +2408,39 @@ export function createRazorpayPaymentAdapter(input: { readonly keyId: string; re
     : ""
 }${
   plan.needsObservability
-    ? `export function createRedactedTelemetryExporter(input: { readonly send: (value: unknown) => Promise<void> }) {
-  return { export: async (value: unknown) => input.send(redactSensitive(value)) };
+    ? `${sourceOfTruthBlock({ id: "starter.observability.otlp-runtime", keywords: "opentelemetry, otlp, traces, metrics, redaction", what: "Minimal OTLP trace and metric runtime for generated Node applications.", why: "Selected observability must emit real correlated telemetry without coupling application code to a hosted backend.", when: "Start once before composing API or worker work and shut down during process drain.", how: "createTelemetryRuntime", boundaries: "Adapters own SDK/exporters; logs remain Pino-owned and sensitive payloads are never span attributes." })}
+export function createTelemetryRuntime(input: { readonly serviceName: string; readonly endpoint: string }) {
+  const endpoint = input.endpoint.replace(/\\/$/u, "");
+  const sdk = new NodeSDK({
+    resource: resourceFromAttributes({ "service.name": input.serviceName, "service.version": "0.1.0" }),
+    traceExporter: new OTLPTraceExporter({ url: \`\${endpoint}/v1/traces\` }),
+    metricReaders: [new PeriodicExportingMetricReader({ exporter: new OTLPMetricExporter({ url: \`\${endpoint}/v1/metrics\` }), exportIntervalMillis: 5_000 })],
+  });
+  sdk.start();
+  const tracer = trace.getTracer("thaarei-runtime", "1.0.0");
+  const meter = metrics.getMeter("thaarei-runtime", "1.0.0");
+  const requestCount = meter.createCounter("http.server.request.count");
+  const requestDuration = meter.createHistogram("http.server.request.duration", { unit: "ms" });
+  return {
+    startRequest: (request: { readonly method: string; readonly route: string }) => {
+      const startedAt = performance.now();
+      const span = tracer.startSpan("http.server.request", { attributes: { "http.request.method": request.method, "http.route": request.route } });
+      return { end: (statusCode: number) => {
+        const attributes = { "http.request.method": request.method, "http.route": request.route, "http.response.status_code": statusCode };
+        span.setAttributes(attributes);
+        if (statusCode >= 500) span.setStatus({ code: SpanStatusCode.ERROR });
+        requestCount.add(1, attributes);
+        requestDuration.record(performance.now() - startedAt, attributes);
+        span.end();
+      } };
+    },
+    recordOperation: (name: string, outcome: "ok" | "error") => {
+      const span = tracer.startSpan(name, { attributes: { outcome } });
+      if (outcome === "error") span.setStatus({ code: SpanStatusCode.ERROR });
+      span.end();
+    },
+    shutdown: () => sdk.shutdown(),
+  };
 }
 `
     : ""
@@ -2163,7 +2451,7 @@ export function createRazorpayPaymentAdapter(input: { readonly keyId: string; re
     ? `import type { ObjectStorage, StorageMetadataStore, StoragePolicy } from "${packageName(config, "core")}";\nimport { defaultStoragePolicy, validateStorageUpload } from "${packageName(config, "core")}";\n`
     : "";
   const observabilityTypeImport = plan.needsObservability
-    ? `import { redactSensitive } from "${packageName(config, "core")}";\n`
+    ? `import { metrics, SpanStatusCode, trace } from "@opentelemetry/api";\nimport { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";\nimport { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";\nimport { resourceFromAttributes } from "@opentelemetry/resources";\nimport { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";\nimport { NodeSDK } from "@opentelemetry/sdk-node";\n`
     : "";
   const cacheTypeImport = plan.needsCache
     ? `import type { CachePort${plan.needsRateLimit ? ", RateLimitRisk, RateLimitDecision" : ""} } from "${packageName(config, "core")}";\nimport { cacheKey${plan.needsRateLimit ? ", evaluateRateLimit" : ""} } from "${packageName(config, "core")}";\n`
@@ -2171,7 +2459,7 @@ export function createRazorpayPaymentAdapter(input: { readonly keyId: string; re
   return textFile(
     "packages/adapters/src/index.ts",
     `${storageTypeImport}${observabilityTypeImport}${cacheTypeImport}${providerOwners ? "" : 'export const packageId = "adapters" as const;\n'}
-${identity}${jobs}${storage}${ai}${platform}
+${outboundHttp}${identity}${jobs}${storage}${ai}${platform}
 `,
   );
 }
@@ -2717,8 +3005,12 @@ function localComposeFile(config: InitConfig, plan: CapabilityPlan): GeneratedFi
     ? `
   otel-collector:
     image: ${IMAGE_CATALOG.otelCollector.reference}@${IMAGE_CATALOG.otelCollector.digest}
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
     ports:
+      - "127.0.0.1:\${OTEL_HTTP_PORT:-4318}:4318"
       - "127.0.0.1:\${OTEL_HEALTH_PORT:-13133}:13133"
+    volumes:
+      - ./tooling/observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
 `
     : "";
   const postgresImage = selectedProfile("rag")
@@ -2786,6 +3078,7 @@ function supplyChainWorkflowFile(plan: CapabilityPlan): GeneratedFile {
     `name: Build and attest immutable images
 
 on:
+  workflow_call:
   push:
     branches: [main]
 
@@ -2815,7 +3108,9 @@ jobs:
           GITHUB_TOKEN: \${{ github.token }}
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm validate:starter
-      - name: Record dependency vulnerability report
+      - name: Start disposable runtime dependencies
+        run: cp .env.example .env && pnpm dev:deps
+${plan.needsDatabase ? "      - name: Apply reviewed migrations for runtime inspection\n        run: pnpm db:migrate\n" : ""}      - name: Record dependency vulnerability report
         run: ${plan.profiles.includes("mobile") ? "pnpm audit --prod --json > dependency-vulnerabilities.json || (cp dependency-vulnerabilities.json .thaarei/pnpm-audit.json && pnpm security:waiver-check)" : "pnpm audit --prod --json > dependency-vulnerabilities.json"}
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
@@ -2833,6 +3128,9 @@ jobs:
           file: \${{ matrix.dockerfile }}
           push: true
           tags: \${{ steps.image.outputs.image }}:\${{ github.sha }}
+          build-args: |
+            SOURCE_COMMIT=\${{ github.sha }}
+            IMAGE_VERSION=${PACKAGE_VERSION}-dev.1
       - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
         with:
           image: \${{ steps.image.outputs.image }}@\${{ steps.build.outputs.digest }}
@@ -2848,6 +3146,18 @@ jobs:
         env:
           GH_TOKEN: \${{ github.token }}
         run: gh attestation verify "oci://\${{ steps.image.outputs.image }}@\${{ steps.build.outputs.digest }}" --repo "$GITHUB_REPOSITORY"
+      - name: Scan the exact immutable image
+        env:
+          TRIVY_USERNAME: \${{ github.actor }}
+          TRIVY_PASSWORD: \${{ github.token }}
+        run: pnpm security:image -- "\${{ steps.image.outputs.image }}@\${{ steps.build.outputs.digest }}"
+      - name: Generate the exact-image CycloneDX SBOM
+        env:
+          TRIVY_USERNAME: \${{ github.actor }}
+          TRIVY_PASSWORD: \${{ github.token }}
+        run: pnpm security:sbom -- "\${{ steps.image.outputs.image }}@\${{ steps.build.outputs.digest }}"
+      - name: Inspect runtime hardening and image contents
+        run: pnpm runtime:inspect -- "\${{ steps.image.outputs.image }}@\${{ steps.build.outputs.digest }}" "\${{ matrix.application }}"
       - name: Record immutable application digest
         shell: bash
         run: printf '{"application":"%s","image":"%s","digest":"%s","sourceCommit":"%s"}\\n' "\${{ matrix.application }}" "\${{ steps.image.outputs.image }}" "\${{ steps.build.outputs.digest }}" "$GITHUB_SHA" > application-image.json
@@ -2858,15 +3168,156 @@ jobs:
             application-image.json
             dependency-vulnerabilities.json
             sbom.spdx.json
+            .artifacts/security
+            .artifacts/runtime
+          if-no-files-found: error
+          retention-days: 30
+${plan.needsDatabase || plan.localServices.length > 0 ? "      - if: always()\n        run: pnpm dev:down\n" : ""}
+`,
+  );
+}
+
+function securityWorkflowFile(): GeneratedFile {
+  return textFile(
+    ".github/workflows/security.yml",
+    `name: Security validation
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
+        with:
+          version: ${PNPM_VERSION}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm config set "//npm.pkg.github.com/:_authToken" "$GITHUB_TOKEN"
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm security:secrets
+      - if: github.event_name != 'pull_request'
+        run: pnpm security:secrets:full
+      - run: pnpm security:sast
+      - run: pnpm security:fs
+      - run: pnpm security:config
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: security-reports
+          path: .artifacts/security
           if-no-files-found: error
           retention-days: 30
 `,
   );
 }
 
+function deepValidationWorkflowFile(config: InitConfig, plan: CapabilityPlan): GeneratedFile {
+  return textFile(
+    ".github/workflows/deep-validation.yml",
+    `name: Deep product validation
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 2 * * 1"
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  deep-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
+        with:
+          version: ${PNPM_VERSION}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm config set "//npm.pkg.github.com/:_authToken" "$GITHUB_TOKEN"
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm security:policy-test
+      - run: pnpm validate:deep
+${plan.needsDatabase ? "      - run: pnpm recovery:verify\n" : ""}${
+  hasProfile(config, "web")
+    ? `      - run: cp .env.example .env
+      - run: pnpm dev:deps
+${plan.needsDatabase ? "      - run: pnpm db:migrate\n" : ""}      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:deep:web
+      - if: always()
+        run: pnpm dev:down
+`
+    : ""
+}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: deep-validation-evidence
+          path: .artifacts
+          if-no-files-found: error
+          retention-days: 30
+`,
+  );
+}
+
+function releaseCandidateWorkflowFile(hasImages: boolean): GeneratedFile {
+  return textFile(
+    ".github/workflows/release-candidate.yml",
+    `name: Product release candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  deep-validation:
+    uses: ./.github/workflows/deep-validation.yml
+${
+  hasImages
+    ? `
+  immutable-images:
+    needs: deep-validation
+    uses: ./.github/workflows/supply-chain.yml
+`
+    : ""
+}`,
+  );
+}
+
 function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
   const identity = productIdentity(config);
   const releasePackages = plan.testedPackages;
+  const deepIdentityEnvironment = plan.needsIdentity
+    ? `, BETTER_AUTH_URL: \`http://127.0.0.1:\${webPort}\``
+    : "";
   const files: GeneratedFile[] = [
     jsonFile("package.json", {
       name: packageName(config, config.productId),
@@ -2882,7 +3333,10 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
         ...(hasProfile(config, "mobile")
           ? { "build:mobile": `pnpm --filter ${packageName(config, "mobile-app")} build` }
           : {}),
-        "dev:deps": `docker compose${resolveCapabilities(plan.profiles, plan.providers).definitions.some((definition) => definition.sourceMaturity === "experimental" && definition.localServices.length > 0) ? " --profile experimental" : ""} up -d`,
+        "dev:deps":
+          plan.needsDatabase || plan.localServices.length > 0
+            ? `docker compose${resolveCapabilities(plan.profiles, plan.providers).definitions.some((definition) => definition.sourceMaturity === "experimental" && definition.localServices.length > 0) ? " --profile experimental" : ""} up -d`
+            : "node -e \"process.stdout.write('No local dependencies selected\\n')\"",
         dev: `pnpm dev:deps && turbo run dev --parallel`,
         "dev:full": `pnpm dev:deps && turbo run dev --parallel`,
         "dev:down": "docker compose down --remove-orphans",
@@ -2916,12 +3370,34 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
         ...(hasProfile(config, "web") ? { "smoke:web": "tsx tooling/smoke-web.ts" } : {}),
         "check:boundaries": "tsx tooling/governance/src/cli.ts check:boundaries",
         "check:implementation": "tsx tooling/governance/src/cli.ts check:implementation",
+        "check:project": "tsx tooling/governance/check-project.ts",
         ...(hasProfile(config, "python")
           ? { "check:python": "python3 -m compileall -q services/python/src" }
           : {}),
         "check:source-of-truth": "tsx tooling/governance/src/cli.ts check:source-of-truth",
         ...(plan.needsDatabase ? { "check:migrations": "tsx tooling/check-migrations.ts" } : {}),
+        ...(plan.needsDatabase
+          ? { "recovery:verify": "tsx tooling/recovery/verify-postgres.ts" }
+          : {}),
         "release:check": "tsx tooling/release/check-release.ts",
+        "security:secrets": "thaarei-security secrets",
+        "security:secrets:full": "thaarei-security secrets-full",
+        "security:sast": "thaarei-security sast",
+        "security:fs": "thaarei-security fs",
+        "security:config": "thaarei-security config",
+        "security:image": "thaarei-security image",
+        "security:sbom": "thaarei-security sbom",
+        ...(hasProfile(config, "web")
+          ? {
+              "security:dast": "thaarei-security dast",
+              "test:performance": "thaarei-security performance",
+              "test:deep:web": "tsx tooling/deep-web.ts",
+            }
+          : {}),
+        "security:policy-test": "thaarei-security policy-test",
+        ...(plan.deployableApps.length > 0
+          ? { "runtime:inspect": "tsx tooling/runtime/inspect-image.ts" }
+          : {}),
         ...(hasProfile(config, "mobile")
           ? { "security:waiver-check": "tsx tooling/security/check-waivers.ts" }
           : {}),
@@ -2934,11 +3410,33 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
         ...(hasProfile(config, "external-api")
           ? { "check:generated": "tsx tooling/check-generated.ts" }
           : {}),
+        ...(config.deployment === "dokploy"
+          ? {
+              "deploy:plan": "tsx deployment/dokploy/adapter.ts plan",
+              "deploy:apply": "tsx deployment/dokploy/adapter.ts apply",
+              "deploy:inspect": "tsx deployment/dokploy/adapter.ts inspect",
+              "deploy:promote": "tsx deployment/dokploy/adapter.ts promote",
+              "deploy:rollback": "tsx deployment/dokploy/adapter.ts rollback",
+              "deploy:evidence": "tsx deployment/dokploy/adapter.ts evidence",
+            }
+          : {
+              "deploy:plan": "railway config plan --out .artifacts/railway-plan.json",
+              "deploy:apply": "railway config apply",
+            }),
         lint: "biome lint .",
         test: "vitest run --passWithNoTests",
+        "test:coverage": "vitest run --coverage --passWithNoTests",
+        ...(hasProfile(config, "web")
+          ? {
+              "test:e2e": "playwright test",
+              "test:a11y": "playwright test --grep @a11y",
+            }
+          : {}),
         typecheck: "turbo run typecheck",
-        check: `pnpm format:check && pnpm lint && pnpm release:check && pnpm check:source-of-truth && pnpm check:boundaries && pnpm check:implementation${plan.needsDatabase ? " && pnpm check:migrations" : ""}${plan.needsExternalApi ? " && pnpm check:generated" : ""}${hasProfile(config, "python") ? " && pnpm check:python" : ""} && pnpm typecheck && pnpm build && pnpm test`,
+        check: `pnpm format:check && pnpm lint && pnpm release:check && pnpm check:project && pnpm check:source-of-truth && pnpm check:boundaries && pnpm check:implementation${plan.needsDatabase ? " && pnpm check:migrations" : ""}${plan.needsExternalApi ? " && pnpm check:generated" : ""}${hasProfile(config, "python") ? " && pnpm check:python" : ""} && pnpm typecheck && pnpm build && pnpm test`,
         "validate:starter": "pnpm check",
+        "validate:deep":
+          "pnpm validate:starter && pnpm test:coverage && pnpm security:secrets && pnpm security:sast && pnpm security:fs && pnpm security:config",
         "validate:product": "pnpm check",
       },
       devDependencies: {
@@ -2948,6 +3446,13 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
           ? { "@hey-api/openapi-ts": DEPENDENCY_VERSIONS.openapiClient }
           : {}),
         "@types/node": DEPENDENCY_VERSIONS.nodeTypes,
+        "@vitest/coverage-v8": DEPENDENCY_VERSIONS.vitestCoverage,
+        ...(hasProfile(config, "web")
+          ? {
+              "@axe-core/playwright": DEPENDENCY_VERSIONS.axePlaywright,
+              "@playwright/test": DEPENDENCY_VERSIONS.playwright,
+            }
+          : {}),
         tsx: DEPENDENCY_VERSIONS.tsx,
         turbo: DEPENDENCY_VERSIONS.turbo,
         typescript: DEPENDENCY_VERSIONS.typescript,
@@ -3009,12 +3514,250 @@ const packages = ${JSON.stringify(
 
 export default defineConfig({
   resolve: { alias: Object.fromEntries(packages.map(([name, directory]) => [name, resolve(root, "packages", directory, "src", "index.ts")])) },
-  test: { include: ["packages/**/tests/**/*.test.ts"], testTimeout: 30_000 },
+  test: {
+    include: ["packages/**/tests/**/*.test.ts"],
+    testTimeout: 30_000,
+    coverage: {
+      enabled: false,
+      provider: "v8",
+      reporter: ["text", "json-summary"],
+      reportsDirectory: ".artifacts/coverage",
+      include: ["packages/**/src/**/*.ts"],
+      exclude: ["packages/api-client/src/generated/**", "packages/database/migrations/**"],
+      thresholds: { lines: 70, functions: 70, branches: 60 },
+    },
+  },
 });
 `,
     ),
+    ...(hasProfile(config, "web")
+      ? [
+          textFile(
+            "playwright.config.ts",
+            `import { defineConfig } from "@playwright/test";
+
+const webPort = Number(process.env.E2E_WEB_PORT ?? "3000");
+const apiPort = Number(process.env.E2E_API_PORT ?? "3001");
+const reuseExistingServer = process.env.PLAYWRIGHT_REUSE_SERVER === "true";
+
+export default defineConfig({
+  testDir: "tests/e2e",
+  timeout: 30_000,
+  expect: { timeout: 10_000 },
+  reporter: [["line"], ["json", { outputFile: ".artifacts/playwright/results.json" }]],
+  use: { baseURL: \`http://127.0.0.1:\${webPort}\`, trace: "retain-on-failure", screenshot: "only-on-failure" },
+  webServer: [
+    { command: "pnpm dev:api", url: \`http://127.0.0.1:\${apiPort}/health/ready\`, env: { PORT: String(apiPort), ALLOWED_ORIGINS: \`http://127.0.0.1:\${webPort}\` }, reuseExistingServer, timeout: 120_000 },
+    { command: \`pnpm --filter ${packageName(config, "web-app")} exec next dev -p \${webPort}\`, url: \`http://127.0.0.1:\${webPort}\`, env: { API_INTERNAL_URL: \`http://127.0.0.1:\${apiPort}\` }, reuseExistingServer, timeout: 120_000 },
+  ],
+});
+`,
+          ),
+          textFile(
+            "tests/e2e/public.spec.ts",
+            `import AxeBuilder from "@axe-core/playwright";
+import { expect, test } from "@playwright/test";
+
+test("public web and typed API health remain reachable", async ({ page, request }) => {
+  const navigation = await page.goto("/");
+  expect(navigation?.headers()["x-content-type-options"]).toBe("nosniff");
+  await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await page.getByRole("button", { name: "Typed health" }).click();
+  await expect(page.getByText("Request succeeded")).toBeVisible();
+  const health = await request.get("/trpc/health");
+  expect(health.ok()).toBe(true);
+  const apiLive = await request.get(\`http://127.0.0.1:\${process.env.E2E_API_PORT ?? "3001"}/health/live\`);
+  expect(apiLive.headers()["x-content-type-options"]).toBe("nosniff");
+});
+
+test("@a11y public page has no automatically detectable serious violations", async ({ page }) => {
+  await page.goto("/");
+  const result = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  expect(result.violations.filter((violation) => violation.impact === "serious" || violation.impact === "critical")).toEqual([]);
+});
+${
+  plan.needsIdentity
+    ? `
+async function waitForVerificationUrl(email: string): Promise<string> {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const response = await fetch("http://127.0.0.1:8025/api/v1/messages");
+    if (response.ok) {
+      const summary = await response.json() as { messages?: Array<{ ID?: string; To?: Array<{ Address?: string }> }> };
+      const id = summary.messages?.find((message) => message.To?.some((recipient) => recipient.Address === email))?.ID;
+      if (id) {
+        const detail = await fetch(\`http://127.0.0.1:8025/api/v1/message/\${encodeURIComponent(id)}\`);
+        const message = await detail.json() as { HTML?: string };
+        const url = message.HTML?.match(/href="([^"]+)"/u)?.[1]?.replaceAll("&amp;", "&");
+        if (url) return url;
+      }
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 250));
+  }
+  throw new Error("Verification message was not found in Mailpit");
+}
+
+test("identity verification, authorization, accessibility, and logout remain coherent", async ({ page }) => {
+  const email = \`browser-\${Date.now()}@example.test\`;
+  await page.goto("/");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill("local-password-123");
+  await page.getByRole("button", { name: "Sign up" }).click();
+  await expect(page.getByText(/check your email/i)).toBeVisible();
+  await page.goto(await waitForVerificationUrl(email));
+  await page.goto("/");
+  await page.getByLabel("Email").fill(email);
+  await page.getByLabel("Password").fill("local-password-123");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByText(/signed in/i)).toBeVisible();
+  await expect.poll(() => page.evaluate(() => fetch("/trpc/viewer").then((response) => response.status))).toBe(200);
+  const accessibility = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  expect(accessibility.violations.filter((violation) => violation.impact === "serious" || violation.impact === "critical")).toEqual([]);
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect(page.getByText(/signed out/i)).toBeVisible();
+  await expect.poll(() => page.evaluate(() => fetch("/trpc/viewer").then((response) => response.status))).toBe(401);
+});
+
+test("password recovery responses do not disclose account existence", async ({ request }) => {
+  const email = \`recovery-\${Date.now()}@example.test\`;
+  const headers = { origin: \`http://127.0.0.1:\${process.env.E2E_WEB_PORT ?? "3000"}\` };
+  const signup = await request.post("/api/auth/sign-up/email", { headers, data: { name: "Recovery test", email, password: "local-password-123" } });
+  expect(signup.status()).toBe(200);
+  const existing = await request.post("/api/auth/request-password-reset", { headers, data: { email, redirectTo: "/" } });
+  const absent = await request.post("/api/auth/request-password-reset", { headers, data: { email: \`absent-\${Date.now()}@example.test\`, redirectTo: "/" } });
+  expect(existing.status()).toBe(200);
+  expect(absent.status()).toBe(existing.status());
+  expect(await absent.json()).toEqual(await existing.json());
+});
+`
+    : ""
+}${
+  plan.needsTenancy
+    ? `
+test("anonymous tenant context cannot cross the authorization boundary", async ({ request }) => {
+  const response = await request.get("/trpc/viewer", { headers: { "x-organization-id": "other-tenant" } });
+  expect(response.status()).toBe(401);
+});
+`
+    : ""
+}`,
+          ),
+        ]
+      : []),
+    ...(plan.deployableApps.length > 0
+      ? [
+          textFile(
+            "tooling/runtime/inspect-image.ts",
+            `import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
+
+const image = process.argv[2];
+const application = process.argv[3] as "web" | "api" | "worker" | "python" | undefined;
+if (!image || !/@sha256:[a-f0-9]{64}$/u.test(image)) throw new Error("runtime:inspect requires an immutable image reference");
+const applications = {
+  web: { portEnvironment: "PORT", port: 3000 },
+  api: { portEnvironment: "PORT", port: 3001 },
+  worker: { portEnvironment: "WORKER_PORT", port: 3002 },
+  python: { portEnvironment: "PORT", port: 8000 },
+} as const;
+if (!application || !(application in applications)) throw new Error("runtime:inspect requires web, api, worker, or python");
+const applicationConfiguration = applications[application];
+const docker = (args: readonly string[]) => {
+  const result = spawnSync("docker", args, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 120_000 });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(\`docker \${args[0] ?? "command"} failed with exit code \${result.status ?? 1}: \${result.stderr.trim()}\`);
+  return result.stdout;
+};
+type ContainerState = { readonly Status?: string; readonly ExitCode?: number; readonly OOMKilled?: boolean; readonly Health?: { readonly Status?: string } };
+const containerName = ["thaarei-runtime", application, String(process.pid), String(Date.now())].join("-");
+const inspectContainer = (): ContainerState => {
+  const inspectedContainer = JSON.parse(docker(["container", "inspect", containerName])) as Array<{ State?: ContainerState }>;
+  const state = inspectedContainer[0]?.State;
+  if (!state) throw new Error("Docker did not return container state");
+  return state;
+};
+const waitForHealthy = async (): Promise<ContainerState> => {
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    const state = inspectContainer();
+    if (state.Health?.Status === "healthy") return state;
+    if (state.Status === "exited" || state.Health?.Status === "unhealthy") {
+      throw new Error(\`Runtime application failed before readiness: \${docker(["logs", "--tail", "100", containerName]).trim()}\`);
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+  }
+  throw new Error("Runtime application did not become healthy before the qualification timeout");
+};
+
+docker(["pull", image]);
+const inspected = JSON.parse(docker(["image", "inspect", image])) as Array<{ Id?: string; Config?: { User?: string; Healthcheck?: unknown; Labels?: Record<string, string> } }>;
+const configuration = inspected[0]?.Config;
+if (!configuration) throw new Error("Docker did not return image configuration");
+if (!configuration.User || ["0", "root", "0:0", "root:root"].includes(configuration.User)) throw new Error("Runtime image must declare a non-root user");
+if (!configuration.Healthcheck) throw new Error("Runtime image must declare a health check");
+for (const label of ["org.opencontainers.image.source", "org.opencontainers.image.version", "org.opencontainers.image.revision"]) {
+  if (!configuration.Labels?.[label]) throw new Error(\`Runtime image is missing OCI label \${label}\`);
+}
+const files = docker(["run", "--rm", "--entrypoint", "find", image, "/app", "-path", "/app/node_modules", "-prune", "-o", "-type", "f", "-print"]);
+const forbidden = files.split("\\n").filter((path) => /(?:^|\\/)(?:\\.git|\\.env|\\.npmrc|src)(?:\\/|$)|\\.(?:ts|tsx|py)$|credentials?/iu.test(path));
+if (forbidden.length > 0) throw new Error(\`Runtime image contains forbidden files: \${forbidden.join(", ")}\`);
+let containerCreated = false;
+try {
+  const environmentFile = existsSync(".env") ? ["--env-file", ".env"] : [];
+  docker([
+    "run", "--detach", "--name", containerName,
+    "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+    "--tmpfs", "/tmp:rw,noexec,nosuid,size=67108864", "--network", "host",
+    ...environmentFile,
+    "--env", "APP_ENV=ci", "--env", "NODE_ENV=production",
+    "--env", \`\${applicationConfiguration.portEnvironment}=\${applicationConfiguration.port}\`,
+    image,
+  ]);
+  containerCreated = true;
+  await waitForHealthy();
+  docker(["stop", "--signal", "SIGTERM", "--time", "20", containerName]);
+  const stopped = inspectContainer();
+  if (stopped.OOMKilled || stopped.ExitCode !== 0) {
+    throw new Error(\`Runtime application did not terminate gracefully; exit code \${stopped.ExitCode ?? "unknown"}\`);
+  }
+  const evidence = {
+    schemaVersion: 1,
+    gate: "runtime-image-inspection",
+    result: "passed",
+    observedAt: new Date().toISOString(),
+    image,
+    imageId: inspected[0]?.Id ?? null,
+    application,
+    user: configuration.User,
+    exitCode: stopped.ExitCode,
+    contentListDigest: \`sha256:\${createHash("sha256").update(files).digest("hex")}\`,
+    controls: ["non-root", "healthcheck", "oci-labels", "read-only", "drop-all-capabilities", "no-new-privileges", "content-denylist", "declared-entrypoint", "healthy", "graceful-sigterm"],
+  };
+  await mkdir(".artifacts/runtime", { recursive: true });
+  await writeFile(".artifacts/runtime/image.json", \`\${JSON.stringify(evidence, null, 2)}\\n\`);
+  process.stdout.write("Runtime image inspection passed\\n");
+} finally {
+  if (containerCreated) spawnSync("docker", ["rm", "--force", containerName], { stdio: "ignore" });
+}
+`,
+          ),
+        ]
+      : []),
     jsonFile("turbo.json", {
       $schema: "https://turbo.build/schema.json",
+      globalPassThroughEnv: [
+        "DOKPLOY_URL",
+        "DOKPLOY_API_KEY",
+        "DOKPLOY_ENVIRONMENT",
+        "APPROVAL_EVIDENCE_ID",
+        "INITIATING_ACTOR",
+        "APPROVING_ACTOR",
+        "ROLLBACK_SCHEMA_COMPATIBLE",
+        "ROLLBACK_ATTESTATION_VERIFIED",
+        "GITHUB_SHA",
+      ],
       tasks: {
         build: { dependsOn: ["^build"], outputs: ["dist/**", ".next/**", "!**/.next/cache/**"] },
         dev: { cache: false, persistent: true },
@@ -3032,6 +3775,7 @@ export default defineConfig({
           "!!.turbo",
           "!!**/.turbo",
           "!!packages/api-client/src/generated",
+          "!!.artifacts",
         ],
       },
       formatter: { enabled: true, indentStyle: "space", indentWidth: 2, lineWidth: 100 },
@@ -3049,10 +3793,10 @@ export default defineConfig({
       ".npmrc",
       "save-exact=true\nprefer-frozen-lockfile=true\n@thaarei-technology:registry=https://npm.pkg.github.com\nalways-auth=true\n",
     ),
-    textFile(".gitignore", "node_modules\ndist\n.next\n.turbo\n.env\n"),
+    textFile(".gitignore", "node_modules\ndist\n.next\n.turbo\n.env\n.artifacts\n"),
     textFile(
       ".dockerignore",
-      `.git\n.github\n${identity.namespace}\n.turbo\nnode_modules\n**/node_modules\n**/dist\n**/.next\ncoverage\n*.log\n.env\n.env.*\n!.env.example\n`,
+      `.git\n.github\n${identity.namespace}\n.turbo\n.artifacts\nnode_modules\n**/node_modules\n**/dist\n**/.next\ncoverage\n*.log\n.env\n.env.*\n!.env.example\n`,
     ),
     textFile(
       "README.md",
@@ -3060,14 +3804,161 @@ export default defineConfig({
     ),
     developerGuideFile(config, plan),
     environmentReferenceFile(config, plan),
+    textFile(
+      "SECURITY.md",
+      `# Security policy\n\nDo not open a public issue for a suspected vulnerability or include secrets, customer data, exploit payloads, or production URLs in repository discussions. Report privately through this repository's GitHub Security Advisory page. The technical owner (${config.technicalOwner}) acknowledges the report, coordinates remediation, and records only sanitized evidence in the work ledger.\n\nSupported releases are the currently promoted release and the immediately previous schema-compatible release. Rotate exposed credentials immediately, preserve relevant audit evidence, and follow docs/operations-runbook.md for containment and recovery.\n`,
+    ),
+    textFile(
+      ".github/pull_request_template.md",
+      "## Change\n\n- What changed and why:\n- Selected profile or boundary affected:\n\n## Evidence\n\n- [ ] `pnpm validate:starter`\n- [ ] Security-sensitive owners have direct regression tests\n- [ ] Migration, deployment, or recovery evidence is attached when applicable\n- [ ] No credentials, customer data, or production URLs are included\n",
+    ),
+    textFile(
+      ".github/ISSUE_TEMPLATE/bug.yml",
+      'name: Bug report\ndescription: Report reproducible product behavior without sensitive data\ntitle: "[Bug]: "\nlabels: [bug]\nbody:\n  - type: markdown\n    attributes:\n      value: Do not report security vulnerabilities or include secrets/customer data here. Use the private Security Advisory channel described in SECURITY.md.\n  - type: textarea\n    id: behavior\n    attributes:\n      label: Observed behavior\n      description: Include sanitized reproduction steps and expected behavior.\n    validations:\n      required: true\n  - type: input\n    id: version\n    attributes:\n      label: Release or commit\n    validations:\n      required: true\n',
+    ),
+    textFile(
+      ".github/ISSUE_TEMPLATE/feature.yml",
+      'name: Feature request\ndescription: Propose a bounded product capability\ntitle: "[Feature]: "\nlabels: [enhancement]\nbody:\n  - type: textarea\n    id: problem\n    attributes:\n      label: Problem and user outcome\n    validations:\n      required: true\n  - type: textarea\n    id: scope\n    attributes:\n      label: Proposed scope and non-goals\n    validations:\n      required: true\n',
+    ),
+    textFile(".github/ISSUE_TEMPLATE/config.yml", "blank_issues_enabled: false\n"),
+    jsonFile("renovate.json", {
+      $schema: "https://docs.renovatebot.com/renovate-schema.json",
+      extends: ["config:recommended", "helpers:pinGitHubActionDigests"],
+      rangeStrategy: "pin",
+      lockFileMaintenance: { enabled: true, schedule: ["before 5am on monday"] },
+      packageRules: [
+        {
+          description: "Group reviewed non-major dependency updates",
+          matchUpdateTypes: ["patch", "minor", "digest"],
+          groupName: "non-major dependencies",
+        },
+        {
+          description: "Keep major upgrades isolated for explicit qualification",
+          matchUpdateTypes: ["major"],
+          groupName: null,
+        },
+      ],
+    }),
+    textFile(
+      "docs/operations-runbook.md",
+      `# Operations runbook\n\n## Deploy and promote\n\nBuild each image once, retain its immutable digest, verify its attestation and scan results, run reviewed migrations with the migrator role, deploy to staging, and promote that same digest only after readiness and smoke checks. Never rebuild between staging and production and never run an automatic down migration.\n\n## Roll back\n\nSelect a recorded previous digest compatible with the current schema, reverify its attestation, redeploy, verify readiness, and drain the failed candidate. Escalate when compatibility evidence is missing.\n\n## Recover data\n\nRun \`pnpm recovery:verify\` locally or in the protected deep workflow for data projects. Production restores use encrypted external backups, a new restore target, marker/application verification, and sanitized evidence. A successful backup job alone is not recovery evidence.\n\n## Rotate secrets\n\nCreate the replacement in the deployment environment, update affected services without logging the value, deploy and verify, revoke the previous credential, and record only identifiers and timestamps. An optional operator may use \`infisical run -- <command>\`; applications do not depend on an Infisical SDK.\n\n## Incident response\n\nContain affected credentials and traffic, preserve logs and release evidence, notify ${config.technicalOwner} and ${config.operationsOwner}, restore a verified state, and record follow-up work. Never paste sensitive evidence into public issues.\n`,
+    ),
+    textFile(
+      "docs/threat-model-checklist.md",
+      "# Threat-model checklist\n\n- Identify assets, actors, trust boundaries, selected providers, and exposed entrypoints.\n- Review authentication assurance, authorization, tenancy isolation, enumeration, and session revocation.\n- Review input limits, origin/CSRF policy, outbound destinations, retries, idempotency, and webhook verification.\n- Review secrets, logs, telemetry, backups, generated artifacts, dependency scripts, and image contents.\n- Review migration roles, RLS runtime-role evidence, deployment digest equality, rollback compatibility, and restore evidence.\n- Record mitigations, owners, expiry dates, and any production-blocking exception in the work ledger.\n\nThis checklist supports review; it is not a certification claim.\n",
+    ),
+    textFile(
+      "docs/first-release-checklist.md",
+      `# First-release ownership checklist\n\n- [ ] Configure real GitHub team/user ownership and branch protection; do not infer CODEOWNERS from free text.\n- [ ] Configure private package read access and protected deployment environments.\n- [ ] Replace local origins, secrets, provider accounts, domains, and sender identities.\n- [ ] Set product-specific SLO, capacity, RPO, RTO, residency, and data-classification decisions outside starter defaults.\n- [ ] Complete exact-target deployment, rollback, monitoring, backup, and restore qualification.\n- [ ] Confirm ${config.technicalOwner} owns engineering admission and ${config.operationsOwner} owns operational admission.\n`,
+    ),
+    textFile(
+      "docs/adr-template.md",
+      "# ADR: <decision>\n\n- Status: proposed\n- Date: YYYY-MM-DD\n- Owners: <team/person>\n\n## Context\n\n## Decision\n\n## Alternatives considered\n\n## Consequences and rollback\n\n## Evidence\n",
+    ),
+    textFile(
+      "docs/client-handover-checklist.md",
+      "# Client handover checklist\n\n- [ ] Repository, package, registry, provider, domain, and deployment access transferred through approved channels.\n- [ ] Selected profiles, experimental/beta restrictions, exact starter version, and recipe hash reviewed.\n- [ ] Environment variable names, rotation owners, backup location, restore exercise, and monitoring destinations reviewed without exposing values.\n- [ ] Deployment, migration, rollback, incident, and release-evidence procedures demonstrated.\n- [ ] Open work items, waivers, expirations, external qualification gaps, and commercial/legal decisions acknowledged.\n",
+    ),
+    jsonFile("tooling/governance/project.schema.json", {
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "$schema",
+        "schemaVersion",
+        "initializedAt",
+        "starterVersion",
+        "productId",
+        "clientId",
+        "displayName",
+        "packageScope",
+        "profiles",
+        "services",
+        "environments",
+        "deployment",
+        "owners",
+        "generatedFiles",
+      ],
+      properties: {
+        $schema: { const: "../tooling/governance/project.schema.json" },
+        schemaVersion: { const: 2 },
+        initializedAt: { const: "deterministic" },
+        starterVersion: { type: "string", minLength: 1 },
+        productId: { type: "string", minLength: 1 },
+        clientId: { type: "string", minLength: 1 },
+        displayName: { type: "string", minLength: 1 },
+        packageScope: { type: "string", pattern: "^@[a-z0-9][a-z0-9-]*$" },
+        profiles: { type: "array", uniqueItems: true, items: { enum: config.profiles } },
+        services: { type: "array", uniqueItems: true, items: { enum: plan.deployableApps } },
+        environments: { const: ["development", "test", "staging", "production"] },
+        deployment: {
+          type: "object",
+          additionalProperties: false,
+          required: ["target", "topology"],
+          properties: {
+            target: { enum: ["dokploy", "railway"] },
+            topology: { enum: ["standard", "hardened"] },
+          },
+        },
+        owners: {
+          type: "object",
+          additionalProperties: false,
+          required: ["technical", "operations"],
+          properties: {
+            technical: { type: "string", minLength: 1 },
+            operations: { type: "string", minLength: 1 },
+          },
+        },
+        generatedFiles: {
+          type: "array",
+          uniqueItems: true,
+          items: { type: "string", minLength: 1 },
+        },
+      },
+    }),
+    textFile(
+      "tooling/governance/check-project.ts",
+      `import { readFile } from "node:fs/promises";
+
+const project = JSON.parse(await readFile("${identity.namespace}/project.json", "utf8")) as Record<string, unknown>;
+const expectedKeys = ["$schema", "schemaVersion", "initializedAt", "starterVersion", "productId", "clientId", "displayName", "packageScope", "profiles", "services", "environments", "deployment", "owners", "generatedFiles"].sort();
+if (JSON.stringify(Object.keys(project).sort()) !== JSON.stringify(expectedKeys)) throw new Error("project metadata has unknown or missing fields");
+const expectedProfiles = ${JSON.stringify(config.profiles)};
+const expectedServices = ${JSON.stringify(plan.deployableApps)};
+const expectedEnvironments = ["development", "test", "staging", "production"];
+if (project.$schema !== "../tooling/governance/project.schema.json" || project.schemaVersion !== 2 || project.starterVersion !== "${GENERATOR_VERSION}") throw new Error("project metadata schema or starter version drifted");
+if (JSON.stringify(project.profiles) !== JSON.stringify(expectedProfiles)) throw new Error("project capability metadata drifted");
+if (JSON.stringify(project.services) !== JSON.stringify(expectedServices)) throw new Error("project service metadata drifted");
+if (JSON.stringify(project.environments) !== JSON.stringify(expectedEnvironments)) throw new Error("project environment metadata drifted");
+const deployment = project.deployment as Record<string, unknown> | undefined;
+if (!deployment || JSON.stringify(Object.keys(deployment).sort()) !== JSON.stringify(["target", "topology"]) || deployment.target !== "${config.deployment}" || deployment.topology !== "${config.topology ?? "standard"}") throw new Error("project deployment metadata drifted");
+const owners = project.owners as Record<string, unknown> | undefined;
+if (!owners || typeof owners.technical !== "string" || !owners.technical || typeof owners.operations !== "string" || !owners.operations) throw new Error("project ownership metadata is invalid");
+if (!Array.isArray(project.generatedFiles)) throw new Error("project generatedFiles must be an array");
+const invalidGeneratedPath = project.generatedFiles.find((path) => typeof path !== "string" || !path || path.startsWith("/") || path.split("/").includes(".."));
+if (invalidGeneratedPath !== undefined) throw new Error(\`project generated-file path is invalid: \${String(invalidGeneratedPath)}\`);
+if (new Set(project.generatedFiles).size !== project.generatedFiles.length) throw new Error("project generated-file metadata contains duplicates");
+process.stdout.write("Project metadata is valid\\n");
+`,
+    ),
     ...(plan.needsDatabase || plan.localServices.length > 0
       ? [localComposeFile(config, plan), devCleanFile(config)]
       : []),
-    ...(plan.needsDatabase
+    ...(plan.needsObservability
       ? [
           textFile(
-            "docker/postgres/init.sql",
-            `CREATE ROLE starter_migrator LOGIN PASSWORD 'starter_migrator_local' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
+            "tooling/observability/otel-collector.yaml",
+            `receivers:\n  otlp:\n    protocols:\n      http:\n        endpoint: 0.0.0.0:4318\n\nexporters:\n  debug:\n    verbosity: basic\n\nextensions:\n  health_check:\n    endpoint: 0.0.0.0:13133\n\nservice:\n  extensions: [health_check]\n  pipelines:\n    traces:\n      receivers: [otlp]\n      exporters: [debug]\n    metrics:\n      receivers: [otlp]\n      exporters: [debug]\n`,
+          ),
+        ]
+      : []),
+    ...(plan.needsDatabase || hasProfile(config, "web")
+      ? [
+          ...(plan.needsDatabase
+            ? [
+                textFile(
+                  "docker/postgres/init.sql",
+                  `CREATE ROLE starter_migrator LOGIN PASSWORD 'starter_migrator_local' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
 CREATE ROLE starter_runtime LOGIN PASSWORD 'starter_runtime_local' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
 	GRANT CONNECT ON DATABASE starter TO starter_migrator, starter_runtime;
 	GRANT CREATE ON DATABASE starter TO starter_migrator;
@@ -3076,7 +3967,230 @@ GRANT USAGE ON SCHEMA public TO starter_runtime;
 ALTER DEFAULT PRIVILEGES FOR ROLE starter_migrator IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO starter_runtime;
 ALTER DEFAULT PRIVILEGES FOR ROLE starter_migrator IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO starter_runtime;
 `,
-          ),
+                ),
+              ]
+            : []),
+          ...(hasProfile(config, "web")
+            ? [
+                textFile(
+                  "tooling/performance/smoke.js",
+                  `import http from "k6/http";
+import { check, sleep } from "k6";
+
+export const options = {
+  vus: 5,
+  duration: "30s",
+  thresholds: {
+    checks: ["rate==1"],
+    http_req_failed: ["rate<0.01"],
+  },
+};
+
+const baseUrl = (__ENV.BASE_URL ?? "").replace(/\\/$/u, "");
+if (!baseUrl) throw new Error("BASE_URL is required");
+
+export default function smoke() {
+  const response = http.get(baseUrl + "/health/live", {
+    headers: { "user-agent": "thaarei-k6-smoke/1.0" },
+    timeout: "10s",
+  });
+  check(response, { "liveness returns 200": (result) => result.status === 200 });
+  sleep(1);
+}
+`,
+                ),
+                textFile(
+                  "tooling/security/zap.yaml",
+                  `env:
+  contexts:
+    - name: starter-deep-validation
+      urls:
+        - "\${TARGET_URL}"
+      includePaths:
+        - "\${TARGET_URL}.*"
+  parameters:
+    failOnError: true
+    failOnWarning: false
+    continueOnFailure: false
+    progressToStdout: true
+
+jobs:
+  - type: passiveScan-config
+    parameters:
+      maxAlertsPerRule: 20
+      scanOnlyInScope: true
+      maxBodySizeInBytesToScan: 1048576
+  - type: spider
+    parameters:
+      context: starter-deep-validation
+      maxDuration: 2
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 2
+  - type: report
+    parameters:
+      template: traditional-json
+      reportDir: /reports
+      reportFile: zap.json
+      reportTitle: Thaarei disposable passive DAST
+      displayReport: false
+  - type: exitStatus
+    parameters:
+      errorLevel: Medium
+      warnLevel: Low
+      okExitValue: 0
+      errorExitValue: 1
+      warnExitValue: 0
+`,
+                ),
+                textFile(
+                  "tooling/deep-web.ts",
+                  `import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { createServer } from "node:net";
+
+const children: ChildProcess[] = [];
+const start = (args: readonly string[], environment: NodeJS.ProcessEnv): ChildProcess => {
+  const child = spawn("pnpm", args, { stdio: "inherit", env: environment, detached: process.platform !== "win32" });
+  children.push(child);
+  return child;
+};
+const waitFor = async (url: string, child: ChildProcess): Promise<void> => {
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) throw new Error(\`Process for \${url} exited before readiness\`);
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(2_000) });
+      if (response.ok) return;
+    } catch {}
+    await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+  }
+  throw new Error(\`Timed out waiting for \${url}\`);
+};
+const run = (script: string, args: readonly string[] = [], environment: NodeJS.ProcessEnv = process.env): void => {
+  const result = spawnSync("pnpm", [script, ...args], { stdio: "inherit", env: environment });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(\`\${script} failed with exit code \${result.status ?? 1}\`);
+};
+const availablePort = async (): Promise<number> => {
+  const server = createServer();
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Failed to allocate a deep-validation port");
+  await new Promise<void>((resolveClose, rejectClose) => server.close((error) => error ? rejectClose(error) : resolveClose()));
+  return address.port;
+};
+
+try {
+  const apiPort = await availablePort();
+  const webPort = await availablePort();
+  const webEnvironment = { ...process.env, API_INTERNAL_URL: \`http://127.0.0.1:\${apiPort}\` };
+  run("--filter", ["${packageName(config, "web-app")}", "build"], webEnvironment);
+  const api = start(["dev:api"], { ...process.env, PORT: String(apiPort), ALLOWED_ORIGINS: \`http://127.0.0.1:\${webPort}\`${deepIdentityEnvironment} });
+  const web = start(["--filter", "${packageName(config, "web-app")}", "exec", "next", "start", "-p", String(webPort)], webEnvironment);
+  await Promise.all([
+    waitFor(\`http://127.0.0.1:\${apiPort}/health/ready\`, api),
+    waitFor(\`http://127.0.0.1:\${webPort}\`, web),
+  ]);
+  run("test:e2e", [], { ...process.env, E2E_API_PORT: String(apiPort), E2E_WEB_PORT: String(webPort), PLAYWRIGHT_REUSE_SERVER: "true" });
+  run("test:performance", ["--", \`http://127.0.0.1:\${apiPort}\`]);
+  run("security:dast", ["--", \`http://127.0.0.1:\${webPort}\`]);
+} finally {
+  for (const child of children) {
+    if (child.pid && process.platform !== "win32") process.kill(-child.pid, "SIGTERM");
+    else child.kill("SIGTERM");
+  }
+}
+`,
+                ),
+              ]
+            : []),
+          ...(plan.needsDatabase
+            ? [
+                textFile(
+                  "tooling/recovery/verify-postgres.ts",
+                  `import { spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
+
+const image = ${JSON.stringify(
+                    `${hasProfile(config, "rag") ? IMAGE_CATALOG.pgvectorPostgresql.reference : IMAGE_CATALOG.postgresql.reference}@${hasProfile(config, "rag") ? IMAGE_CATALOG.pgvectorPostgresql.digest : IMAGE_CATALOG.postgresql.digest}`,
+                  )};
+const suffix = \`\${process.pid}-\${Date.now()}\`;
+const source = \`thaarei-recovery-source-\${suffix}\`;
+const restored = \`thaarei-recovery-restored-\${suffix}\`;
+const password = randomUUID();
+
+const docker = (args: readonly string[], input?: string | Uint8Array, tolerateFailure = false) => {
+  const result = spawnSync("docker", args, { input, maxBuffer: 64 * 1024 * 1024, timeout: 120_000 });
+  if (result.error) throw result.error;
+  if (!tolerateFailure && result.status !== 0) {
+    const detail = String(result.stderr ?? "").trim();
+    throw new Error(\`docker \${args[0] ?? "command"} failed with exit code \${result.status ?? 1}\${detail ? \`: \${detail}\` : ""}\`);
+  }
+  return result;
+};
+const startDatabase = (name: string): void => {
+  docker(["run", "--detach", "--name", name, "--env", \`POSTGRES_PASSWORD=\${password}\`, "--env", "POSTGRES_DB=starter", image]);
+};
+const waitForDatabase = async (name: string): Promise<void> => {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    if (docker(["exec", name, "pg_isready", "--username", "postgres", "--dbname", "starter"], undefined, true).status === 0) return;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 500));
+  }
+  throw new Error(\`PostgreSQL container \${name} did not become ready\`);
+};
+
+try {
+  startDatabase(source);
+  await waitForDatabase(source);
+  const migrationDirectory = resolve("packages/database/migrations");
+  const migrationNames = (await readdir(migrationDirectory)).filter((name) => name.endsWith(".sql")).sort();
+  if (migrationNames.length === 0) throw new Error("No reviewed SQL migrations were found");
+  const migrations: Array<{ name: string; digest: string }> = [];
+  for (const name of migrationNames) {
+    const sql = await readFile(resolve(migrationDirectory, name));
+    migrations.push({ name, digest: \`sha256:\${createHash("sha256").update(sql).digest("hex")}\` });
+    docker(["exec", "--interactive", source, "psql", "--set", "ON_ERROR_STOP=1", "--username", "postgres", "--dbname", "starter"], sql);
+  }
+  const marker = randomUUID();
+  docker(["exec", source, "psql", "--set", "ON_ERROR_STOP=1", "--username", "postgres", "--dbname", "starter", "--command", "INSERT INTO starter_health (id) VALUES ('" + marker + "')"]);
+  const dump = docker(["exec", source, "pg_dump", "--format=custom", "--no-owner", "--no-privileges", "--username", "postgres", "--dbname", "starter"]).stdout;
+  if (!(dump instanceof Uint8Array) || dump.byteLength === 0) throw new Error("PostgreSQL backup was empty");
+  startDatabase(restored);
+  await waitForDatabase(restored);
+  docker(["exec", "--interactive", restored, "pg_restore", "--exit-on-error", "--no-owner", "--no-privileges", "--username", "postgres", "--dbname", "starter"], dump);
+  const verification = docker(["exec", restored, "psql", "--tuples-only", "--no-align", "--username", "postgres", "--dbname", "starter", "--command", "SELECT id FROM starter_health WHERE id = '" + marker + "'"]).stdout;
+  if (String(verification).trim() !== marker) throw new Error("Restored database marker did not match");
+  const recipe = JSON.parse(await readFile(".thaarei/starter.json", "utf8")) as { generatorVersion?: string; recipeHash?: string; generatedTreeHash?: string };
+  if (!recipe.recipeHash?.match(/^sha256:[a-f0-9]{64}$/u)) throw new Error("Starter recipe hash is missing or invalid");
+  const evidence = {
+    schemaVersion: 1,
+    gate: "postgresql-restore",
+    result: "passed",
+    observedAt: new Date().toISOString(),
+    image,
+    generatorVersion: recipe.generatorVersion ?? null,
+    recipeHash: recipe.recipeHash,
+    generatedTreeHash: recipe.generatedTreeHash ?? null,
+    migrations,
+    backupBytes: dump.byteLength,
+    markerDigest: \`sha256:\${createHash("sha256").update(marker).digest("hex")}\`,
+  };
+  await mkdir(".artifacts/recovery", { recursive: true });
+  await writeFile(".artifacts/recovery/postgresql.json", \`\${JSON.stringify(evidence, null, 2)}\\n\`);
+  process.stdout.write("PostgreSQL backup and restore verification passed\\n");
+} finally {
+  docker(["rm", "--force", source], undefined, true);
+  docker(["rm", "--force", restored], undefined, true);
+}
+`,
+                ),
+              ]
+            : []),
         ]
       : []),
     ...(hasProfile(config, "web")
@@ -3098,6 +4212,17 @@ ALTER DEFAULT PRIVILEGES FOR ROLE starter_migrator IN SCHEMA public GRANT USAGE,
     textFile(
       ".github/workflows/product-validation.yml",
       `name: Starter validation\n\non:\n  push:\n  pull_request:\n\npermissions:\n  contents: read\n  packages: read\n\njobs:\n  validate:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa\n        with:\n          version: ${PNPM_VERSION}\n      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020\n        with:\n          node-version-file: .nvmrc\n          cache: pnpm\n      - run: pnpm config set "//npm.pkg.github.com/:_authToken" "$GITHUB_TOKEN"\n        env:\n          GITHUB_TOKEN: \${{ github.token }}\n      - run: pnpm install --frozen-lockfile --ignore-scripts\n      - run: ${hasProfile(config, "mobile") ? "pnpm audit --prod --audit-level high --json > .thaarei/pnpm-audit.json || pnpm security:waiver-check" : "pnpm audit --prod --audit-level high"}\n${hasProfile(config, "python") ? "      - run: docker build --file services/python/Dockerfile .\n" : ""}      - run: pnpm validate:starter\n`,
+    ),
+    securityWorkflowFile(),
+    deepValidationWorkflowFile(config, plan),
+    releaseCandidateWorkflowFile(plan.deployableApps.length > 0),
+    textFile(
+      "tooling/security/gitleaks.toml",
+      `[extend]\nuseDefault = true\n\n[allowlist]\ndescription = "Generated and dependency artifacts are not source inputs"\npaths = [\n  '''(^|/)node_modules/''',\n  '''(^|/)dist/''',\n  '''(^|/)\\.next/''',\n  '''(^|/)\\.artifacts/''',\n]\n`,
+    ),
+    textFile(
+      "tooling/security/semgrep.yml",
+      `rules:\n  - id: thaarei.javascript.no-eval\n    message: Dynamic eval bypasses reviewable code and trust boundaries.\n    severity: ERROR\n    languages: [javascript, typescript]\n    pattern-either:\n      - pattern: eval(...)\n      - pattern: new Function(...)\n\n  - id: thaarei.node.no-shell-exec\n    message: Use execFile/spawn with an argument array; do not execute a shell command string.\n    severity: ERROR\n    languages: [javascript, typescript]\n    pattern-either:\n      - pattern: exec($COMMAND, ...)\n      - pattern: execSync($COMMAND, ...)\n\n  - id: thaarei.node.no-shell-true\n    message: Shell execution must not be enabled for child processes.\n    severity: ERROR\n    languages: [javascript, typescript]\n    pattern: '$PROCESS($COMMAND, $ARGS, {..., shell: true, ...})'\n\n  - id: thaarei.web.no-dangerous-html\n    message: Raw HTML injection requires a reviewed sanitization boundary.\n    severity: ERROR\n    languages: [typescript]\n    pattern: <$ELEMENT dangerouslySetInnerHTML=$VALUE ... />\n`,
     ),
     ...(plan.deployableApps.length > 0 ? [supplyChainWorkflowFile(plan)] : []),
     jsonFile(`${identity.namespace}/capabilities.json`, {
@@ -3123,6 +4248,30 @@ ALTER DEFAULT PRIVILEGES FOR ROLE starter_migrator IN SCHEMA public GRANT USAGE,
         node: {
           reference: IMAGE_CATALOG.node.reference,
           digest: IMAGE_CATALOG.node.digest,
+        },
+        gitleaks: {
+          reference: IMAGE_CATALOG.gitleaks.reference,
+          digest: IMAGE_CATALOG.gitleaks.digest,
+        },
+        semgrep: {
+          reference: IMAGE_CATALOG.semgrep.reference,
+          digest: IMAGE_CATALOG.semgrep.digest,
+        },
+        trivy: {
+          reference: IMAGE_CATALOG.trivy.reference,
+          digest: IMAGE_CATALOG.trivy.digest,
+        },
+        zap: {
+          reference: IMAGE_CATALOG.zap.reference,
+          digest: IMAGE_CATALOG.zap.digest,
+        },
+        k6: {
+          reference: IMAGE_CATALOG.k6.reference,
+          digest: IMAGE_CATALOG.k6.digest,
+        },
+        playwright: {
+          reference: IMAGE_CATALOG.playwright.reference,
+          digest: IMAGE_CATALOG.playwright.digest,
         },
         ...(plan.needsDatabase
           ? {
@@ -3188,6 +4337,54 @@ ALTER DEFAULT PRIVILEGES FOR ROLE starter_migrator IN SCHEMA public GRANT USAGE,
           status: "pending",
           evidence: "Run pnpm check and record the result in INIT-001.",
         },
+        {
+          gate: "coverage-thresholds",
+          status: "pending",
+          evidence: "Run pnpm test:coverage and retain .artifacts/coverage.",
+        },
+        {
+          gate: "security-scanners",
+          status: "pending",
+          evidence:
+            "Run the pinned Gitleaks, Semgrep, and Trivy gates and retain .artifacts/security.",
+        },
+        ...(hasProfile(config, "web")
+          ? [
+              {
+                gate: "browser-accessibility-dast-performance",
+                status: "pending" as const,
+                evidence: "Run pnpm test:deep:web only against a disposable target.",
+              },
+            ]
+          : []),
+        ...(plan.needsObservability
+          ? [
+              {
+                gate: "telemetry-collector-receipt",
+                status: "pending" as const,
+                evidence: "Retain trace and metric collector receipt for this exact recipe.",
+              },
+            ]
+          : []),
+        ...(plan.needsDatabase
+          ? [
+              {
+                gate: "postgresql-backup-restore",
+                status: "pending" as const,
+                evidence:
+                  "Run pnpm recovery:verify and retain .artifacts/recovery/postgresql.json.",
+              },
+            ]
+          : []),
+        ...(plan.deployableApps.length > 0
+          ? [
+              {
+                gate: "immutable-runtime-images",
+                status: "pending" as const,
+                evidence: "Scan, attest, verify, and inspect every exact application image digest.",
+              },
+            ]
+          : []),
         ...(hasProfile(config, "web") &&
         hasProfile(config, "api") &&
         hasProfile(config, "data") &&
@@ -3244,9 +4441,29 @@ ALTER DEFAULT PRIVILEGES FOR ROLE starter_migrator IN SCHEMA public GRANT USAGE,
         ? [
             {
               id: "mobile-image-size-2026-09",
+              scanner: "pnpm-audit",
+              findingId: "GHSA-5p2g-fcmc-qvqq",
               advisoryIds: ["GHSA-5p2g-fcmc-qvqq"],
+              severity: "high",
+              affectedPath: "generated apps/mobile transitive Metro build dependency",
+              affectedArtifact: "generated-experimental-mobile-fixture",
+              evidenceDigest: MOBILE_WAIVER_EVIDENCE_DIGEST,
               affectedSubject: { kind: "fixture", id: "experimental-mobile" },
+              dependencyPath: ["expo", "@expo/metro-config", "image-size@2.0.2"],
+              reachability:
+                "The parser is reachable only while Metro processes generated mobile build assets; it is absent from stable packages and stable generated repositories.",
+              mitigation:
+                "Restrict the affected parser to version-controlled trusted build assets and block every production use of the mobile profile.",
+              controls: [
+                "Never process untrusted image assets through the affected parser.",
+                "Use version-controlled local build assets only.",
+                "Do not deploy or promote the mobile artifact to production.",
+              ],
+              owner: config.technicalOwner,
+              reviewedAt: "2026-09-05T00:00:00.000Z",
               expiresAt: MOBILE_WAIVER_EXPIRES_AT,
+              removalCondition:
+                "Remove the waiver and rerun the fixture matrix when Expo supports a published patched image-size release.",
               blocksProduction: true,
             },
           ]
@@ -3262,12 +4479,19 @@ ALTER DEFAULT PRIVILEGES FOR ROLE starter_migrator IN SCHEMA public GRANT USAGE,
             waivers: [
               {
                 id: "mobile-image-size-2026-09",
+                scanner: "pnpm-audit",
+                findingId: "GHSA-5p2g-fcmc-qvqq",
                 advisoryIds: ["GHSA-5p2g-fcmc-qvqq"],
                 severity: "high",
+                affectedPath: "generated apps/mobile transitive Metro build dependency",
+                affectedArtifact: "generated-experimental-mobile-fixture",
+                evidenceDigest: MOBILE_WAIVER_EVIDENCE_DIGEST,
                 affectedSubject: { kind: "fixture", id: "experimental-mobile" },
                 dependencyPath: ["expo", "@expo/metro-config", "image-size@2.0.2"],
                 reachability:
                   "The parser is reachable only while Metro processes generated mobile build assets; it is absent from stable packages and stable generated repositories.",
+                mitigation:
+                  "Restrict the affected parser to version-controlled trusted build assets and block every production use of the mobile profile.",
                 controls: [
                   "Never process untrusted image assets through the affected parser.",
                   "Use version-controlled local build assets only.",
@@ -3311,6 +4535,35 @@ ALTER DEFAULT PRIVILEGES FOR ROLE starter_migrator IN SCHEMA public GRANT USAGE,
         }),
         packageTsconfig(name),
         corePackageFile(plan),
+        ...(plan.needsApi || plan.needsWorker
+          ? [
+              textFile(
+                "packages/core/tests/application-boundary.test.ts",
+                `import { expect, test } from "vitest";
+import { BudgetExceededError, ConflictError, ForbiddenError, PermanentWorkflowError, ProviderUnavailableError, RateLimitedError, ResourceNotFoundError, RetryableWorkflowError, UnauthenticatedError, ValidationError } from "../src/index.js";
+
+test("normalized application errors expose only stable transport-independent codes", () => {
+  const cases = [
+    [new UnauthenticatedError(), "UNAUTHENTICATED"],
+    [new ForbiddenError(), "FORBIDDEN"],
+    [new ResourceNotFoundError(), "NOT_FOUND"],
+    [new ConflictError(), "CONFLICT"],
+    [new ValidationError(), "VALIDATION"],
+    [new RateLimitedError(), "RATE_LIMITED"],
+    [new BudgetExceededError(), "BUDGET_EXCEEDED"],
+    [new ProviderUnavailableError(), "PROVIDER_UNAVAILABLE"],
+    [new RetryableWorkflowError(), "RETRYABLE_WORKFLOW"],
+    [new PermanentWorkflowError(), "PERMANENT_WORKFLOW"],
+  ] as const;
+  for (const [error, code] of cases) {
+    expect(error).toBeInstanceOf(Error);
+    expect(error.code).toBe(code);
+  }
+});
+`,
+              ),
+            ]
+          : []),
         ...(plan.needsIdentity
           ? [
               textFile(
@@ -3529,15 +4782,96 @@ test("storage policy rejects cross-subject, unsafe, anonymous, and oversized wri
         adapterDependencies["@aws-sdk/s3-presigned-post"] = DEPENDENCY_VERSIONS.awsPresignedPost;
       }
       if (plan.needsAi) adapterDependencies.ai = DEPENDENCY_VERSIONS.ai;
+      if (plan.needsObservability) {
+        adapterDependencies["@opentelemetry/api"] = DEPENDENCY_VERSIONS.openTelemetryApi;
+        adapterDependencies["@opentelemetry/exporter-metrics-otlp-http"] =
+          DEPENDENCY_VERSIONS.openTelemetryMetricsExporter;
+        adapterDependencies["@opentelemetry/exporter-trace-otlp-http"] =
+          DEPENDENCY_VERSIONS.openTelemetryTraceExporter;
+        adapterDependencies["@opentelemetry/resources"] =
+          DEPENDENCY_VERSIONS.openTelemetryResources;
+        adapterDependencies["@opentelemetry/sdk-metrics"] =
+          DEPENDENCY_VERSIONS.openTelemetrySdkMetrics;
+        adapterDependencies["@opentelemetry/sdk-node"] = DEPENDENCY_VERSIONS.openTelemetrySdkNode;
+      }
       files.push(
         packageManifest(config, name, adapterDependencies),
         packageTsconfig(name),
         adaptersPackageFile(config, plan),
+        ...(plan.needsIdentity || plan.needsPayments || plan.needsNotifications
+          ? [
+              textFile(
+                "packages/adapters/tests/outbound-http.test.ts",
+                `import { expect, test } from "vitest";
+import { createBoundedHttpClient } from "../src/index.js";
+
+test("bounded HTTP retries only idempotent requests and adds correlation headers", async () => {
+  let calls = 0;
+  const client = createBoundedHttpClient({
+    fetchImpl: async (_url, init) => {
+      calls += 1;
+      const headers = new Headers(init?.headers);
+      expect(headers.get("user-agent")).toBe("thaarei-starter/1.0");
+      expect(headers.get("x-request-id")).toBe("request-1");
+      return calls === 1 ? new Response("retry", { status: 503 }) : Response.json({ ok: true });
+    },
+    sleep: async () => undefined,
+    random: () => 0,
+  });
+  const response = await client("https://provider.example.test/operation", { method: "POST", headers: { "idempotency-key": "operation-1" } }, "request-1");
+  expect(response.status).toBe(200);
+  expect(calls).toBe(2);
+});
+
+test("bounded HTTP does not retry unsafe requests and rejects large unknown-length responses", async () => {
+  let unsafeCalls = 0;
+  const unsafe = createBoundedHttpClient({ fetchImpl: async () => { unsafeCalls += 1; return new Response("failed", { status: 503 }); }, sleep: async () => undefined });
+  const response = await unsafe("https://provider.example.test/operation", { method: "POST" });
+  expect(response.status).toBe(503);
+  expect(unsafeCalls).toBe(1);
+
+  const oversized = createBoundedHttpClient({ fetchImpl: async () => new Response("x".repeat(1025)), maximumResponseBytes: 1024, maximumRetries: 0 });
+  await expect(oversized("https://provider.example.test/data")).rejects.toThrow("Outbound provider request failed");
+});
+`,
+              ),
+            ]
+          : []),
+        ...(plan.needsObservability
+          ? [
+              textFile(
+                "packages/adapters/tests/telemetry.test.ts",
+                `import { createServer } from "node:http";
+import { expect, test } from "vitest";
+import { createTelemetryRuntime } from "../src/index.js";
+
+test("OTLP runtime exports a trace and metrics to the configured collector", async () => {
+  const paths: string[] = [];
+  const collector = createServer((request, response) => {
+    paths.push(request.url ?? "");
+    request.resume();
+    request.once("end", () => { response.writeHead(200).end(); });
+  });
+  await new Promise<void>((resolveListen) => collector.listen(0, "127.0.0.1", resolveListen));
+  const address = collector.address();
+  if (!address || typeof address === "string") throw new Error("Expected collector port");
+  const telemetry = createTelemetryRuntime({ serviceName: "fixture-api", endpoint: \`http://127.0.0.1:\${address.port}\` });
+  telemetry.startRequest({ method: "GET", route: "/health/live" }).end(200);
+  await telemetry.shutdown();
+  await new Promise<void>((resolveClose, rejectClose) => collector.close((error) => error ? rejectClose(error) : resolveClose()));
+  expect(paths).toContain("/v1/traces");
+  expect(paths).toContain("/v1/metrics");
+});
+`,
+              ),
+            ]
+          : []),
         ...(plan.needsIdentity
           ? [
               textFile(
                 "packages/adapters/tests/identity-assurance.test.ts",
                 `import { expect, test } from "vitest";
+import { canBootstrapStrongFactor } from "${packageName(config, "core")}";
 import { assuranceForCompletedAuthenticationPath, requiresRecentAccountAssurance } from "../src/index.js";
 
 test("maps completed authentication routes to assurance levels", () => {
@@ -3549,6 +4883,15 @@ test("maps completed authentication routes to assurance levels", () => {
 
 test("requires recent assurance before recovery-code rotation", () => {
   expect(requiresRecentAccountAssurance("/two-factor/generate-backup-codes")).toBe(true);
+});
+
+test("allows only recent single-factor sessions to bootstrap the first strong factor", () => {
+  const now = new Date("2026-09-06T12:00:00.000Z");
+  const recentPassword = { assurance: "single_factor" as const, authenticatedAt: "2026-09-06T11:59:00.000Z" };
+  expect(canBootstrapStrongFactor(recentPassword, false, now)).toBe(true);
+  expect(canBootstrapStrongFactor(recentPassword, true, now)).toBe(false);
+  expect(canBootstrapStrongFactor({ ...recentPassword, authenticatedAt: "2026-09-06T11:00:00.000Z" }, false, now)).toBe(false);
+  expect(canBootstrapStrongFactor({ assurance: "recovery", authenticatedAt: recentPassword.authenticatedAt }, false, now)).toBe(false);
 });
 `,
               ),
@@ -3817,6 +5160,34 @@ test("liveness stays local while failed dependencies make readiness unavailable"
   expect(live.statusCode).toBe(200);
   expect(ready.statusCode).toBe(503);
   expect(ready.json()).toMatchObject({ status: "degraded", failedDependency: "provider" });
+  expect(ready.body).not.toContain("provider unavailable");
+  await server.close();
+});
+
+test("central security policy emits headers and rejects untrusted origins and oversized bodies", async () => {
+  const server = ${
+    plan.needsIdentity
+      ? `buildApi({ ${identityTestDependencies}security: { allowedOrigins: ["https://app.example.test"], secureTransport: true, bodyLimitBytes: 32 } })`
+      : `buildApi({ security: { allowedOrigins: ["https://app.example.test"], secureTransport: true, bodyLimitBytes: 32 } })`
+  };
+  const allowed = await server.inject({ method: "GET", url: "/health/live", headers: { origin: "https://app.example.test" } });
+  expect(allowed.statusCode).toBe(200);
+  expect(allowed.headers["x-content-type-options"]).toBe("nosniff");
+  expect(allowed.headers["strict-transport-security"]).toContain("max-age");
+  expect(allowed.headers["access-control-allow-origin"]).toBe("https://app.example.test");
+  expect(allowed.headers["x-request-id"]).toBeTruthy();
+  const correlated = await server.inject({ method: "GET", url: "/health/live", headers: { "x-request-id": "safe-request-123" } });
+  expect(correlated.headers["x-request-id"]).toBe("safe-request-123");
+  const preflight = await server.inject({ method: "OPTIONS", url: "/trpc/viewer", headers: { origin: "https://app.example.test", "access-control-request-method": "POST" } });
+  expect(preflight.statusCode).toBe(204);
+  const anonymous = await server.inject({ method: "GET", url: "/trpc/viewer" });
+  expect(anonymous.statusCode).toBe(401);
+  const denied = await server.inject({ method: "GET", url: "/health/live", headers: { origin: "https://evil.example.test" } });
+  expect(denied.statusCode).toBe(403);
+  const csrfDenied = await server.inject({ method: "POST", url: "/trpc/viewer", headers: { cookie: "session=value", "content-type": "application/json" }, payload: {} });
+  expect(csrfDenied.statusCode).toBe(403);
+  const oversized = await server.inject({ method: "POST", url: "/trpc/viewer", headers: { "content-type": "application/json" }, payload: { value: "x".repeat(64) } });
+  expect(oversized.statusCode).toBe(413);
   await server.close();
 });
 ${
@@ -4018,8 +5389,7 @@ function apiPackageFile(config: InitConfig, plan: CapabilityPlan): GeneratedFile
     coreTypes.length > 0
       ? `import type { ${coreTypes.join(", ")} } from "${packageName(config, "core")}";\n`
       : "";
-  const zodImport =
-    plan.needsStorage || plan.needsAi || plan.needsTenancy ? `import { z } from "zod";\n` : "";
+  const zodImport = plan.needsStorage || plan.needsAi ? `import { z } from "zod";\n` : "";
   const externalImports = plan.needsExternalApi
     ? `import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
@@ -4054,7 +5424,8 @@ export async function registerExternalApi(server: FastifyInstance, dependencies:
     : "";
   return textFile(
     "packages/api/src/index.ts",
-    `import Fastify, { ${plan.needsIdentity || plan.needsExternalApi ? "type FastifyInstance, " : ""}type FastifyRequest } from "fastify";
+    `import { randomUUID } from "node:crypto";
+import Fastify, { ${plan.needsIdentity || plan.needsExternalApi ? "type FastifyInstance, " : ""}type FastifyRequest } from "fastify";
 import { initTRPC, TRPCError } from "@trpc/server";
 import { fastifyTRPCPlugin } from "@trpc/server/adapters/fastify";
 import { ${contractImports} } from "${packageName(config, "contracts")}";
@@ -4075,6 +5446,19 @@ ${plan.needsStorage ? "  readonly storage?: ObjectStorage;\n" : ""}
 ${plan.needsAi ? "  readonly ai?: AiRuntime;\n" : ""}
 ${plan.needsTenancy ? "  readonly organizationAuthorization?: { readonly hasMembership: (subjectId: string, organizationId: string) => Promise<boolean>; };\n" : ""}
   readonly readinessChecks?: readonly { readonly name: string; readonly check: () => Promise<void> }[];
+  readonly security?: {
+    readonly allowedOrigins?: readonly string[];
+    readonly trustedProxyCidrs?: readonly string[];
+    readonly secureTransport?: boolean;
+    readonly bodyLimitBytes?: number;
+    readonly responseLimitBytes?: number;
+    readonly requestTimeoutMs?: number;
+  };
+  readonly telemetry?: {
+    readonly startRequest: (request: { readonly method: string; readonly route: string }) => {
+      readonly end: (statusCode: number) => void;
+    };
+  };
 }
 export function createContext(subjectId: string | null${plan.needsTenancy ? ", organizationId: string | null = null" : ""}${plan.needsStorage ? ", storage?: ObjectStorage" : ""}${plan.needsAi ? ", ai?: AiRuntime" : ""}): RequestContext { return { subjectId${plan.needsTenancy ? ", organizationId" : ""}${plan.needsStorage ? ", ...(storage ? { storage } : {})" : ""}${plan.needsAi ? ", ...(ai ? { ai } : {})" : ""} }; }
 ${
@@ -4177,16 +5561,76 @@ export type AppRouter = typeof appRouter;
 async function readinessResponse(checks: readonly { readonly name: string; readonly check: () => Promise<void> }[]) {
   const checkedAt = new Date().toISOString();
   for (const check of checks) {
-    try { await check.check(); } catch (error: unknown) {
-      const detail = error instanceof Error ? error.message : "dependency check failed";
-      return healthResponseSchema.parse({ status: "degraded", checkedAt, instanceId: process.env["${productIdentity(config).environmentPrefix}_FIXTURE_ID"] ?? "local", detail, failedDependency: check.name });
+    try { await check.check(); } catch {
+      return healthResponseSchema.parse({ status: "degraded", checkedAt, instanceId: process.env["${productIdentity(config).environmentPrefix}_FIXTURE_ID"] ?? "local", failedDependency: check.name });
     }
   }
   return healthResponseSchema.parse({ status: "ok", checkedAt, instanceId: process.env["${productIdentity(config).environmentPrefix}_FIXTURE_ID"] ?? "local" });
 }
 
 export function buildApi(dependencies: ApiDependencies${plan.needsIdentity ? "" : " = {}"}) {
-  const server = Fastify({ logger: true });
+  const security = dependencies.security ?? {};
+  const allowedOrigins = new Set((security.allowedOrigins ?? []).map((origin) => new URL(origin).origin));
+  const bodyLimitBytes = security.bodyLimitBytes ?? 1_048_576;
+  const responseLimitBytes = security.responseLimitBytes ?? 2_097_152;
+  const requestTimeoutMs = security.requestTimeoutMs ?? 15_000;
+  const server = Fastify({
+    trustProxy: security.trustedProxyCidrs?.length ? [...security.trustedProxyCidrs] : false,
+    bodyLimit: bodyLimitBytes,
+    requestTimeout: requestTimeoutMs,
+    connectionTimeout: 10_000,
+    keepAliveTimeout: 5_000,
+    genReqId: (request) => {
+      const candidate = request.headers["x-request-id"];
+      return typeof candidate === "string" && /^[A-Za-z0-9._:-]{1,128}$/u.test(candidate) ? candidate : randomUUID();
+    },
+    logger: {
+      level: process.env.NODE_ENV === "production" ? "info" : "debug",
+      redact: {
+        paths: ["req.headers.authorization", "req.headers.cookie", "res.headers.set-cookie", "body", "password", "token", "secret", "apiKey"],
+        censor: "[REDACTED]",
+      },
+      serializers: {
+        req: (request) => ({ method: request.method, url: request.url, requestId: request.id }),
+        res: (reply) => ({ statusCode: reply.statusCode }),
+      },
+    },
+  });
+  const requestTelemetry = new WeakMap<FastifyRequest, { readonly end: (statusCode: number) => void }>();
+  server.addHook("onRequest", async (request, reply) => {
+    reply.header("x-request-id", request.id);
+    if (dependencies.telemetry) requestTelemetry.set(request, dependencies.telemetry.startRequest({ method: request.method, route: request.routeOptions.url ?? "unmatched" }));
+    reply.header("x-content-type-options", "nosniff");
+    reply.header("x-frame-options", "DENY");
+    reply.header("referrer-policy", "no-referrer");
+    reply.header("permissions-policy", "camera=(), microphone=(), geolocation=()");
+    reply.header("content-security-policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+    if (security.secureTransport === true) reply.header("strict-transport-security", "max-age=31536000; includeSubDomains");
+    const origin = typeof request.headers.origin === "string" ? request.headers.origin : null;
+    if (origin !== null) {
+      let normalized: string;
+      try { normalized = new URL(origin).origin; } catch { return reply.code(403).send({ error: "origin is not allowed" }); }
+      if (!allowedOrigins.has(normalized)) return reply.code(403).send({ error: "origin is not allowed" });
+      reply.header("access-control-allow-origin", normalized);
+      reply.header("access-control-allow-credentials", "true");
+      reply.header("vary", "Origin");
+    }
+    if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method) && request.headers.cookie && origin === null) {
+      return reply.code(403).send({ error: "origin is required for cookie-authenticated mutations" });
+    }
+    if (request.method === "OPTIONS") {
+      reply.header("access-control-allow-methods", "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS");
+      reply.header("access-control-allow-headers", "content-type,authorization,x-request-id,x-organization-id,idempotency-key");
+      return reply.code(204).send();
+    }
+  });
+  server.addHook("onSend", async (_request, reply, payload) => {
+    const size = typeof payload === "string" ? Buffer.byteLength(payload) : Buffer.isBuffer(payload) ? payload.byteLength : 0;
+    if (size <= responseLimitBytes) return payload;
+    reply.code(500).type("application/problem+json");
+    return JSON.stringify({ type: "about:blank", title: "Response exceeded configured limit", status: 500 });
+  });
+  server.addHook("onResponse", async (request, reply) => requestTelemetry.get(request)?.end(reply.statusCode));
   server.register(fastifyTRPCPlugin, {
     prefix: "/trpc",
     trpcOptions: { router: appRouter, createContext: ({ req }: { readonly req: FastifyRequest }) => resolveContext(req, dependencies) },
@@ -4224,8 +5668,16 @@ function apiFiles(config: InitConfig): GeneratedFile[] {
     ...(plan.needsStorage
       ? [`import { createS3Storage } from "${packageName(config, "adapters")}";`]
       : []),
+    ...(plan.needsObservability
+      ? [`import { createTelemetryRuntime } from "${packageName(config, "adapters")}";`]
+      : []),
   ].join("\n");
   const setup = [
+    ...(plan.needsObservability
+      ? [
+          `  const telemetry = createTelemetryRuntime({ serviceName: "${config.productId}-api", endpoint: environment.OTEL_EXPORTER_OTLP_ENDPOINT });`,
+        ]
+      : []),
     ...(plan.needsDatabase
       ? ["  const database = createDatabaseRuntime(environment.DATABASE_URL);"]
       : []),
@@ -4257,6 +5709,7 @@ function apiFiles(config: InitConfig): GeneratedFile[] {
       ...(plan.needsTenancy ? ["organizationAuthorization"] : []),
       ...(plan.needsStorage ? ["storage"] : []),
       ...(plan.needsAi ? ["ai"] : []),
+      ...(plan.needsObservability ? ["telemetry"] : []),
     ]
       .map((name) => `${name},`)
       .join(" ")}${
@@ -4265,7 +5718,7 @@ function apiFiles(config: InitConfig): GeneratedFile[] {
             ...(plan.needsStorage ? ['{ name: "storage", check: storage.checkReadiness }'] : []),
           ].join(", ")}],`
         : ""
-    } });`,
+    } security: { allowedOrigins: environment.ALLOWED_ORIGINS.split(",").map((value) => value.trim()).filter(Boolean), trustedProxyCidrs: environment.TRUSTED_PROXY_CIDRS.split(",").map((value) => value.trim()).filter(Boolean), secureTransport: environment.APP_ENV === "production", bodyLimitBytes: environment.REQUEST_BODY_LIMIT_BYTES, responseLimitBytes: environment.RESPONSE_BODY_LIMIT_BYTES, requestTimeoutMs: environment.REQUEST_TIMEOUT_MS } });`,
     ...(plan.needsIdentity
       ? [
           "  registerAuthenticationRoutes(server, environment.BETTER_AUTH_URL, authentication.handler);",
@@ -4287,6 +5740,11 @@ function apiFiles(config: InitConfig): GeneratedFile[] {
     "const environmentSchema = z.object({",
     '  APP_ENV: z.enum(["local", "ci", "staging", "production"]).default("local"),',
     "  PORT: z.coerce.number().int().min(1).max(65535).default(3001),",
+    "  ALLOWED_ORIGINS: z.string().min(1),",
+    '  TRUSTED_PROXY_CIDRS: z.string().optional().default(""),',
+    "  REQUEST_BODY_LIMIT_BYTES: z.coerce.number().int().min(1024).max(10_485_760).default(1048576),",
+    "  RESPONSE_BODY_LIMIT_BYTES: z.coerce.number().int().min(1024).max(10_485_760).default(2097152),",
+    "  REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120000).default(15000),",
     ...(plan.needsDatabase ? ["  DATABASE_URL: z.string().min(1),"] : []),
     ...(plan.needsIdentity
       ? [
@@ -4311,9 +5769,9 @@ function apiFiles(config: InitConfig): GeneratedFile[] {
         ]
       : []),
     ...capabilitySchemaFields,
-    plan.needsStorage || plan.needsIdentity
+    plan.needsStorage || plan.needsIdentity || plan.needsObservability
       ? `}).superRefine((value, context) => {
-${plan.needsStorage ? '  if (Boolean(value.STORAGE_ACCESS_KEY_ID) !== Boolean(value.STORAGE_SECRET_ACCESS_KEY)) context.addIssue({ code: "custom", message: "storage access key and secret must be supplied together" });\n' : ""}${plan.needsIdentity ? '  if ((value.APP_ENV === "staging" || value.APP_ENV === "production") && value.IDENTITY_MAIL_PROVIDER !== "resend") context.addIssue({ code: "custom", message: "emulated identity mail is forbidden outside local and CI" });\n  if (value.IDENTITY_MAIL_PROVIDER === "resend" && !value.IDENTITY_RESEND_API_KEY) context.addIssue({ code: "custom", message: "IDENTITY_RESEND_API_KEY is required for Resend" });\n' : ""}});`
+${plan.needsStorage ? '  if (Boolean(value.STORAGE_ACCESS_KEY_ID) !== Boolean(value.STORAGE_SECRET_ACCESS_KEY)) context.addIssue({ code: "custom", message: "storage access key and secret must be supplied together" });\n' : ""}${plan.needsIdentity ? '  const deployed = value.APP_ENV === "staging" || value.APP_ENV === "production";\n  if (deployed && (value.BETTER_AUTH_SECRET.length < 32 || value.BETTER_AUTH_SECRET === "replace-with-a-local-secret")) context.addIssue({ code: "custom", message: "BETTER_AUTH_SECRET must be a non-placeholder secret of at least 32 characters outside local and CI" });\n  if (deployed && value.IDENTITY_MAIL_PROVIDER !== "resend") context.addIssue({ code: "custom", message: "emulated identity mail is forbidden outside local and CI" });\n  if (value.IDENTITY_MAIL_PROVIDER === "resend" && !value.IDENTITY_RESEND_API_KEY) context.addIssue({ code: "custom", message: "IDENTITY_RESEND_API_KEY is required for Resend" });\n' : ""}${plan.needsObservability ? '  if ((value.APP_ENV === "staging" || value.APP_ENV === "production") && !value.OTEL_EXPORTER_OTLP_ENDPOINT) context.addIssue({ code: "custom", message: "OTEL_EXPORTER_OTLP_ENDPOINT is required outside local and CI" });\n' : ""}});`
       : "});",
     "const environment = environmentSchema.parse(process.env);",
   ].join("\n");
@@ -4338,6 +5796,15 @@ try { process.loadEnvFile(resolve(process.cwd(), ".env")); } catch (error: unkno
 ${environmentSchema}
 export async function startApi(): Promise<void> {
 ${setup}
+  let shutdown: Promise<void> | null = null;
+  const stop = (signal: string): Promise<void> => {
+    shutdown ??= (async () => {
+      server.log.info({ signal }, "graceful shutdown started");
+      await server.close();
+${plan.needsDatabase ? "      await database.close();\n" : ""}${plan.needsObservability ? "      await telemetry.shutdown();\n" : ""}    })();
+    return shutdown;
+  };
+  for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => { void stop(signal).catch(() => { process.exitCode = 1; }); });
   await server.listen({ host: "0.0.0.0", port: environment.PORT });
 }
 
@@ -4354,10 +5821,17 @@ RUN pnpm --filter ${packageName(config, "api-app")}... build
 RUN pnpm --filter ${packageName(config, "api-app")} --prod deploy /runtime && rm -rf /runtime/src
 FROM ${NODE_IMAGE} AS runtime
 ENV NODE_ENV=production
+ARG SOURCE_COMMIT=local
+ARG IMAGE_VERSION=${PACKAGE_VERSION}-dev.1
+LABEL org.opencontainers.image.source="generated-private-repository" \\
+      org.opencontainers.image.description="${config.displayName} API" \\
+      org.opencontainers.image.version="$IMAGE_VERSION" \\
+      org.opencontainers.image.revision="$SOURCE_COMMIT"
 WORKDIR /app
 COPY --from=build --chown=1000:1000 /runtime/ ./
 USER 1000:1000
 EXPOSE 3001
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["node", "-e", "fetch('http://127.0.0.1:3001/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
 STOPSIGNAL SIGTERM
 CMD ["node", "dist/index.js"]
 `,
@@ -4384,7 +5858,7 @@ function workerFiles(config: InitConfig): GeneratedFile[] {
     textFile(
       "apps/worker/src/index.ts",
       `import { createServer } from "node:http";
-import { startGraphileWorker } from "${adaptersPackage}";
+import { startGraphileWorker${plan.needsObservability ? ", createTelemetryRuntime" : ""} } from "${adaptersPackage}";
 import { jobPayloadSchema } from "${contractsPackage}";
 import { runIdempotentWorkflow } from "${corePackage}";
 import { createDatabaseRuntime } from "${databasePackage}";
@@ -4394,6 +5868,7 @@ const environment = z.object({
   DATABASE_URL: z.string().min(1),
   WORKER_PORT: z.coerce.number().int().min(1).max(65535).default(3002),
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(50).default(2),
+${plan.needsObservability ? "  OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url(),\n" : ""}
 ${plan.capabilityEnvironment
   .filter((item) => item.owner === "worker")
   .map(
@@ -4404,6 +5879,7 @@ ${plan.capabilityEnvironment
 }).parse(process.env);
 export async function startWorker(): Promise<void> {
   const database = createDatabaseRuntime(environment.DATABASE_URL);
+${plan.needsObservability ? `  const telemetry = createTelemetryRuntime({ serviceName: "${config.productId}-worker", endpoint: environment.OTEL_EXPORTER_OTLP_ENDPOINT });\n` : ""}
   const runner = await startGraphileWorker({
     connectionString: environment.DATABASE_URL,
     concurrency: environment.WORKER_CONCURRENCY,
@@ -4411,6 +5887,7 @@ export async function startWorker(): Promise<void> {
       "${identity.sqlPrefix}.health": async (payload) => {
         const parsed = jobPayloadSchema.parse(payload);
         await runIdempotentWorkflow(database.workflow, parsed.requestId, async () => undefined);
+${plan.needsObservability ? '        telemetry.recordOperation("worker.health", "ok");\n' : ""}
       },
 ${
   plan.needsEvents
@@ -4447,6 +5924,7 @@ ${
     if (request.url !== "/health/ready") { response.writeHead(404).end(); return; }
     try {
       await database.checkReadiness();
+${plan.needsObservability ? '      telemetry.recordOperation("worker.readiness", "ok");\n' : ""}
       response.writeHead(200, { "content-type": "application/json" }).end(
         JSON.stringify({
           status: "ok",
@@ -4455,6 +5933,7 @@ ${
         }),
       );
     } catch {
+${plan.needsObservability ? '      telemetry.recordOperation("worker.readiness", "error");\n' : ""}
       response.writeHead(503, { "content-type": "application/json" }).end(
         JSON.stringify({
           status: "degraded",
@@ -4465,7 +5944,18 @@ ${
     }
   });
   healthServer.listen(environment.WORKER_PORT, "0.0.0.0");
-  try { await runner.promise; } finally { healthServer.close(); await database.close(); }
+  let shutdown: Promise<void> | null = null;
+  const stop = (): Promise<void> => {
+    shutdown ??= (async () => {
+      await runner.stop();
+      await new Promise<void>((resolveClose, rejectClose) => healthServer.close((error) => error ? rejectClose(error) : resolveClose()));
+      await database.close();
+${plan.needsObservability ? "      await telemetry.shutdown();\n" : ""}
+    })();
+    return shutdown;
+  };
+  for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => { void stop().catch(() => { process.exitCode = 1; }); });
+  try { await runner.promise; } finally { await stop(); }
 }
 
 await startWorker();
@@ -4481,9 +5971,16 @@ RUN pnpm --filter ${packageName(config, "worker-app")}... build
 RUN pnpm --filter ${packageName(config, "worker-app")} --prod deploy /runtime && rm -rf /runtime/src
 FROM ${NODE_IMAGE} AS runtime
 ENV NODE_ENV=production
+ARG SOURCE_COMMIT=local
+ARG IMAGE_VERSION=${PACKAGE_VERSION}-dev.1
+LABEL org.opencontainers.image.source="generated-private-repository" \\
+      org.opencontainers.image.description="${config.displayName} worker" \\
+      org.opencontainers.image.version="$IMAGE_VERSION" \\
+      org.opencontainers.image.revision="$SOURCE_COMMIT"
 WORKDIR /app
 COPY --from=build --chown=1000:1000 /runtime/ ./
 USER 1000:1000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.WORKER_PORT||3002)+'/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
 STOPSIGNAL SIGTERM
 CMD ["node", "dist/index.js"]
 `,
@@ -4496,9 +5993,45 @@ function webProxyFiles(includeExternalApi = false): GeneratedFile[] {
 
 type ProxyContext = { readonly params: Promise<{ readonly path: string[] }> };
 
+class BodyLimitExceeded extends Error {}
+
+async function readBoundedBody(body: ReadableStream<Uint8Array> | null, maximumBytes: number): Promise<ArrayBuffer | null> {
+  if (!body) return null;
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > maximumBytes) {
+        await reader.cancel("body limit exceeded").catch(() => undefined);
+        throw new BodyLimitExceeded();
+      }
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const output = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return output.buffer;
+}
+
 async function forward(request: NextRequest, context: ProxyContext, prefix: string): Promise<NextResponse> {
   const internalUrl = process.env.API_INTERNAL_URL;
   if (!internalUrl) return NextResponse.json({ error: "API_INTERNAL_URL is not configured" }, { status: 503 });
+  const requestLengthHeader = request.headers.get("content-length");
+  const declaredLength = requestLengthHeader === null ? null : Number(requestLengthHeader);
+  if (declaredLength !== null && (!Number.isSafeInteger(declaredLength) || declaredLength < 0 || declaredLength > 1_048_576)) {
+    await request.body?.cancel("declared body limit exceeded").catch(() => undefined);
+    return NextResponse.json({ error: "request is too large" }, { status: 413 });
+  }
   const { path } = await context.params;
   const encodedPath = path.map((segment) => encodeURIComponent(segment)).join("/");
   const target = new URL(prefix.concat(encodedPath.length > 0 ? \`/\${encodedPath}\` : ""), internalUrl);
@@ -4506,14 +6039,40 @@ async function forward(request: NextRequest, context: ProxyContext, prefix: stri
   const headers = new Headers(request.headers);
   headers.delete("host");
   headers.delete("content-length");
-  const init: RequestInit = { method: request.method, headers, redirect: "manual" };
-  if (request.method !== "GET" && request.method !== "HEAD") init.body = await request.arrayBuffer();
-  const upstream = await fetch(target, init);
+  headers.delete("connection");
+  headers.delete("forwarded");
+  headers.delete("transfer-encoding");
+  headers.delete("x-forwarded-for");
+  headers.delete("x-forwarded-host");
+  headers.delete("x-forwarded-proto");
+  const init: RequestInit = { method: request.method, headers, redirect: "manual", signal: AbortSignal.timeout(15_000) };
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    try { init.body = await readBoundedBody(request.body, 1_048_576); }
+    catch (error: unknown) {
+      if (error instanceof BodyLimitExceeded) return NextResponse.json({ error: "request is too large" }, { status: 413 });
+      return NextResponse.json({ error: "request body could not be read" }, { status: 400 });
+    }
+  }
+  let upstream: Response;
+  try { upstream = await fetch(target, init); }
+  catch { return NextResponse.json({ error: "upstream request failed" }, { status: 502 }); }
+  const responseLengthHeader = upstream.headers.get("content-length");
+  const responseLength = responseLengthHeader === null ? null : Number(responseLengthHeader);
+  if (responseLength !== null && (!Number.isSafeInteger(responseLength) || responseLength < 0 || responseLength > 2_097_152)) {
+    await upstream.body?.cancel("declared body limit exceeded").catch(() => undefined);
+    return NextResponse.json({ error: "upstream response is too large" }, { status: 502 });
+  }
+  let responseBody: ArrayBuffer | null;
+  try { responseBody = await readBoundedBody(upstream.body, 2_097_152); }
+  catch (error: unknown) {
+    return NextResponse.json({ error: error instanceof BodyLimitExceeded ? "upstream response is too large" : "upstream response could not be read" }, { status: 502 });
+  }
   const responseHeaders = new Headers(upstream.headers);
+  responseHeaders.delete("content-length");
   responseHeaders.delete("set-cookie");
   for (const cookie of upstream.headers.getSetCookie())
     responseHeaders.append("set-cookie", cookie);
-  return new NextResponse(upstream.body, { status: upstream.status, headers: responseHeaders });
+  return new NextResponse(responseBody, { status: upstream.status, headers: responseHeaders });
 }
 
 export const GET = (request: NextRequest, context: ProxyContext) => forward(request, context, "__PREFIX__");
@@ -4541,11 +6100,15 @@ function webReferenceFlow(config: InitConfig): GeneratedFile {
   const [password, setPassword] = useState("local-password-123");
 async function signUp(email: string, password: string): Promise<void> {
   const result = await authClient.signUp.email({ email, password, name: "Starter Developer" });
-  setMessage(result.error ? result.error.message ?? "Signup failed" : "Signed up; session cookie established.");
+  setMessage(result.error ? result.error.message ?? "Signup failed" : "Signup accepted; check your email to verify the account.");
 }
 async function signIn(email: string, password: string): Promise<void> {
   const result = await authClient.signIn.email({ email, password });
   setMessage(result.error ? result.error.message ?? "Signin failed" : "Signed in; session cookie established.");
+}
+async function signOut(): Promise<void> {
+  const result = await authClient.signOut();
+  setMessage(result.error ? result.error.message ?? "Signout failed" : "Signed out; session revoked.");
 }
 `
     : "";
@@ -4583,6 +6146,7 @@ ${
     <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
     <button type="button" onClick={() => signUp(email, password)}>Sign up</button>
     <button type="button" onClick={() => signIn(email, password)}>Sign in</button>
+    <button type="button" onClick={signOut}>Sign out</button>
 `
     : ""
 }    <p>{message}</p><pre>{result ? JSON.stringify(result, null, 2) : "No result yet"}</pre>
@@ -4651,10 +6215,51 @@ function webFiles(config: InitConfig): GeneratedFile[] {
       `export default { plugins: { "@tailwindcss/postcss": {} } };\n`,
     ),
     textFile("apps/web/global.d.ts", `declare module "*.css";\n`),
+    textFile(
+      "apps/web/proxy.ts",
+      `import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server";
+
+export function proxy(request: NextRequest) {
+  const nonce = Buffer.from(crypto.randomUUID()).toString("base64");
+  const developmentDirective = process.env.NODE_ENV === "development" ? " 'unsafe-eval'" : "";
+  const styleDirective = process.env.NODE_ENV === "development" ? " 'unsafe-inline'" : \` 'nonce-\${nonce}'\`;
+  const policy = [
+    "default-src 'self'",
+    \`script-src 'self' 'nonce-\${nonce}' 'strict-dynamic'\${developmentDirective}\`,
+    \`style-src 'self'\${styleDirective}\`,
+    "img-src 'self' blob: data:",
+    "font-src 'self'",
+    "connect-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    ...(process.env.NODE_ENV === "production" ? ["upgrade-insecure-requests"] : []),
+  ].join("; ");
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set("x-nonce", nonce);
+  requestHeaders.set("content-security-policy", policy);
+  const response = NextResponse.next({ request: { headers: requestHeaders } });
+  response.headers.set("content-security-policy", policy);
+  return response;
+}
+
+export const config = {
+  matcher: [{
+    source: "/((?!api|_next/static|_next/image|favicon.ico).*)",
+    missing: [
+      { type: "header", key: "next-router-prefetch" },
+      { type: "header", key: "purpose", value: "prefetch" },
+    ],
+  }],
+};
+`,
+    ),
     textFile("apps/web/app/globals.css", `@import "tailwindcss";\n`),
     textFile(
       "apps/web/app/layout.tsx",
-      `import "./globals.css";\n\nexport default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) { return <html lang="en"><body>{children}</body></html>; }\n`,
+      `import "./globals.css";\n\nexport const dynamic = "force-dynamic";\nexport const metadata = { title: ${stringLiteral(config.displayName)} };\n\nexport default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) { return <html lang="en"><body>{children}</body></html>; }\n`,
     ),
     textFile(
       "apps/web/app/page.tsx",
@@ -4665,8 +6270,29 @@ function webFiles(config: InitConfig): GeneratedFile[] {
     ...(hasTypedReferenceFlow ? [webReferenceFlow(config)] : []),
     ...(plan.needsApi ? webProxyFiles(plan.needsExternalApi) : []),
     textFile(
+      "apps/web/next.config.ts",
+      `import type { NextConfig } from "next";
+
+const headers = [
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "X-Frame-Options", value: "DENY" },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+  ...(process.env.NODE_ENV === "production" ? [{ key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" }] : []),
+];
+
+const config: NextConfig = {
+  poweredByHeader: false,
+  allowedDevOrigins: ["127.0.0.1", "localhost"],
+  async headers() { return [{ source: "/(.*)", headers }]; },
+};
+
+export default config;
+`,
+    ),
+    textFile(
       "apps/web/Dockerfile",
-      `FROM ${NODE_IMAGE} AS build\nWORKDIR /workspace\nCOPY . .\nRUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts\nRUN pnpm --filter ${packageName(config, "web-app")}... build\nRUN pnpm --filter ${packageName(config, "web-app")} --prod deploy /runtime\nFROM ${NODE_IMAGE} AS runtime\nENV NODE_ENV=production\nWORKDIR /app\nCOPY --from=build --chown=1000:1000 /runtime/ ./\nUSER 1000:1000\nEXPOSE 3000\nSTOPSIGNAL SIGTERM\nCMD ["./node_modules/.bin/next", "start"]\n`,
+      `FROM ${NODE_IMAGE} AS build\nWORKDIR /workspace\nCOPY . .\nRUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts\nRUN pnpm --filter ${packageName(config, "web-app")}... build\nRUN pnpm --filter ${packageName(config, "web-app")} --prod deploy /runtime\nFROM ${NODE_IMAGE} AS runtime\nENV NODE_ENV=production\nARG SOURCE_COMMIT=local\nARG IMAGE_VERSION=${PACKAGE_VERSION}-dev.1\nLABEL org.opencontainers.image.source="generated-private-repository" \\\n      org.opencontainers.image.description="${config.displayName} web" \\\n      org.opencontainers.image.version="$IMAGE_VERSION" \\\n      org.opencontainers.image.revision="$SOURCE_COMMIT"\nWORKDIR /app\nCOPY --from=build --chown=1000:1000 /runtime/ ./\nUSER 1000:1000\nEXPOSE 3000\nHEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]\nSTOPSIGNAL SIGTERM\nCMD ["./node_modules/.bin/next", "start"]\n`,
     ),
   ];
 }
@@ -4745,6 +6371,8 @@ function pythonFiles(config: InitConfig): GeneratedFile[] {
 import io
 import json
 import os
+import signal
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MAX_BYTES = 50 * 1024 * 1024
@@ -4828,7 +6456,17 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     port = int(os.environ.get("PORT", "8000"))
-    ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()
+    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+
+    def stop(_signal_number: int, _frame: object) -> None:
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":
@@ -4841,7 +6479,7 @@ if __name__ == "__main__":
     ),
     textFile(
       "services/python/Dockerfile",
-      `FROM ${PYTHON_IMAGE}\nWORKDIR /app\nCOPY services/python .\nRUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr && rm -rf /var/lib/apt/lists/*\nRUN python -m pip install --no-cache-dir .\nRUN python -m compileall -q src\nEXPOSE 8000\nCMD ["python", "-m", "src.main"]\n`,
+      `FROM ${PYTHON_IMAGE} AS build\nWORKDIR /build\nCOPY services/python .\nRUN python -m pip install --no-cache-dir --prefix=/install .\nRUN python -m compileall -q -b src && find src -type f -name '*.py' -delete\n\nFROM ${PYTHON_IMAGE} AS runtime\nENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1\nARG SOURCE_COMMIT=local\nARG IMAGE_VERSION=${PACKAGE_VERSION}-dev.1\nLABEL org.opencontainers.image.source="generated-private-repository" \\\n      org.opencontainers.image.description="${config.displayName} Python service" \\\n      org.opencontainers.image.version="$IMAGE_VERSION" \\\n      org.opencontainers.image.revision="$SOURCE_COMMIT"\nRUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr && rm -rf /var/lib/apt/lists/* \\\n    && groupadd --system --gid 10001 app && useradd --system --uid 10001 --gid app --home-dir /app app\nWORKDIR /app\nCOPY --from=build /install /usr/local\nCOPY --from=build --chown=10001:10001 /build/src ./service\nUSER 10001:10001\nEXPOSE 8000\nHEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3)"]\nSTOPSIGNAL SIGTERM\nCMD ["python", "service/main.pyc"]\n`,
     ),
   ];
 }
@@ -4877,6 +6515,15 @@ function environmentFile(config: InitConfig): GeneratedFile {
     "NODE_ENV=development",
     `${productIdentity(config).environmentPrefix}_FIXTURE_ID=local`,
     `PORT=${plan.needsApi ? "3001" : "3000"}`,
+    ...(plan.needsApi
+      ? [
+          `ALLOWED_ORIGINS=http://127.0.0.1:${hasProfile(config, "web") ? "3000" : "3001"}`,
+          "TRUSTED_PROXY_CIDRS=",
+          "REQUEST_BODY_LIMIT_BYTES=1048576",
+          "RESPONSE_BODY_LIMIT_BYTES=2097152",
+          "REQUEST_TIMEOUT_MS=15000",
+        ]
+      : []),
     ...(plan.needsDatabase
       ? [
           "DATABASE_URL=postgres://starter_runtime:starter_runtime_local@127.0.0.1:5432/starter",
@@ -4918,6 +6565,15 @@ function deploymentFiles(config: InitConfig): GeneratedFile[] {
     "NODE_ENV",
     name === "worker" ? "WORKER_PORT" : "PORT",
     ...(name === "web" && plan.needsApi ? ["API_INTERNAL_URL"] : []),
+    ...(name === "api"
+      ? [
+          "ALLOWED_ORIGINS",
+          "TRUSTED_PROXY_CIDRS",
+          "REQUEST_BODY_LIMIT_BYTES",
+          "RESPONSE_BODY_LIMIT_BYTES",
+          "REQUEST_TIMEOUT_MS",
+        ]
+      : []),
     ...((name === "api" || name === "worker") && plan.needsDatabase ? ["DATABASE_URL"] : []),
     ...(name === "api" && plan.needsIdentity
       ? [
@@ -4984,8 +6640,15 @@ function deploymentFiles(config: InitConfig): GeneratedFile[] {
         repository: { branch: "main", autoDeployTrigger: "push-to-selected-branch" },
         services: services.map((service) => ({
           ...service,
-          applicationMode: "dockerfile",
+          applicationMode: "docker-provider",
           imagePromotion: "registry-digest-required",
+          runtimeSecurity: {
+            readOnlyRootFilesystem: true,
+            tmpfs: ["/tmp"],
+            capabilityDrop: ["ALL"],
+            noNewPrivileges: true,
+            resourceLimitsRequiredBeforeProduction: true,
+          },
           domain: {
             required: service.name === "web" || service.name === "api",
             provider: "dokploy-traefik",
@@ -5004,7 +6667,7 @@ function deploymentFiles(config: InitConfig): GeneratedFile[] {
       }),
       textFile(
         "deployment/dokploy/adapter.ts",
-        `import { readFile } from "node:fs/promises";
+        `import { mkdir, readFile, writeFile } from "node:fs/promises";
 
 type Command = "plan" | "apply" | "inspect" | "promote" | "rollback" | "evidence";
 const command = process.argv[2] as Command | undefined;
@@ -5014,37 +6677,123 @@ const apiKey = process.env.DOKPLOY_API_KEY;
 if (!baseUrl || !apiKey) throw new Error("DOKPLOY_URL and DOKPLOY_API_KEY are required");
 const definition = JSON.parse(await readFile("deployment/dokploy/services.json", "utf8")) as { serverVersion: { candidate: string; qualification: string }; services: Array<{ name: string }> };
 if ((command === "promote" || command === "apply") && definition.serverVersion.qualification !== "qualified") throw new Error("Dokploy candidate version has not passed its disposable live qualification suite");
+const environment = process.env.DOKPLOY_ENVIRONMENT;
+if (command === "apply" && environment !== "staging") throw new Error("Dokploy apply is restricted to staging");
+if (command === "promote" && environment !== "production") throw new Error("Dokploy promote is restricted to production");
+if (command === "promote") {
+  const approvalEvidenceId = process.env.APPROVAL_EVIDENCE_ID?.trim();
+  const initiatingActor = process.env.INITIATING_ACTOR?.trim();
+  const approvingActor = process.env.APPROVING_ACTOR?.trim();
+  if (!approvalEvidenceId || !initiatingActor || !approvingActor) throw new Error("Promotion requires approval evidence plus initiating and approving actor identities");
+  if (initiatingActor.toLocaleLowerCase("en-US") === approvingActor.toLocaleLowerCase("en-US")) throw new Error("Promotion approval must come from a different actor");
+}
 const request = async (path: string, init?: RequestInit): Promise<unknown> => {
   const response = await fetch(new URL(\`api/\${path}\`, baseUrl), { ...init, headers: { "content-type": "application/json", "x-api-key": apiKey, ...init?.headers } });
   if (!response.ok) throw new Error(\`Dokploy \${path} failed with HTTP \${response.status}\`);
   return response.json();
+};
+type JsonRecord = Record<string, unknown>;
+type ApplicationState = { readonly dockerImage: string; readonly applicationStatus: string };
+type DeploymentState = { readonly id: string; readonly status: string; readonly raw: JsonRecord };
+const recordFrom = (value: unknown, label: string): JsonRecord => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(\`Dokploy \${label} returned an invalid object\`);
+  return value as JsonRecord;
+};
+const applicationStateFrom = (value: unknown): ApplicationState => {
+  const outer = recordFrom(value, "application.one");
+  const application = outer.data && typeof outer.data === "object" && !Array.isArray(outer.data) ? outer.data as JsonRecord : outer;
+  if (typeof application.dockerImage !== "string" || typeof application.applicationStatus !== "string") {
+    throw new Error("Dokploy application.one omitted dockerImage or applicationStatus");
+  }
+  return { dockerImage: application.dockerImage, applicationStatus: application.applicationStatus };
+};
+const inspectApplication = async (applicationId: string): Promise<ApplicationState> =>
+  applicationStateFrom(await request(\`application.one?applicationId=\${encodeURIComponent(applicationId)}\`));
+const deploymentsFrom = (value: unknown): readonly DeploymentState[] => {
+  const raw = Array.isArray(value)
+    ? value
+    : (() => {
+        const outer = recordFrom(value, "deployment.all");
+        return Array.isArray(outer.data) ? outer.data : null;
+      })();
+  if (!raw) throw new Error("Dokploy deployment.all omitted its deployment list");
+  return raw.map((entry) => {
+    const deployment = recordFrom(entry, "deployment.all entry");
+    const id = typeof deployment.deploymentId === "string" ? deployment.deploymentId : typeof deployment.id === "string" ? deployment.id : null;
+    if (!id || typeof deployment.status !== "string") throw new Error("Dokploy deployment record omitted id or status");
+    return { id, status: deployment.status, raw: deployment };
+  });
+};
+const failedStatuses = new Set(["cancelled", "error", "failed"]);
+const waitForDeployment = async (applicationId: string, immutableImage: string, previousDeploymentIds: ReadonlySet<string>): Promise<{ readonly deployment: DeploymentState; readonly application: ApplicationState }> => {
+  const deadline = Date.now() + 15 * 60 * 1000;
+  while (Date.now() < deadline) {
+    const deployments = deploymentsFrom(await request(\`deployment.all?applicationId=\${encodeURIComponent(applicationId)}\`));
+    const deployment = deployments.find((candidate) => !previousDeploymentIds.has(candidate.id));
+    if (deployment) {
+      const status = deployment.status.toLocaleLowerCase("en-US");
+      if (failedStatuses.has(status)) throw new Error(\`Dokploy deployment \${deployment.id} failed with status \${deployment.status}\`);
+      if (status === "done") {
+        const application = await inspectApplication(applicationId);
+        if (application.dockerImage !== immutableImage || application.applicationStatus !== "done") {
+          throw new Error("Dokploy completed deployment does not match the requested active immutable image");
+        }
+        return { deployment, application };
+      }
+    }
+    await new Promise((resolveWait) => setTimeout(resolveWait, 2_000));
+  }
+  throw new Error("Dokploy deployment did not reach the requested immutable image before timeout");
 };
 const evidence: unknown[] = [];
 for (const service of definition.services) {
   const key = service.name.toUpperCase().replaceAll("-", "_");
   const applicationId = process.env[\`DOKPLOY_\${key}_APPLICATION_ID\`];
   const digest = process.env[\`RELEASE_\${key}_DIGEST\`];
+  const image = process.env[\`RELEASE_\${key}_IMAGE\`];
+  const immutableImage = image && digest ? \`\${image}@\${digest}\` : null;
   if (!applicationId) throw new Error(\`Missing DOKPLOY_\${key}_APPLICATION_ID\`);
   if (["apply", "promote"].includes(command) && (!digest || !/^sha256:[a-f0-9]{64}$/u.test(digest))) throw new Error(\`Missing immutable RELEASE_\${key}_DIGEST\`);
+  if (["apply", "promote"].includes(command) && (!image || image.includes("@") || /\\s/u.test(image))) throw new Error(\`Missing digest-free RELEASE_\${key}_IMAGE\`);
+  if (command === "promote" && process.env[\`STAGING_\${key}_DIGEST\`] !== digest) throw new Error(\`Production digest for \${service.name} does not match the staging-tested digest\`);
+  if (command === "promote" && process.env[\`ATTESTATION_\${key}_VERIFIED\`] !== "true") throw new Error(\`Attestation for \${service.name} has not been verified\`);
   const deployments = await request(\`deployment.all?applicationId=\${encodeURIComponent(applicationId)}\`);
-  if (command === "plan" || command === "inspect" || command === "evidence") evidence.push({ service: service.name, applicationId, desiredDigest: digest ?? null, deployments });
+  const deploymentStates = deploymentsFrom(deployments);
+  const currentApplication = await inspectApplication(applicationId);
+  if (command === "plan" || command === "inspect" || command === "evidence") evidence.push({ service: service.name, applicationId, desiredImage: immutableImage, currentApplication, deployments });
   if (command === "apply" || command === "promote") {
-    if (JSON.stringify(deployments).includes(String(digest))) evidence.push({ service: service.name, status: "unchanged", digest });
-    else evidence.push(await request("application.deploy", { method: "POST", body: JSON.stringify({ applicationId, imageDigest: digest }) }));
+    if (!immutableImage) throw new Error(\`Missing immutable image for \${service.name}\`);
+    if (currentApplication.dockerImage === immutableImage && currentApplication.applicationStatus === "done") {
+      evidence.push({ service: service.name, status: "unchanged", image: immutableImage, application: currentApplication });
+    } else {
+      const previousDeploymentIds = new Set(deploymentStates.map((deployment) => deployment.id));
+      await request("application.update", { method: "POST", body: JSON.stringify({ applicationId, dockerImage: immutableImage }) });
+      const accepted = await request("application.deploy", { method: "POST", body: JSON.stringify({ applicationId, title: \`Promote \${digest}\`, description: "Thaarei immutable release deployment" }) });
+      const active = await waitForDeployment(applicationId, immutableImage, previousDeploymentIds);
+      evidence.push({ service: service.name, status: "deployed", image: immutableImage, accepted, ...active });
+    }
   }
   if (command === "rollback") {
-    const deploymentId = process.env[\`ROLLBACK_\${key}_DEPLOYMENT_ID\`];
+    const rollbackId = process.env[\`ROLLBACK_\${key}_ID\`] ?? process.env[\`ROLLBACK_\${key}_DEPLOYMENT_ID\`];
     const previousDigest = process.env[\`ROLLBACK_\${key}_DIGEST\`];
-    if (!deploymentId || !previousDigest) throw new Error("Rollback requires a release-manifest deployment id and compatible previous digest");
-    evidence.push(await request("application.redeploy", { method: "POST", body: JSON.stringify({ applicationId, deploymentId, imageDigest: previousDigest }) }));
+    const previousImage = image && previousDigest ? \`\${image}@\${previousDigest}\` : null;
+    if (!rollbackId || !previousDigest || !/^sha256:[a-f0-9]{64}$/u.test(previousDigest) || !previousImage) throw new Error("Rollback requires a release-manifest rollback id, image, and compatible previous digest");
+    if (process.env.ROLLBACK_SCHEMA_COMPATIBLE !== "true" || process.env.ROLLBACK_ATTESTATION_VERIFIED !== "true") throw new Error("Rollback requires schema-compatibility and attestation evidence");
+    const previousDeploymentIds = new Set(deploymentStates.map((deployment) => deployment.id));
+    const accepted = await request("rollback.rollback", { method: "POST", body: JSON.stringify({ rollbackId }) });
+    const active = await waitForDeployment(applicationId, previousImage, previousDeploymentIds);
+    evidence.push({ service: service.name, status: "rolled-back", image: previousImage, accepted, ...active });
   }
 }
-process.stdout.write(\`{"command":"\${command}","observedAt":"\${new Date().toISOString()}","results":\${JSON.stringify(evidence)}}\\n\`);
+const record = { schemaVersion: 1, command, environment: environment ?? null, sourceCommit: process.env.GITHUB_SHA ?? null, approval: command === "promote" ? { evidenceId: process.env.APPROVAL_EVIDENCE_ID, initiatingActor: process.env.INITIATING_ACTOR, approvingActor: process.env.APPROVING_ACTOR } : null, observedAt: new Date().toISOString(), results: evidence };
+await mkdir(".artifacts/deployment", { recursive: true });
+await writeFile(".artifacts/deployment/dokploy.json", \`\${JSON.stringify(record, null, 2)}\\n\`);
+process.stdout.write(\`\${JSON.stringify(record)}\\n\`);
 `,
       ),
       textFile(
         "deployment/dokploy/README.md",
-        "# Dokploy runbook\n\nThe adapter exposes idempotent plan/apply/inspect/promote/rollback/evidence command surfaces and uses administrator-controlled API access. The recorded server version is a candidate until its contract and disposable live suite qualify it; apply and promote fail closed before then. Keep stateful dependencies in separate projects, deploy applications by immutable digest, map rollback deployment IDs to the release manifest, and treat encrypted external restore exercises—not successful backup jobs—as recovery evidence.\n",
+        "# Dokploy runbook\n\nThe adapter exposes idempotent plan/apply/inspect/promote/rollback/evidence command surfaces and uses administrator-controlled API access. The recorded server version is a candidate until its contract and disposable live suite qualify it; apply and promote fail closed before then. Configure each application as a Docker provider with protected registry access, then supply RELEASE_<SERVICE>_IMAGE without a digest plus RELEASE_<SERVICE>_DIGEST. Keep stateful dependencies in separate projects, deploy applications by immutable digest, map rollback IDs to the release manifest, and treat encrypted external restore exercises—not successful backup jobs—as recovery evidence.\n",
       ),
       textFile(
         "deployment/dokploy/rollback.md",
@@ -5130,15 +6879,20 @@ ${plan.needsDatabase ? '  const database = postgres("postgres");\n' : ""}${servi
 }
 
 function generatedMarker(config: InitConfig, files: readonly GeneratedFile[]): GeneratedFile {
+  const plan = createCapabilityPlan(config);
   return jsonFile(`${productIdentity(config).namespace}/project.json`, {
-    schemaVersion: 1,
+    $schema: "../tooling/governance/project.schema.json",
+    schemaVersion: 2,
     initializedAt: "deterministic",
+    starterVersion: GENERATOR_VERSION,
     productId: config.productId,
     clientId: config.clientId,
     displayName: config.displayName,
     packageScope: config.packageScope,
     profiles: config.profiles,
-    deployment: config.deployment,
+    services: plan.deployableApps,
+    environments: ["development", "test", "staging", "production"],
+    deployment: { target: config.deployment, topology: config.topology ?? "standard" },
     owners: { technical: config.technicalOwner, operations: config.operationsOwner },
     generatedFiles: files.map((file) => file.path).sort(),
   });
@@ -5255,6 +7009,7 @@ export async function computeSemanticTreeHash(root: string): Promise<string> {
         if (relativePath === ".thaarei/starter.json") {
           const parsed = JSON.parse(content.toString("utf8")) as Record<string, unknown>;
           parsed.generatedAt = "normalized";
+          parsed.recipeHash = "normalized";
           parsed.generatedTreeHash = "normalized";
           content = Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`, "utf8");
         }

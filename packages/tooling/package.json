@@ -5,7 +5,8 @@
   "type": "module",
   "bin": {
     "thaarei-governance": "./dist/governance/cli.js",
-    "thaarei-release-check": "./dist/release/check-release.js"
+    "thaarei-release-check": "./dist/release/check-release.js",
+    "thaarei-security": "./dist/security.js"
   },
   "exports": {
     ".": {
@@ -19,6 +20,10 @@
     "./qualification": {
       "types": "./dist/qualification.d.ts",
       "import": "./dist/qualification.js"
+    },
+    "./security": {
+      "types": "./dist/security.d.ts",
+      "import": "./dist/security.js"
     }
   },
   "files": [

@@ -15,7 +15,7 @@ import {
   readAgentTemplate,
   writeGeneratedProject,
 } from "./generator.js";
-import { canonicalizeProfiles, CAPABILITY_REGISTRY, PRESETS } from "./capabilities.js";
+import { CAPABILITY_REGISTRY, PRESETS } from "./capabilities.js";
 import { InitValidationError, validateInitOptions } from "./validation.js";
 
 const VALUE_FLAGS = new Set([
@@ -188,10 +188,14 @@ function refreshMarker(
   ]
     .filter((path) => path !== `${productIdentity(config).namespace}/project.json`)
     .sort();
-  const normalizedProfiles = canonicalizeProfiles(config.profiles).profiles;
+  const existingMarker = files.find(
+    (file) => file.path === `${productIdentity(config).namespace}/project.json`,
+  );
+  if (!existingMarker) throw new Error("Generator omitted project metadata");
+  const metadata = JSON.parse(existingMarker.content) as Record<string, unknown>;
   const marker: GeneratedFile = {
     path: `${productIdentity(config).namespace}/project.json`,
-    content: `${JSON.stringify({ schemaVersion: 2, initializedAt: "deterministic", productId: config.productId, clientId: config.clientId, displayName: config.displayName, packageScope: config.packageScope, profiles: normalizedProfiles, deprecatedAliases: canonicalizeProfiles(config.profiles).deprecatedAliases, providers: config.providers, deployment: config.deployment, owners: { technical: config.technicalOwner, operations: config.operationsOwner }, generatedFiles }, null, 2)}\n`,
+    content: `${JSON.stringify({ ...metadata, generatedFiles }, null, 2)}\n`,
   };
   return [...files.filter((file) => file.path !== marker.path), marker].sort((left, right) =>
     left.path.localeCompare(right.path),

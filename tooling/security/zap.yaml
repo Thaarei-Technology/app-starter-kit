@@ -1,0 +1,40 @@
+env:
+  contexts:
+    - name: starter-deep-validation
+      urls:
+        - "${TARGET_URL}"
+      includePaths:
+        - "${TARGET_URL}.*"
+  parameters:
+    failOnError: true
+    failOnWarning: false
+    continueOnFailure: false
+    progressToStdout: true
+
+jobs:
+  - type: passiveScan-config
+    parameters:
+      maxAlertsPerRule: 20
+      scanOnlyInScope: true
+      maxBodySizeInBytesToScan: 1048576
+  - type: spider
+    parameters:
+      context: starter-deep-validation
+      maxDuration: 2
+  - type: passiveScan-wait
+    parameters:
+      maxDuration: 2
+  - type: report
+    parameters:
+      template: traditional-json
+      reportDir: /reports
+      reportFile: zap.json
+      reportTitle: Thaarei disposable passive DAST
+      displayReport: false
+  - type: exitStatus
+    parameters:
+      errorLevel: Medium
+      warnLevel: Low
+      okExitValue: 0
+      errorExitValue: 1
+      warnExitValue: 0

@@ -27,6 +27,7 @@ jobs:
           registry-url: https://npm.pkg.github.com
           scope: "@thaarei-technology"
       - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm validate:deep
       - run: pnpm check:publication
       - run: pnpm release:check
       - run: pnpm typecheck
