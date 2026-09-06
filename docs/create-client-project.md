@@ -162,14 +162,13 @@ variable, or CI job.
 
 | Profile | Adds | Required profiles |
 | --- | --- | --- |
-| `web` | Next.js web application and presentation packages | None |
-| `mobile` | Expo and React Native application | None |
+| `web` | Next.js web application and presentation packages | `api` |
+| `mobile` | Experimental Expo and React Native application; production forbidden in Starter 1.0 | `api` plus explicit `--allow-experimental` |
 | `api` | Fastify and tRPC API | Base, which is implicit |
 | `data` | PostgreSQL, Drizzle, migrations, and database package | Base, which is implicit |
 | `identity` | Better Auth authentication artifacts | `api`, `data` |
 | `jobs` | Graphile Worker and `apps/worker` | `data` |
 | `ai` | AI SDK adapter and policy components | `api`, `data`, `identity` |
-| `durable-ai` | Durable AI workflow seam | `ai`, `jobs` |
 | `external-api` | REST and OpenAPI contract plus generated client | `api` |
 | `storage` | S3-compatible storage adapter and metadata persistence | `api`, `data`, `identity` |
 | `python` | Separate Python 3.12 service | `api` or `jobs` |
@@ -185,8 +184,7 @@ variable, or CI job.
 | `observability` | OpenTelemetry correlation/redaction and injectable Sentry exporter | None |
 | `feature-flags` | Typed, audited rollout flags downstream of authorization | `api`, `data` |
 
-`durable-ai` remains a deprecated compatibility alias for `agentic-ai` for one
-release; select `agentic-ai` for new projects.
+`durable-ai` was removed in Starter 1.0; select `agentic-ai`.
 
 These combinations are valid starting points:
 
@@ -221,9 +219,12 @@ pnpm starter:init \
   --mobile-scheme fixture \
   --ios-bundle-id com.example.fixture \
   --android-application-id com.example.fixture \
+  --allow-experimental \
+  --allow-beta-target \
   --payment-providers stripe,razorpay \
   --ai-providers openai,anthropic \
-  --email-provider resend \
+  --identity-mail-provider resend \
+  --notification-provider resend \
   --cache-provider valkey \
   --observability-exporters otlp,sentry
 ```

@@ -41,3 +41,50 @@ jobs:
 
       - name: Validate the starter
         run: pnpm validate:starter
+
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the repository with history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 11.22.0
+
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Scan the current tree for secrets
+        run: pnpm security:secrets
+
+      - name: Scan full history after merge or manual dispatch
+        if: github.event_name != 'pull_request'
+        run: pnpm security:secrets:full
+
+      - name: Run local SAST policy
+        run: pnpm security:sast
+
+      - name: Scan dependencies and licences
+        run: pnpm security:fs
+
+      - name: Scan repository and container configuration
+        run: pnpm security:config
+
+      - name: Upload security reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: starter-security-reports
+          path: .artifacts/security
+          if-no-files-found: error

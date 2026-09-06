@@ -6,7 +6,7 @@ active work item and the owning source file when a task needs more context.
 
 ## Start every task
 
-1. Read the root `AGENTS.md` and the active `{{PRODUCT_NAMESPACE}}/work/<work-id>.md` file.
+1. Read the root `AGENTS.md` and the active `.thaarei/work/<work-id>.md` file.
 2. Run `git status --short` and preserve unrelated user changes.
 3. Search for the owner before reading broad directories. Use `rg -l '<keyword>'` or `grep -Rl '<keyword>'`.
 4. Read the candidate owner, its tests, its callers, and its dependency boundaries.
@@ -33,12 +33,13 @@ selection, and allowed write scope are known.
 V2 profile names are `web`, `mobile`, `api`, `data`, `identity`, `tenancy`,
 `jobs`, `events`, `ai`, `agentic-ai`, `external-api`, `storage`, `python`,
 `payments`, `notifications`, `cache`, `rate-limit`, `search`, `rag`,
-`observability`, and `feature-flags`. `durable-ai` is a deprecated alias only.
-Provider selections (Stripe/Razorpay, OpenAI/Anthropic, Resend, Valkey,
-OTLP/Sentry) must be reflected in generated dependencies, environment schemas,
-adapters, readiness checks, and tests. Local fixtures are deterministic and do
-not prove paid-provider, live deployment, restore/rollback, or native mobile
-runtime behavior.
+`observability`, and `feature-flags`. `durable-ai` was removed in Starter 1.0;
+use `agentic-ai`.
+Provider selections (Stripe/Razorpay, OpenAI/Anthropic, identity mail, general
+notifications, Valkey, and OTLP/Sentry) must be reflected in generated
+dependencies, environment schemas, adapters, readiness checks, and tests.
+Local fixtures do not prove paid-provider, live deployment, restore/rollback,
+or native mobile runtime behavior.
 
 ## Inline ownership metadata
 
@@ -65,7 +66,7 @@ truth.
 
 ## Work tracking
 
-Create or update one canonical `{{PRODUCT_NAMESPACE}}/work/<work-id>.md` file for every
+Create or update one canonical `.thaarei/work/<work-id>.md` file for every
 active task. Record the plan, changed paths, validation commands, results,
 blockers, and unresolved decisions there. Generate the bounded root
 `IMPLEMENTATION.md` with `pnpm implementation:sync`; never edit it by hand.

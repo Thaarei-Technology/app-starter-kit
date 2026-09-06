@@ -1,0 +1,36 @@
+{
+  "name": "@thaarei-technology/foundation",
+  "version": "1.0.0-dev.1",
+  "description": "Stable low-level runtime primitives for Thaarei applications.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted",
+    "tag": "next"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Thaarei-Technology/app-starter-kit.git",
+    "directory": "packages/foundation"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "pnpm build"
+  },
+  "dependencies": {
+    "zod": "4.4.3"
+  },
+  "engines": {
+    "node": "24.20.x"
+  }
+}

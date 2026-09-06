@@ -4,37 +4,37 @@
 
 Canonical records: `.thaarei/work/*.md`.
 
-## STARTER-008: Add the approved DMS Core starter fixture and Expo SDK 57 patch pins
+## STARTER-011: Reconcile and implement the production hardening golden path
 
 - Status: complete
 - Owner: primary-agent
-- Updated: 2026-08-29
-- Paths: tooling/starter-init/src/capabilities.ts, tooling/starter-init/src/initializer.test.ts, tooling/starter-init/src/validate-fixtures.ts, pnpm-workspace.yaml, starter-release.json, .thaarei/work/STARTER-008.md, IMPLEMENTATION.md
+- Updated: 2026-09-06
+- Paths: .github/workflows/, .thaarei/work/, docs/, packages/create-app/, packages/tooling/, package.json, pnpm-workspace.yaml, starter-release.json, templates/, IMPLEMENTATION.md
 
-## STARTER-007: Product-owned generated repository contract
-
-- Status: complete
-- Owner: primary-agent
-- Updated: 2026-08-22
-- Paths: .thaarei/work/STARTER-007.md, docs/, templates/, tooling/governance/, tooling/starter-init/, package.json, starter-release.json, IMPLEMENTATION.md
-
-## STARTER-006: Starter Kit V2 production hardening
+## STARTER-012: Add the self-hosted security toolchain and CI tiers
 
 - Status: complete
 - Owner: primary-agent
-- Updated: 2026-08-21
-- Paths: .thaarei/work/STARTER-006.md, tooling/starter-init/src/, tooling/governance/src/, tooling/release/, starter-release.json, docs/, templates/, IMPLEMENTATION.md
+- Updated: 2026-09-06
+- Paths: .github/workflows/, packages/create-app/src/, packages/tooling/src/, packages/tooling/schemas/, tooling/security/, package.json, pnpm-workspace.yaml, starter-release.json, IMPLEMENTATION.md
 
-## STARTER-004: Add the client-project creation guide
-
-- Status: complete
-- Owner: primary-agent
-- Updated: 2026-08-20
-- Paths: README.md, docs/create-client-project.md, docs/engineering-starter-kit.md, .thaarei/work/STARTER-004.md, IMPLEMENTATION.md
-
-## STARTER-005: Prove all-server-profile LMS bootstrap and runtime composition
+## STARTER-013: Harden generated runtime and telemetry boundaries
 
 - Status: complete
 - Owner: primary-agent
-- Updated: 2026-08-20
-- Paths: tooling/starter-init/src/generator.ts, tooling/starter-init/src/initializer.test.ts, tooling/starter-init/src/validate-fixtures.ts, templates/, .thaarei/work/STARTER-005.md, IMPLEMENTATION.md
+- Updated: 2026-09-06
+- Paths: packages/create-app/src/, starter-release.json, pnpm-workspace.yaml, IMPLEMENTATION.md
+
+## STARTER-014: Add executable browser security performance and recovery proof
+
+- Status: complete
+- Owner: primary-agent
+- Updated: 2026-09-06
+- Paths: packages/create-app/src/, packages/tooling/src/, tooling/, .github/workflows/, starter-release.json, IMPLEMENTATION.md
+
+## STARTER-015: Implement deployment promotion and repository operating contracts
+
+- Status: complete
+- Owner: primary-agent
+- Updated: 2026-09-06
+- Paths: packages/create-app/src/, packages/tooling/src/, packages/tooling/schemas/, .github/workflows/, starter-release.json, IMPLEMENTATION.md

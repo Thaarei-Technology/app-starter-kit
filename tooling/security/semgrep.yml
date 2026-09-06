@@ -1,0 +1,29 @@
+rules:
+  - id: thaarei.javascript.no-eval
+    message: Dynamic eval bypasses reviewable code and trust boundaries.
+    severity: ERROR
+    languages: [javascript, typescript]
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: new Function(...)
+
+  - id: thaarei.node.no-shell-exec
+    message: Use execFile/spawn with an argument array; do not execute a shell command string.
+    severity: ERROR
+    languages: [javascript, typescript]
+    patterns:
+      - pattern-either:
+          - pattern: exec($COMMAND, ...)
+          - pattern: execSync($COMMAND, ...)
+
+  - id: thaarei.node.no-shell-true
+    message: Shell execution must not be enabled for child processes.
+    severity: ERROR
+    languages: [javascript, typescript]
+    pattern: '$PROCESS($COMMAND, $ARGS, {..., shell: true, ...})'
+
+  - id: thaarei.web.no-dangerous-html
+    message: Raw HTML injection requires a reviewed sanitization boundary.
+    severity: ERROR
+    languages: [typescript]
+    pattern: <$ELEMENT dangerouslySetInnerHTML=$VALUE ... />

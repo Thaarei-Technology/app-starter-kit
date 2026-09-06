@@ -1,9 +1,12 @@
 # Thaarei engineering starter contract
 
-This document is the reference contract for a private, self-contained Thaarei
-template. It is a design contract until the executable gates pass. A generated
-client repository copies the selected profiles and the minimum agent guidance.
-It does not copy this reference or any other broad documentation tree.
+This document is the reference contract for a private Thaarei starter that
+generates independently owned client repositories. A generated product owns its
+source and behavior, has no automatic template synchronization, and may consume
+exact-version private foundation and tooling packages. It is a design contract
+until the executable gates pass. A generated client repository copies the
+selected profiles and the minimum agent guidance. It does not copy this reference
+or any other broad documentation tree.
 
 ## Engineering invariants
 
@@ -31,7 +34,7 @@ listed in the project configuration.
 | --- | --- | --- |
 | `base` | Node 24 LTS, pnpm 11, Turborepo, strict TypeScript, Biome, Vitest, CI gates, package boundaries, source-of-truth checks, and `.thaarei/work` | None |
 | `web` | Next.js, React, Tailwind CSS v4, shadcn configured with Base UI, TanStack Query, TanStack Form, and `packages/design-tokens` | None |
-| `mobile` | Expo SDK 57, Expo Router, React Native, Unistyles, Reanimated, Gesture Handler, SecureStore, and notifications | None |
+| `mobile` | Experimental internal-only Expo SDK 57 profile. Selection requires `--allow-experimental`; production admission is forbidden in Starter 1.0 and native iOS/Android qualification remains blocked. | `api` |
 | `api` | Fastify 5, tRPC 11, Zod, Pino, request context, and health checks | `base` |
 | `data` | PostgreSQL and Drizzle, isolated in `packages/database` | `base` |
 | `identity` | Better Auth for authentication artifacts only. The application owns authorization and its records. | `api`, `data` |
@@ -57,8 +60,8 @@ The remaining V2 profiles complete the reusable foundation:
 | `observability` | Redacted correlation/telemetry contract, OTLP collector and injectable Sentry exporter | None |
 | `feature-flags` | Typed, audited rollout evaluation that cannot grant permissions | `api`, `data` |
 
-`durable-ai` is retained as a tested, deprecated alias for `agentic-ai` for
-one release. New projects should select `agentic-ai` directly.
+The deprecated `durable-ai` alias is not accepted by Starter 1.0. New projects
+select `agentic-ai` directly.
 
 Provider selections are explicit and affect generated environment schemas,
 adapter dependencies, deployment variables, readiness fixtures, and release
@@ -73,9 +76,33 @@ iOS/Android runtime evidence.
 Durable agent workflows select both `ai` and `jobs`. A REST adapter does not
 duplicate a tRPC operation unless it has an explicit external boundary.
 
-The Better Auth mobile integration remains a release gate. Do not claim
-identity compatibility until native development builds pass on iOS and
-Android. See the [Better Auth Expo integration guide](https://better-auth.com/docs/integrations/expo).
+Mobile is visible only as an experimental internal profile and requires explicit
+`--allow-experimental` selection. Its recipe records
+`productionPolicy: forbidden`, unqualified native evidence, blocked security
+qualification, and the active `image-size` advisory waiver. Do not claim identity
+compatibility until native development builds pass on iOS and Android. See the
+[Better Auth Expo integration guide](https://better-auth.com/docs/integrations/expo).
+
+An experimental mobile waiver must name the advisory IDs and dependency path,
+record build-time reachability, accept only version-controlled local build assets,
+prohibit untrusted input through the affected parser, expire within 30 days, name
+an owner and removal condition, and set `blocksProduction: true`. Expiry disables
+mobile generation until review or remediation.
+
+## Starter package publication
+
+The starter source may publish exactly these private GitHub Packages:
+
+- `@thaarei-technology/create-app`
+- `@thaarei-technology/foundation`
+- `@thaarei-technology/tooling`
+
+The root workspace remains `private`. Individual publishable manifests target
+`https://npm.pkg.github.com`, use explicit file/export/bin allowlists, share one
+lockstep version, and are released only by the protected workflow after clean
+tarball-consumer validation. Prereleases use the `next` tag and stable releases
+use `latest`. Generated repositories pin exact versions. Their own workspace
+packages remain private and non-publishable.
 
 ## Package ownership
 
@@ -189,11 +216,15 @@ use frozen-lockfile installs in CI. Change versions only through a starter
 release that reruns the compatibility matrix. Keep [Node's release policy](https://nodejs.org/en/about/previous-releases)
 as the versioning reference.
 
-Security scans may ignore an advisory only when the patched version is not
-available and the generated repository records the exact advisory IDs, affected
-path, mitigation, review date, and removal condition. A broad or undocumented
-audit exception is forbidden, and an active high-severity waiver blocks release
-promotion.
+Security scans may waive an advisory only when the patched version is not
+available and the affected record contains the exact advisory IDs, dependency
+path, reachability, mitigation, owner, review and expiry dates, removal condition,
+affected subject, and whether it blocks production. A broad or undocumented audit
+exception is forbidden. An active high-severity waiver blocks promotion of the
+affected artifact or profile. A starter release may contain an explicitly
+experimental template with such a waiver only when the dependency is absent from
+the published packages and stable generated repositories and that profile is
+production-forbidden.
 
 Azure, AWS, Kubernetes, and other scale targets are later deployment adapters.
 They require compatibility evidence and must preserve the application

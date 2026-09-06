@@ -1,10 +1,12 @@
 node_modules/
 dist/
+packages/create-app/assets/
 coverage/
 .env
 .env.*
 !.env.example
 .thaarei/fixtures/
 .thaarei/generated/
+.artifacts/
 *.log
 .DS_Store
