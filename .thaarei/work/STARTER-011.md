@@ -86,11 +86,14 @@ credentials. They remain `blocked_external` until independently observed.
 
 ## Handoff
 
-Run focused checks after every subsystem and the full pinned-runtime validation
-before completion. Regenerate `IMPLEMENTATION.md` only with
+Implementation proceeded through `STARTER-012` to `STARTER-017`; final
+documentation reconciliation is recorded by `STARTER-018`. Protected release
+qualification and the mobile waiver review are tracked separately by
+`STARTER-019` and `STARTER-020`. Regenerate `IMPLEMENTATION.md` only with
 `pnpm implementation:sync`.
 
 ## Completion
 
-Complete for plan reconciliation. Implementation continues under sequential
-bounded work records.
+Complete for plan reconciliation. Local implementation completed under the
+sequential bounded work records; external qualification remains explicitly
+planned.

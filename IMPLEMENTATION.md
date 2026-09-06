@@ -4,33 +4,40 @@
 
 Canonical records: `.thaarei/work/*.md`.
 
-## STARTER-011: Reconcile and implement the production hardening golden path
+## STARTER-019: Qualify and release Starter 1.0
+
+- Status: planned
+- Owner: Starter release owners
+- Updated: 2026-09-06
+- Paths: .github/workflows/, starter-release.json, .thaarei/work/, IMPLEMENTATION.md
+
+## STARTER-020: Review the experimental mobile security waiver
+
+- Status: planned
+- Owner: Starter maintainers
+- Updated: 2026-09-06
+- Paths: starter-release.json, packages/create-app/src/, docs/, .thaarei/work/, IMPLEMENTATION.md
+
+## STARTER-018: Reconcile final documentation and qualification tracking
 
 - Status: complete
 - Owner: primary-agent
 - Updated: 2026-09-06
-- Paths: .github/workflows/, .thaarei/work/, docs/, packages/create-app/, packages/tooling/, package.json, pnpm-workspace.yaml, starter-release.json, templates/, IMPLEMENTATION.md
+- Paths: .thaarei/work/, docs/, packages/create-app/src/, packages/tooling/src/governance/, packages/tooling/tests/, IMPLEMENTATION.md
 
-## STARTER-012: Add the self-hosted security toolchain and CI tiers
-
-- Status: complete
-- Owner: primary-agent
-- Updated: 2026-09-06
-- Paths: .github/workflows/, packages/create-app/src/, packages/tooling/src/, packages/tooling/schemas/, tooling/security/, package.json, pnpm-workspace.yaml, starter-release.json, IMPLEMENTATION.md
-
-## STARTER-013: Harden generated runtime and telemetry boundaries
+## STARTER-017: Remediate final production hardening review findings
 
 - Status: complete
 - Owner: primary-agent
 - Updated: 2026-09-06
-- Paths: packages/create-app/src/, starter-release.json, pnpm-workspace.yaml, IMPLEMENTATION.md
+- Paths: packages/create-app/src, packages/tooling/src, .thaarei/work, IMPLEMENTATION.md
 
-## STARTER-014: Add executable browser security performance and recovery proof
+## STARTER-016: Qualify the implemented production hardening baseline
 
 - Status: complete
 - Owner: primary-agent
 - Updated: 2026-09-06
-- Paths: packages/create-app/src/, packages/tooling/src/, tooling/, .github/workflows/, starter-release.json, IMPLEMENTATION.md
+- Paths: .thaarei/work/, IMPLEMENTATION.md, starter-release.json
 
 ## STARTER-015: Implement deployment promotion and repository operating contracts
 
@@ -38,3 +45,10 @@ Canonical records: `.thaarei/work/*.md`.
 - Owner: primary-agent
 - Updated: 2026-09-06
 - Paths: packages/create-app/src/, packages/tooling/src/, packages/tooling/schemas/, .github/workflows/, starter-release.json, IMPLEMENTATION.md
+
+## STARTER-014: Add executable browser security performance and recovery proof
+
+- Status: complete
+- Owner: primary-agent
+- Updated: 2026-09-06
+- Paths: packages/create-app/src/, packages/tooling/src/, tooling/, .github/workflows/, starter-release.json, IMPLEMENTATION.md

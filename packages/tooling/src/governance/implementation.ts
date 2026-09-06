@@ -310,7 +310,10 @@ const dashboard = (items: readonly WorkItem[]): string => {
   const active = items.filter((item) => item.status !== "complete");
   const completed = items
     .filter((item) => item.status === "complete")
-    .sort((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? ""))
+    .sort((left, right) => {
+      const dateOrder = (right.updatedAt ?? "").localeCompare(left.updatedAt ?? "");
+      return dateOrder === 0 ? right.workId.localeCompare(left.workId) : dateOrder;
+    })
     .slice(0, COMPLETED_ITEM_LIMIT);
   const visible = [...active, ...completed];
   if (visible.length === 0) lines.push("No work items found.", "");

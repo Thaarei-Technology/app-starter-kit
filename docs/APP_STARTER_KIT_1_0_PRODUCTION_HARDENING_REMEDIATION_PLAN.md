@@ -1,9 +1,13 @@
 # Thaarei App Starter Kit 1.0 — Production Hardening Remediation Plan
 
-**Status:** Approved implementation plan  
-**Plan date:** 2026-09-06  
-**Implementation branch:** `codex/starter-kit-1-0-plan`  
-**Canonical work record:** `.thaarei/work/STARTER-011.md`
+- **Status:** Local implementation complete; external qualification pending
+- **Plan date:** 2026-09-06
+- **Implementation baseline:** `main`, merged from `codex/starter-kit-1-0-plan`
+- **Canonical work record:** [STARTER-011](../.thaarei/work/STARTER-011.md)
+- **Implementation records:** [STARTER-012](../.thaarei/work/STARTER-012.md)
+  through [STARTER-018](../.thaarei/work/STARTER-018.md)
+- **Remaining records:** [STARTER-019](../.thaarei/work/STARTER-019.md) and
+  [STARTER-020](../.thaarei/work/STARTER-020.md)
 
 ## 1. Purpose and fixed contracts
 
@@ -39,7 +43,7 @@ operations profile.
   non-root Node runtimes, SBOM/provenance/attestation generation, qualification
   schemas, Dokploy-first deployment, and Railway beta classification.
 
-### Implement now
+### Implemented locally
 
 - Executable Gitleaks, Semgrep CE, and Trivy gates in the starter source and
   generated repositories.
@@ -252,6 +256,8 @@ security-blocked, native-unqualified, and production-forbidden.
   verification.
 - `pnpm validate:starter` remains the final local gate.
 
-Implement under bounded sequential work records after `STARTER-011`, update the
-active evidence ledger after each slice, and regenerate `IMPLEMENTATION.md` only
-through `pnpm implementation:sync`.
+Local implementation was completed through the bounded `STARTER-012` to
+`STARTER-018` records. Protected stable-release qualification continues under
+`STARTER-019`, and the time-bound experimental mobile waiver review is tracked by
+`STARTER-020`. Continue to regenerate `IMPLEMENTATION.md` only through
+`pnpm implementation:sync`.
