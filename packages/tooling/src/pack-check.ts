@@ -51,9 +51,13 @@ export async function checkPackedPackages(root: string): Promise<readonly Packed
       resolve(consumer, "package.json"),
       `${JSON.stringify({ name: "thaarei-package-consumer", version: "1.0.0", private: true }, null, 2)}\n`,
     );
-    await execFileAsync("pnpm", ["add", "--offline", "--ignore-scripts", ...tarballs], {
-      cwd: consumer,
-    });
+    await execFileAsync(
+      "pnpm",
+      ["add", "--offline", "--ignore-scripts", "--ignore-workspace", ...tarballs],
+      {
+        cwd: consumer,
+      },
+    );
     const installed = JSON.parse(await readFile(resolve(consumer, "package.json"), "utf8")) as {
       dependencies?: Record<string, string>;
     };

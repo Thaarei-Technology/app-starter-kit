@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -15,6 +15,7 @@ import {
   type Profile,
   writeGeneratedProject,
 } from "./generator.js";
+import { finalizeRepository } from "./index.js";
 import { InitValidationError, validateInitOptions } from "./validation.js";
 
 function config(profiles: readonly Profile[], mobile = false): InitConfig {
@@ -954,6 +955,34 @@ describe("starter profile validation", () => {
 
   test("uses a safe deterministic output directory when output is omitted", () => {
     expect(validateInitOptions(options("web")).outputDir).toBe(".thaarei/generated/client");
+  });
+
+  test("models skipGit and rejects remote creation combinations", () => {
+    expect(validateInitOptions(options("web", { "skip-git": "true" })).skipGit).toBe(true);
+    expect(() =>
+      validateInitOptions(
+        options("web", {
+          "skip-git": "true",
+          "create-remote": "true",
+          "github-repo": "Thaarei/example",
+        }),
+      ),
+    ).toThrow("--skip-git cannot be combined");
+    expect(() =>
+      validateInitOptions(options("web", { "skip-git": "true", "github-repo": "Thaarei/example" })),
+    ).toThrow("--skip-git cannot be combined");
+  });
+
+  test("initializes the default repository on main", async () => {
+    const root = await mkdtemp(join(tmpdir(), "thaarei-git-"));
+    try {
+      await finalizeRepository(root, config(["web"]));
+      await expect(readFile(join(root, ".git", "HEAD"), "utf8")).resolves.toBe(
+        "ref: refs/heads/main\n",
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test("accepts syntax-sensitive Unicode text and rejects control characters", () => {

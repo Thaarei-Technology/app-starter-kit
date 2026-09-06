@@ -40,6 +40,7 @@ export interface InitConfig {
   readonly topology?: "standard" | "hardened";
   readonly githubRepository?: string | null;
   readonly createRemote?: boolean;
+  readonly skipGit?: boolean;
 }
 
 export interface GeneratedFile {

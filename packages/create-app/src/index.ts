@@ -44,6 +44,7 @@ const VALUE_FLAGS = new Set([
   "allow-experimental",
   "allow-beta-target",
   "create-remote",
+  "skip-git",
   "github-repo",
   "preset",
   "add-profile",
@@ -100,7 +101,7 @@ Presets: web-app,multi-tenant-web-app,api-service
 Profiles: web,mobile,api,data,identity,jobs,events,ai,agentic-ai,external-api,storage,python,tenancy,payments,notifications,cache,rate-limit,search,rag,observability,feature-flags
 Provider options: --payment-providers stripe,razorpay --ai-providers openai,anthropic --identity-mail-provider resend --notification-provider resend --cache-provider valkey --observability-exporters otlp,sentry
 Mobile-only options: --mobile-scheme --ios-bundle-id --android-application-id
-Safety options: --allow-experimental --allow-beta-target --dry-run --json
+Safety options: --allow-experimental --allow-beta-target --skip-git --dry-run --json
 Output defaults to .thaarei/generated/<client-id>.
 Test/automation options: --output <directory> --agent-template <path>
 `;
@@ -119,7 +120,14 @@ export function parseArguments(rawArgv: readonly string[]): ReadonlyMap<string, 
     const name = argument.slice(2);
     if (!VALUE_FLAGS.has(name)) throw new InitValidationError(`Unknown option: --${name}`);
     if (
-      ["dry-run", "json", "allow-experimental", "allow-beta-target", "create-remote"].includes(name)
+      [
+        "dry-run",
+        "json",
+        "allow-experimental",
+        "allow-beta-target",
+        "create-remote",
+        "skip-git",
+      ].includes(name)
     ) {
       options.set(name, "true");
       continue;
@@ -247,6 +255,30 @@ async function applyLocalPackageOverrides(outputDir: string): Promise<void> {
   }
 }
 
+export async function finalizeRepository(
+  outputDir: string,
+  config: Pick<InitConfig, "skipGit" | "createRemote" | "githubRepository">,
+): Promise<void> {
+  if (!config.skipGit)
+    await execFileAsync("git", ["init", "--initial-branch=main"], { cwd: outputDir });
+  if (config.createRemote && config.githubRepository) {
+    await execFileAsync(
+      "gh",
+      [
+        "repo",
+        "create",
+        config.githubRepository,
+        "--private",
+        "--source",
+        outputDir,
+        "--remote",
+        "origin",
+      ],
+      { cwd: outputDir },
+    );
+  }
+}
+
 export async function runInitializer(argv: readonly string[]): Promise<string> {
   const options = parseArguments(argv);
   if (options.has("help")) return HELP;
@@ -320,23 +352,7 @@ export async function runInitializer(argv: readonly string[]): Promise<string> {
       cwd: written.outputDir,
     });
     await rename(stagingOutput, finalOutput);
-    await execFileAsync("git", ["init", "--initial-branch=main"], { cwd: finalOutput });
-    if (config.createRemote && config.githubRepository) {
-      await execFileAsync(
-        "gh",
-        [
-          "repo",
-          "create",
-          config.githubRepository,
-          "--private",
-          "--source",
-          finalOutput,
-          "--remote",
-          "origin",
-        ],
-        { cwd: finalOutput },
-      );
-    }
+    await finalizeRepository(finalOutput, config);
     return `Initialized ${config.displayName} in ${finalOutput} (${written.files.length} files).`;
   } catch (error: unknown) {
     await rm(stagingOutput, { recursive: true, force: true });
