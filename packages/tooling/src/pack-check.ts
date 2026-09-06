@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { delimiter, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { PUBLISHABLE_PACKAGES } from "./publication.js";
@@ -17,7 +18,33 @@ export interface PackedPackageEvidence {
   readonly sha256: string;
 }
 
+export async function resolvePnpmCommand(): Promise<string> {
+  const suffix = process.platform === "win32" ? ".CMD" : "";
+  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
+    if (!directory) continue;
+    const candidate = resolve(directory, `pnpm${suffix}`);
+    try {
+      await access(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // Not executable here; keep searching.
+    }
+  }
+  const pnpmHome = process.env.PNPM_HOME;
+  if (pnpmHome) {
+    const candidate = resolve(pnpmHome, `pnpm${suffix}`);
+    try {
+      await access(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // Fall through to the bare command so the caller reports the original error.
+    }
+  }
+  return "pnpm";
+}
+
 export async function checkPackedPackages(root: string): Promise<readonly PackedPackageEvidence[]> {
+  const pnpmCommand = await resolvePnpmCommand();
   const output = await mkdtemp(resolve(tmpdir(), "thaarei-pack-"));
   const consumer = await mkdtemp(resolve(tmpdir(), "thaarei-consumer-"));
   try {
@@ -25,7 +52,7 @@ export async function checkPackedPackages(root: string): Promise<readonly Packed
     for (const packageName of PUBLISHABLE_PACKAGES) {
       const directory = packageName.slice("@thaarei-technology/".length);
       const before = new Set(await readdir(output));
-      await execFileAsync("pnpm", ["pack", "--pack-destination", output], {
+      await execFileAsync(pnpmCommand, ["pack", "--pack-destination", output], {
         cwd: resolve(root, "packages", directory),
       });
       const filename = (await readdir(output)).find(
@@ -52,7 +79,7 @@ export async function checkPackedPackages(root: string): Promise<readonly Packed
       `${JSON.stringify({ name: "thaarei-package-consumer", version: "1.0.0", private: true }, null, 2)}\n`,
     );
     await execFileAsync(
-      "pnpm",
+      pnpmCommand,
       ["add", "--offline", "--ignore-scripts", "--ignore-workspace", ...tarballs],
       {
         cwd: consumer,
