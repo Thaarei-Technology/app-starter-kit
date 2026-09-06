@@ -285,6 +285,24 @@ test("implementation sync is deterministic and check mode does not mutate", asyn
   assert.equal(after, before);
 });
 
+test("implementation dashboard shows the latest same-day completed work IDs", async () => {
+  const root = await temporaryRoot();
+  for (let index = 1; index <= 6; index += 1) {
+    const workId = `STARTER-${String(index).padStart(3, "0")}`;
+    await createWorkItem(root, {
+      workId,
+      title: workId,
+      owner: "team",
+      status: "complete",
+      updatedAt: "2026-09-06",
+    });
+  }
+
+  const output = await syncImplementation(root);
+  assert.match(output, /STARTER-006/u);
+  assert.doesNotMatch(output, /STARTER-001/u);
+});
+
 test("work frontmatter decodes JSON-quoted titles and owners", () => {
   const work = parseWorkItem(
     `---\nworkId: A-001\ntitle: "Initialize Acme \\"quoted\\" 产品"\nstatus: planned\nowner: "Engineering \\"platform\\""\nsourceOfTruthIds: []\naffectedPaths:\n  - packages/core\n---\n\n# Work\n`,

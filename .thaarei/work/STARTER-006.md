@@ -400,7 +400,7 @@ secret was accessed.
 | `pnpm test` | passed | 73 source tests across 3 files |
 | `pnpm validate:starter` | passed | Release/governance/format/lint/type/test gates plus all 12 generated fixtures; exact `full-profile-capabilities` uses all 22 profiles and Stripe/Razorpay, OpenAI/Anthropic, Resend, Valkey, OTLP/Sentry selections |
 | Generated mobile fixture static checks | passed | Format, lint, release, governance, migrations, generated-client, typecheck, filtered non-native build, and tests; native iOS/Android runtime was intentionally not run on Linux |
-| `pnpm implementation:sync` | pending | Run immediately after this record update; generated `IMPLEMENTATION.md` is not edited by hand |
+| `pnpm implementation:sync` | passed after record update | Generated `IMPLEMENTATION.md` was synchronized from canonical work records and was not edited by hand |
 
 ### Capability evidence classification
 

@@ -204,23 +204,34 @@ async function waitForHttp(
   throw new Error(`Timed out waiting for ${url}: ${lastError}`);
 }
 
-async function allocatePort(): Promise<number> {
-  const server = createNetServer();
-  await new Promise<void>((resolvePromise, reject) => {
-    server.once("error", reject);
-    server.listen({ host: "127.0.0.1", port: 0 }, () => resolvePromise());
-  });
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Failed to allocate a TCP port");
-  const port = address.port;
-  await new Promise<void>((resolvePromise) => server.close(() => resolvePromise()));
-  return port;
-}
-
-async function allocatePorts(names: readonly string[]): Promise<Readonly<Record<string, number>>> {
+export async function allocatePorts(
+  names: readonly string[],
+): Promise<Readonly<Record<string, number>>> {
   const ports: Record<string, number> = {};
-  for (const name of names) ports[name] = await allocatePort();
-  return ports;
+  const reservations: ReturnType<typeof createNetServer>[] = [];
+  try {
+    for (const name of names) {
+      const server = createNetServer();
+      await new Promise<void>((resolvePromise, reject) => {
+        server.once("error", reject);
+        server.listen({ host: "127.0.0.1", port: 0 }, () => resolvePromise());
+      });
+      reservations.push(server);
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Failed to allocate a TCP port");
+      ports[name] = address.port;
+    }
+    return ports;
+  } finally {
+    await Promise.all(
+      reservations.map(
+        (server) =>
+          new Promise<void>((resolvePromise, reject) => {
+            server.close((error) => (error ? reject(error) : resolvePromise()));
+          }),
+      ),
+    );
+  }
 }
 
 async function configureFixtureEnvironment(
@@ -614,4 +625,9 @@ export async function validateFixtures(): Promise<void> {
   }
 }
 
-await validateFixtures();
+if (
+  process.argv[1]?.endsWith("/validate-fixtures.ts") ||
+  process.argv[1]?.endsWith("/validate-fixtures.js")
+) {
+  await validateFixtures();
+}
