@@ -1687,8 +1687,7 @@ const migratorUrl = process.env.MIGRATOR_DATABASE_URL;
 if (appEnvironment !== "local" && !migratorUrl) throw new Error("MIGRATOR_DATABASE_URL is required outside local development");
 const databaseUrl = migratorUrl ?? process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("MIGRATOR_DATABASE_URL or local DATABASE_URL is required");
-const ownerRole = process.env.DATABASE_OWNER_ROLE ?? "starter_owner";
-const workerRole = process.env.DATABASE_WORKER_ROLE ?? "starter_worker";
+${plan.needsWorker ? 'const workerRole = process.env.DATABASE_WORKER_ROLE ?? "starter_worker";' : ""}
 const migrationsDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "../migrations");
 const sql = postgres(databaseUrl, { max: 1 });
 const checksum = (content: string): string => createHash("sha256").update(content).digest("hex");
