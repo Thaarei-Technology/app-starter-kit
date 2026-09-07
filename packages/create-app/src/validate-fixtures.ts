@@ -234,7 +234,7 @@ export async function allocatePorts(
   }
 }
 
-async function configureFixtureEnvironment(
+export async function configureFixtureEnvironment(
   root: string,
   ports: Readonly<Record<string, number>>,
   productId: string,
@@ -273,7 +273,7 @@ async function configureFixtureEnvironment(
   }
   values[fixtureIdName] = fixtureInstanceId;
   if (ports.postgres) {
-    for (const name of ["DATABASE_URL", "MIGRATOR_DATABASE_URL"] as const) {
+    for (const name of ["DATABASE_ADMIN_URL", "DATABASE_URL", "MIGRATOR_DATABASE_URL"] as const) {
       if (values[name]) {
         values[name] = values[name].replace(/127\.0\.0\.1:\d+/u, `127.0.0.1:${ports.postgres}`);
       }

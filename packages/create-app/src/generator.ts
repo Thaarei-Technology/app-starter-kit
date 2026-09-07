@@ -109,6 +109,8 @@ const MOBILE_WAIVER_EVIDENCE_DIGEST =
 const NODE_VERSION = "24.20.0";
 const PNPM_VERSION = "11.22.0";
 const NODE_IMAGE = `${IMAGE_CATALOG.node.reference}@${IMAGE_CATALOG.node.digest}`;
+const NODE_RUNTIME_CLEANUP =
+  "RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx";
 const PYTHON_VERSION = "3.12.13";
 const PYTHON_IMAGE = `${IMAGE_CATALOG.python.reference}@${IMAGE_CATALOG.python.digest}`;
 const POSTGRES_IMAGE = `${IMAGE_CATALOG.postgresql.reference}@${IMAGE_CATALOG.postgresql.digest}`;
@@ -1768,7 +1770,7 @@ function databaseRoleBootstrapFile(): GeneratedFile {
     'const passwordFor = (role: "api" | "worker" | "migrator"): string => supplied[role] ?? (() => { const value = existing.get("DATABASE_" + role.toUpperCase() + "_URL"); if (value) { const parsed = new URL(value); if (parsed.password) return decodeURIComponent(parsed.password); } return randomBytes(32).toString("base64url"); })();',
     'const rolePasswords = { api: passwordFor("api"), worker: passwordFor("worker"), migrator: passwordFor("migrator") };',
     "const sql = postgres(adminUrl, { max: 1 });",
-    'const quoteIdentifier = (value: string): string => "\\\"" + value.replaceAll("\\\"", "\\\\\\\"") + "\\\"";',
+    "const quoteIdentifier = (value: string): string => '\"' + value.replaceAll('\"', '\\\\\"') + '\"';",
     'const roles = [["starter_owner", "NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS", null], ["starter_migrator", "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS", rolePasswords.migrator], ["starter_api", "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS", rolePasswords.api], ["starter_worker", "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS", rolePasswords.worker]] as const;',
     'for (const [role, attributes, password] of roles) { const exists = await sql.unsafe("SELECT 1 FROM pg_roles WHERE rolname = $1::text", [role]); if (exists.length === 0) await sql.unsafe("CREATE ROLE " + quoteIdentifier(role) + " " + attributes); if (password) { const rows = await sql.unsafe("SELECT format(\'ALTER ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS\', $1::text, $2::text) AS statement", [role, password]); const statement = rows[0]?.statement; if (typeof statement !== "string") throw new Error("Role password statement was not generated"); await sql.unsafe(statement); } }',
     'await sql.unsafe("GRANT " + quoteIdentifier("starter_owner") + " TO " + quoteIdentifier("starter_migrator"));',
@@ -1812,6 +1814,7 @@ LABEL org.opencontainers.image.source="generated-private-repository" \\
       org.opencontainers.image.revision="$SOURCE_COMMIT"
 WORKDIR /app
 COPY --from=build --chown=1000:1000 /runtime/ ./
+${NODE_RUNTIME_CLEANUP}
 USER 1000:1000
 STOPSIGNAL SIGTERM
 CMD ["node", "dist/migrate.js"]
@@ -5941,6 +5944,7 @@ LABEL org.opencontainers.image.source="generated-private-repository" \\
       org.opencontainers.image.revision="$SOURCE_COMMIT"
 WORKDIR /app
 COPY --from=build --chown=1000:1000 /runtime/ ./
+${NODE_RUNTIME_CLEANUP}
 USER 1000:1000
 EXPOSE 3001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["node", "-e", "fetch('http://127.0.0.1:3001/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
@@ -6094,6 +6098,7 @@ LABEL org.opencontainers.image.source="generated-private-repository" \\
       org.opencontainers.image.revision="$SOURCE_COMMIT"
 WORKDIR /app
 COPY --from=build --chown=1000:1000 /runtime/ ./
+${NODE_RUNTIME_CLEANUP}
 USER 1000:1000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["node", "-e", "fetch('http://127.0.0.1:'+(process.env.WORKER_PORT||3002)+'/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
 STOPSIGNAL SIGTERM
@@ -6408,7 +6413,7 @@ export default config;
     withPrivateRegistryBuildSecret(
       textFile(
         "apps/web/Dockerfile",
-        `FROM ${NODE_IMAGE} AS build\nWORKDIR /workspace\nCOPY . .\nRUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts\nRUN pnpm --filter ${packageName(config, "web-app")}... build\nRUN pnpm --filter ${packageName(config, "web-app")} --prod deploy /runtime\nFROM ${NODE_IMAGE} AS runtime\nENV NODE_ENV=production\nARG SOURCE_COMMIT=local\nARG IMAGE_VERSION=${PACKAGE_VERSION}-dev.1\nLABEL org.opencontainers.image.source="generated-private-repository" \\\n      org.opencontainers.image.description="${config.displayName} web" \\\n      org.opencontainers.image.version="$IMAGE_VERSION" \\\n      org.opencontainers.image.revision="$SOURCE_COMMIT"\nWORKDIR /app\nCOPY --from=build --chown=1000:1000 /runtime/ ./\nUSER 1000:1000\nEXPOSE 3000\nHEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]\nSTOPSIGNAL SIGTERM\nCMD ["./node_modules/.bin/next", "start"]\n`,
+        `FROM ${NODE_IMAGE} AS build\nWORKDIR /workspace\nCOPY . .\nRUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts\nRUN pnpm --filter ${packageName(config, "web-app")}... build\nRUN pnpm --filter ${packageName(config, "web-app")} --prod deploy /runtime\nFROM ${NODE_IMAGE} AS runtime\nENV NODE_ENV=production\nARG SOURCE_COMMIT=local\nARG IMAGE_VERSION=${PACKAGE_VERSION}-dev.1\nLABEL org.opencontainers.image.source="generated-private-repository" \\\n      org.opencontainers.image.description="${config.displayName} web" \\\n      org.opencontainers.image.version="$IMAGE_VERSION" \\\n      org.opencontainers.image.revision="$SOURCE_COMMIT"\nWORKDIR /app\nCOPY --from=build --chown=1000:1000 /runtime/ ./\n${NODE_RUNTIME_CLEANUP}\nUSER 1000:1000\nEXPOSE 3000\nHEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]\nSTOPSIGNAL SIGTERM\nCMD ["./node_modules/.bin/next", "start"]\n`,
       ),
     ),
   ];
