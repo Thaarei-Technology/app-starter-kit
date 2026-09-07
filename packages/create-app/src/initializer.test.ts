@@ -387,10 +387,14 @@ describe("starter profile generation", () => {
         "dev:deps": "docker compose up -d --wait --wait-timeout 120",
         "db:bootstrap-roles": "tsx tooling/db/bootstrap-roles.ts",
       },
+      devDependencies: { postgres: expect.any(String) },
     });
     expect(
       generated.files.find((file) => file.path === "tooling/db/bootstrap-roles.ts")?.content,
     ).toContain("DATABASE_ADMIN_URL");
+    expect(
+      generated.files.find((file) => file.path === "tooling/db/bootstrap-roles.ts")?.content,
+    ).toContain('process.loadEnvFile(resolve(process.cwd(), ".env"))');
     expect(
       generated.files.find((file) => file.path === "packages/database/Dockerfile")?.content,
     ).toContain("node");

@@ -1753,8 +1753,10 @@ function databaseRoleBootstrapFile(): GeneratedFile {
   const lines = [
     'import { mkdir, readFile, writeFile } from "node:fs/promises";',
     'import { randomBytes } from "node:crypto";',
+    'import { resolve } from "node:path";',
     'import postgres from "postgres";',
     "",
+    'try { process.loadEnvFile(resolve(process.cwd(), ".env")); } catch (error: unknown) { if (!(error instanceof Error) || !("code" in error && error.code === "ENOENT")) throw error; }',
     "const adminUrl = process.env.DATABASE_ADMIN_URL;",
     "const credentialsFile = process.env.DATABASE_CREDENTIALS_FILE;",
     'if (!adminUrl || !credentialsFile) throw new Error("DATABASE_ADMIN_URL and DATABASE_CREDENTIALS_FILE are required");',
@@ -3546,6 +3548,7 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
       devDependencies: {
         "@thaarei-technology/tooling": TOOLING_VERSION,
         "@biomejs/biome": DEPENDENCY_VERSIONS.biome,
+        ...(plan.needsDatabase ? { postgres: DEPENDENCY_VERSIONS.postgres } : {}),
         ...(hasProfile(config, "external-api")
           ? { "@hey-api/openapi-ts": DEPENDENCY_VERSIONS.openapiClient }
           : {}),
