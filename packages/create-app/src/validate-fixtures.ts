@@ -347,7 +347,7 @@ async function proveAllServerRuntime(root: string, productId: string): Promise<v
   const environment = await configureFixtureEnvironment(root, ports, productId);
   await runPnpm(root, ["db:up"]);
   await runPnpm(root, ["storage:up"]);
-  await execFileAsync("docker", ["compose", "up", "-d"], {
+  await execFileAsync("docker", ["compose", "up", "-d", "--wait", "--wait-timeout", "120"], {
     cwd: root,
     maxBuffer: 20 * 1024 * 1024,
   });
