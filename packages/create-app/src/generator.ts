@@ -3162,7 +3162,7 @@ function githubPackageAuthenticationSteps(): string {
   return `      - name: Prepare private registry authentication
         shell: bash
         env:
-          GITHUB_TOKEN: \${{ github.token }}
+          GITHUB_TOKEN: \${{ secrets.THAAREI_PACKAGES_TOKEN || github.token }}
         run: |
           umask 077
           printf '@thaarei-technology:registry=https://npm.pkg.github.com\\nalways-auth=true\\n//npm.pkg.github.com/:_authToken=%s\\n' "$GITHUB_TOKEN" > "$RUNNER_TEMP/thaarei-npmrc"
