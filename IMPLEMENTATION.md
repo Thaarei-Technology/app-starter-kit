@@ -18,6 +18,13 @@ Canonical records: `.thaarei/work/*.md`.
 - Updated: 2026-09-06
 - Paths: starter-release.json, packages/create-app/src/, docs/, .thaarei/work/, IMPLEMENTATION.md
 
+## STARTER-021: Harden generated staging database and release artifacts
+
+- Status: in_progress
+- Owner: Starter maintainers
+- Updated: 2026-09-07
+- Paths: packages/create-app/src/generator.ts, packages/create-app/src/initializer.test.ts, .thaarei/work/STARTER-021.md
+
 ## STARTER-018: Reconcile final documentation and qualification tracking
 
 - Status: complete

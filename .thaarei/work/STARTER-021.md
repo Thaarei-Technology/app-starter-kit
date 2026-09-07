@@ -27,6 +27,11 @@ Generator output, generated-output regression tests, protected workflow
 readiness, role bootstrap and migration image contracts. Existing starter
 release work remains planned and is not silently closed by this change.
 
+## Non-goals
+
+Do not publish a stable starter release, change product capability semantics, or
+claim live deployment, recovery, or production readiness from local evidence.
+
 ## Acceptance criteria
 
 - [x] Generated `dev:deps` waits for Compose health checks.
@@ -52,3 +57,23 @@ release work remains planned and is not silently closed by this change.
 The all-server fixture requires Docker-in-container support that is not exposed
 by the current starter DevX profile. Run it in CI or a Docker-enabled disposable
 runner before marking this record complete.
+
+## Evidence
+
+The passing test outputs and the blocked fixture result are recorded above;
+secret values are intentionally absent.
+
+## Decisions
+
+- Generate role passwords only on the target runtime or accept operator-supplied
+  values; never place them in generated source or logs.
+- Keep the migration job separate from long-running application services.
+
+## Handoff
+
+Fleet owns importing the reviewed generator output and collecting protected CI,
+Dokploy, DNS, rollback, and restore evidence.
+
+## Completion
+
+Pending the Docker-enabled all-server fixture and protected release evidence.
