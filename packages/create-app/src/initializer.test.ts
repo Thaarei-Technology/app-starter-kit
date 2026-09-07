@@ -154,6 +154,10 @@ describe("starter profile generation", () => {
           "--mount=type=secret,id=npmrc,target=/workspace/.npmrc,required=true",
         );
         expect(file.content).toMatch(/pnpm --filter @[^\s]+\.\.\. build/);
+        const runtimeCleanup =
+          "RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx";
+        expect(file.content).toContain(runtimeCleanup);
+        expect(file.content.indexOf(runtimeCleanup)).toBeLessThan(file.content.indexOf("USER "));
       }
       expect(paths).not.toContain("docs/engineering-starter-kit.md");
       expect(paths).not.toContain("templates/AGENTS.md");
