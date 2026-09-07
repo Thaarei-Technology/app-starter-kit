@@ -3165,7 +3165,7 @@ function githubPackageAuthenticationSteps(): string {
           GITHUB_TOKEN: \${{ github.token }}
         run: |
           umask 077
-          printf '//npm.pkg.github.com/:_authToken=%s\\n' "$GITHUB_TOKEN" > "$RUNNER_TEMP/thaarei-npmrc"
+          printf '@thaarei-technology:registry=https://npm.pkg.github.com\\n//npm.pkg.github.com/:_authToken=%s\\n' "$GITHUB_TOKEN" > "$RUNNER_TEMP/thaarei-npmrc"
       - run: pnpm install --frozen-lockfile --ignore-scripts
         env:
           NPM_CONFIG_USERCONFIG: \${{ runner.temp }}/thaarei-npmrc
