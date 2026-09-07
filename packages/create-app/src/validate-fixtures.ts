@@ -351,6 +351,7 @@ async function proveAllServerRuntime(root: string, productId: string): Promise<v
     cwd: root,
     maxBuffer: 20 * 1024 * 1024,
   });
+  await runPnpm(root, ["db:bootstrap-roles"]);
   await runPnpm(root, ["db:migrate"]);
   await runPnpm(root, ["build"]);
   const processes = [
