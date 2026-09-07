@@ -5630,7 +5630,7 @@ ${
 }
 ${sourceOfTruthBlock({ id: "starter.api.transport", keywords: "api, fastify, trpc, health, readiness", what: "Thin Fastify and tRPC transport composition root.", why: "Separates request handling from domain and provider code.", when: "Use for first-party API routes and health probes.", how: "buildApi, appRouter", boundaries: "Do not place SQL, authorization policy, or provider SDK calls here." })}
 export const appRouter = t.router({
-  health: publicProcedure.query(() => healthResponseSchema.parse({ status: "ok", checkedAt: new Date().toISOString(), instanceId: process.env["${productIdentity(config).environmentPrefix}_FIXTURE_ID"] ?? "local" })),
+  health: publicProcedure.query(() => healthResponseSchema.parse({ status: "ok", checkedAt: new Date().toISOString(), instanceId: process.env.${productIdentity(config).environmentPrefix}_FIXTURE_ID ?? "local" })),
   viewer: authenticatedProcedure.query(({ ctx }) => ({ subjectId: ctx.subjectId })),
 ${
   plan.needsStorage
@@ -5672,10 +5672,10 @@ async function readinessResponse(checks: readonly { readonly name: string; reado
   const checkedAt = new Date().toISOString();
   for (const check of checks) {
     try { await check.check(); } catch {
-      return healthResponseSchema.parse({ status: "degraded", checkedAt, instanceId: process.env["${productIdentity(config).environmentPrefix}_FIXTURE_ID"] ?? "local", failedDependency: check.name });
+      return healthResponseSchema.parse({ status: "degraded", checkedAt, instanceId: process.env.${productIdentity(config).environmentPrefix}_FIXTURE_ID ?? "local", failedDependency: check.name });
     }
   }
-  return healthResponseSchema.parse({ status: "ok", checkedAt, instanceId: process.env["${productIdentity(config).environmentPrefix}_FIXTURE_ID"] ?? "local" });
+  return healthResponseSchema.parse({ status: "ok", checkedAt, instanceId: process.env.${productIdentity(config).environmentPrefix}_FIXTURE_ID ?? "local" });
 }
 
 export function buildApi(dependencies: ApiDependencies${plan.needsIdentity ? "" : " = {}"}) {
@@ -5745,7 +5745,7 @@ export function buildApi(dependencies: ApiDependencies${plan.needsIdentity ? "" 
     prefix: "/trpc",
     trpcOptions: { router: appRouter, createContext: ({ req }: { readonly req: FastifyRequest }) => resolveContext(req, dependencies) },
   });
-  server.get("/health/live", async () => healthResponseSchema.parse({ status: "ok", checkedAt: new Date().toISOString(), instanceId: process.env["${productIdentity(config).environmentPrefix}_FIXTURE_ID"] ?? "local" }));
+  server.get("/health/live", async () => healthResponseSchema.parse({ status: "ok", checkedAt: new Date().toISOString(), instanceId: process.env.${productIdentity(config).environmentPrefix}_FIXTURE_ID ?? "local" }));
   server.get("/health/ready", async (_request, reply) => {
     const checks = [
       ...(dependencies.database ? [{ name: "database", check: dependencies.database.checkReadiness }] : []),
