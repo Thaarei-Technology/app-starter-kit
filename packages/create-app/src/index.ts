@@ -2,6 +2,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
@@ -255,6 +256,26 @@ async function applyLocalPackageOverrides(outputDir: string): Promise<void> {
   }
 }
 
+async function withTrustedPackageRegistryAuth<T>(
+  operation: (environment: NodeJS.ProcessEnv) => Promise<T>,
+): Promise<T> {
+  if (!process.env.NODE_AUTH_TOKEN) return operation(process.env);
+  const directory = await mkdtemp(resolve(tmpdir(), "thaarei-npm-auth-"));
+  const userConfig = resolve(directory, "npmrc");
+  try {
+    await writeFile(userConfig, `//npm.pkg.github.com/:_authToken=\${NODE_AUTH_TOKEN}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    return await operation({
+      ...process.env,
+      NPM_CONFIG_USERCONFIG: userConfig,
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 export async function finalizeRepository(
   outputDir: string,
   config: Pick<InitConfig, "skipGit" | "createRemote" | "githubRepository">,
@@ -333,7 +354,12 @@ export async function runInitializer(argv: readonly string[]): Promise<string> {
     const result = { config: stagedConfig, files: refreshMarker(stagedConfig, bundledFiles) };
     const written = await writeGeneratedProject(result);
     await applyLocalPackageOverrides(written.outputDir);
-    await execFileAsync("pnpm", ["install", "--ignore-scripts"], { cwd: written.outputDir });
+    await withTrustedPackageRegistryAuth((environment) =>
+      execFileAsync("pnpm", ["install", "--ignore-scripts"], {
+        cwd: written.outputDir,
+        env: environment,
+      }),
+    );
     if (config.profiles.includes("external-api"))
       await execFileAsync("pnpm", ["generate:api-client"], { cwd: written.outputDir });
     await execFileAsync("pnpm", ["exec", "biome", "format", "--write", "."], {

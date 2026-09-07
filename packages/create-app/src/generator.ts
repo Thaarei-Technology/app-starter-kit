@@ -381,6 +381,23 @@ function textFile(path: string, content: string): GeneratedFile {
   return { path, content: content.endsWith("\n") ? content : `${content}\n` };
 }
 
+function withPrivateRegistryBuildSecret(file: GeneratedFile): GeneratedFile {
+  return textFile(
+    file.path,
+    file.content
+      .replace(
+        `FROM ${NODE_IMAGE} AS build\n`,
+        `# syntax=docker/dockerfile:1\nFROM ${NODE_IMAGE} AS build\n`,
+      )
+      .replace(
+        "RUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts",
+        `RUN corepack enable
+RUN --mount=type=secret,id=npmrc,target=/run/secrets/npmrc,required=true \\
+    NPM_CONFIG_USERCONFIG=/run/secrets/npmrc pnpm install --frozen-lockfile --ignore-scripts`,
+      ),
+  );
+}
+
 function sourceOfTruthBlock(values: {
   readonly id: string;
   readonly keywords: string;
@@ -1664,11 +1681,14 @@ ${plan.needsWorker ? 'import { runMigrations as runGraphileWorkerMigrations } fr
 try { process.loadEnvFile(resolve(process.cwd(), ".env")); } catch (error: unknown) {
   if (!(error instanceof Error) || !("code" in error && error.code === "ENOENT")) throw error;
 }
+
 const appEnvironment = process.env.APP_ENV ?? "local";
 const migratorUrl = process.env.MIGRATOR_DATABASE_URL;
 if (appEnvironment !== "local" && !migratorUrl) throw new Error("MIGRATOR_DATABASE_URL is required outside local development");
 const databaseUrl = migratorUrl ?? process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("MIGRATOR_DATABASE_URL or local DATABASE_URL is required");
+const ownerRole = process.env.DATABASE_OWNER_ROLE ?? "starter_owner";
+const workerRole = process.env.DATABASE_WORKER_ROLE ?? "starter_worker";
 const migrationsDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "../migrations");
 const sql = postgres(databaseUrl, { max: 1 });
 const checksum = (content: string): string => createHash("sha256").update(content).digest("hex");
@@ -1713,10 +1733,10 @@ ${
   plan.needsWorker
     ? `  const workerMigrationStartedAt = performance.now();
   await runGraphileWorkerMigrations({ connectionString: databaseUrl });
-  await sql.unsafe("GRANT USAGE ON SCHEMA graphile_worker TO starter_runtime");
-  await sql.unsafe("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA graphile_worker TO starter_runtime");
-  await sql.unsafe("GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA graphile_worker TO starter_runtime");
-  await sql.unsafe("GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA graphile_worker TO starter_runtime");
+  await sql.unsafe(\`GRANT USAGE ON SCHEMA graphile_worker TO \${workerRole}\`);
+  await sql.unsafe(\`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA graphile_worker TO \${workerRole}\`);
+  await sql.unsafe(\`GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA graphile_worker TO \${workerRole}\`);
+  await sql.unsafe(\`GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA graphile_worker TO \${workerRole}\`);
   process.stdout.write(\`{"migration":"graphile-worker@${DEPENDENCY_VERSIONS.graphileWorker}","durationMs":\${Math.round(performance.now() - workerMigrationStartedAt)}}\\n\`);
 `
     : ""
@@ -1725,6 +1745,75 @@ ${
   try { await sql.unsafe("SELECT pg_advisory_unlock(hashtextextended('thaarei:starter:migrations', 0))"); } catch {}
   await sql.end({ timeout: 5 });
 }
+`,
+  );
+}
+
+function databaseRoleBootstrapFile(): GeneratedFile {
+  const lines = [
+    'import { mkdir, readFile, writeFile } from "node:fs/promises";',
+    'import { randomBytes } from "node:crypto";',
+    'import postgres from "postgres";',
+    "",
+    "const adminUrl = process.env.DATABASE_ADMIN_URL;",
+    "const credentialsFile = process.env.DATABASE_CREDENTIALS_FILE;",
+    'if (!adminUrl || !credentialsFile) throw new Error("DATABASE_ADMIN_URL and DATABASE_CREDENTIALS_FILE are required");',
+    "const admin = new URL(adminUrl);",
+    'if (!admin.username || !admin.hostname || !admin.pathname || admin.pathname === "/") throw new Error("DATABASE_ADMIN_URL must include a database name");',
+    "const databaseName = decodeURIComponent(admin.pathname.slice(1));",
+    "const supplied = { api: process.env.DATABASE_API_PASSWORD, worker: process.env.DATABASE_WORKER_PASSWORD, migrator: process.env.DATABASE_MIGRATOR_PASSWORD };",
+    "const existing = new Map<string, string>();",
+    'try { const content = await readFile(credentialsFile, "utf8"); for (const line of content.split("\\n")) { const separator = line.indexOf("="); if (separator > 0) existing.set(line.slice(0, separator), line.slice(separator + 1)); } } catch (error: unknown) { if (!(error instanceof Error) || !("code" in error && error.code === "ENOENT")) throw error; }',
+    'const passwordFor = (role: "api" | "worker" | "migrator"): string => supplied[role] ?? (() => { const value = existing.get("DATABASE_" + role.toUpperCase() + "_URL"); if (value) { const parsed = new URL(value); if (parsed.password) return decodeURIComponent(parsed.password); } return randomBytes(32).toString("base64url"); })();',
+    'const rolePasswords = { api: passwordFor("api"), worker: passwordFor("worker"), migrator: passwordFor("migrator") };',
+    "const sql = postgres(adminUrl, { max: 1 });",
+    'const quoteIdentifier = (value: string): string => "\\\"" + value.replaceAll("\\\"", "\\\\\\\"") + "\\\"";',
+    'const roles = [["starter_owner", "NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS", null], ["starter_migrator", "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS", rolePasswords.migrator], ["starter_api", "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS", rolePasswords.api], ["starter_worker", "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS", rolePasswords.worker]] as const;',
+    'for (const [role, attributes, password] of roles) { const exists = await sql.unsafe("SELECT 1 FROM pg_roles WHERE rolname = $1", [role]); if (exists.length === 0) await sql.unsafe("CREATE ROLE " + quoteIdentifier(role) + " " + attributes); if (password) { const rows = await sql.unsafe("SELECT format(\'ALTER ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS\', $1, $2) AS statement", [role, password]); const statement = rows[0]?.statement; if (typeof statement !== "string") throw new Error("Role password statement was not generated"); await sql.unsafe(statement); } }',
+    'await sql.unsafe("GRANT " + quoteIdentifier("starter_owner") + " TO " + quoteIdentifier("starter_migrator"));',
+    'await sql.unsafe("GRANT CONNECT ON DATABASE " + quoteIdentifier(databaseName) + " TO starter_migrator, starter_api, starter_worker");',
+    'await sql.unsafe("GRANT CREATE ON DATABASE " + quoteIdentifier(databaseName) + " TO starter_migrator");',
+    'await sql.unsafe("GRANT CREATE, USAGE ON SCHEMA public TO starter_migrator, starter_owner");',
+    'await sql.unsafe("GRANT USAGE ON SCHEMA public TO starter_api, starter_worker");',
+    'await sql.unsafe("ALTER DEFAULT PRIVILEGES FOR ROLE starter_migrator IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO starter_api, starter_worker");',
+    'await sql.unsafe("ALTER DEFAULT PRIVILEGES FOR ROLE starter_migrator IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO starter_api, starter_worker");',
+    "const serviceUrl = (role: string, password: string): string => { const value = new URL(adminUrl); value.username = role; value.password = password; return value.toString(); };",
+    'const output = ["DATABASE_API_URL=" + serviceUrl("starter_api", rolePasswords.api), "DATABASE_WORKER_URL=" + serviceUrl("starter_worker", rolePasswords.worker), "MIGRATOR_DATABASE_URL=" + serviceUrl("starter_migrator", rolePasswords.migrator), "DATABASE_OWNER_ROLE=starter_owner", "DATABASE_WORKER_ROLE=starter_worker"].join("\\n") + "\\n";',
+    'const absolutePath = credentialsFile.startsWith("/") ? credentialsFile : process.cwd() + "/" + credentialsFile;',
+    'await mkdir(absolutePath.slice(0, absolutePath.lastIndexOf("/")), { recursive: true, mode: 0o700 });',
+    "await writeFile(credentialsFile, output, { mode: 0o600 });",
+    "await sql.end({ timeout: 5 });",
+    'process.stdout.write("Database roles bootstrapped; credentials written to the protected output file.\\n");',
+  ];
+  return textFile("tooling/db/bootstrap-roles.ts", lines.join("\\n"));
+}
+
+function databaseMigrationDockerfile(config: InitConfig): GeneratedFile {
+  return textFile(
+    "packages/database/Dockerfile",
+    `# syntax=docker/dockerfile:1
+FROM ${NODE_IMAGE} AS build
+WORKDIR /workspace
+COPY . .
+RUN corepack enable
+RUN --mount=type=secret,id=npmrc,target=/run/secrets/npmrc,required=true \\
+    NPM_CONFIG_USERCONFIG=/run/secrets/npmrc pnpm install --frozen-lockfile --ignore-scripts
+RUN pnpm --filter ${packageName(config, "database")}... build
+RUN pnpm --filter ${packageName(config, "database")} --prod deploy /runtime
+COPY packages/database/migrations /runtime/migrations
+FROM ${NODE_IMAGE} AS runtime
+ENV NODE_ENV=production
+ARG SOURCE_COMMIT=local
+ARG IMAGE_VERSION=${PACKAGE_VERSION}-dev.1
+LABEL org.opencontainers.image.source="generated-private-repository" \\
+      org.opencontainers.image.description="${config.displayName} database migration job" \\
+      org.opencontainers.image.version="$IMAGE_VERSION" \\
+      org.opencontainers.image.revision="$SOURCE_COMMIT"
+WORKDIR /app
+COPY --from=build --chown=1000:1000 /runtime/ ./
+USER 1000:1000
+STOPSIGNAL SIGTERM
+CMD ["node", "dist/migrate.js"]
 `,
   );
 }
@@ -3068,12 +3157,31 @@ if (exitCode !== 0) process.exitCode = exitCode;
   );
 }
 
+function githubPackageAuthenticationSteps(): string {
+  return `      - name: Prepare private registry authentication
+        shell: bash
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+        run: |
+          umask 077
+          printf '//npm.pkg.github.com/:_authToken=%s\\n' "$GITHUB_TOKEN" > "$RUNNER_TEMP/thaarei-npmrc"
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+        env:
+          NPM_CONFIG_USERCONFIG: \${{ runner.temp }}/thaarei-npmrc
+`;
+}
+
 function supplyChainWorkflowFile(plan: CapabilityPlan): GeneratedFile {
-  const matrix = plan.deployableApps.map((application) => ({
-    application,
-    dockerfile:
-      application === "python" ? "services/python/Dockerfile" : `apps/${application}/Dockerfile`,
-  }));
+  const matrix = [
+    ...plan.deployableApps.map((application) => ({
+      application,
+      dockerfile:
+        application === "python" ? "services/python/Dockerfile" : `apps/${application}/Dockerfile`,
+    })),
+    ...(plan.needsDatabase
+      ? [{ application: "migration", dockerfile: "packages/database/Dockerfile" }]
+      : []),
+  ];
   return textFile(
     ".github/workflows/supply-chain.yml",
     `name: Build and attest immutable images
@@ -3104,14 +3212,11 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-      - run: pnpm config set "//npm.pkg.github.com/:_authToken" "$GITHUB_TOKEN"
-        env:
-          GITHUB_TOKEN: \${{ github.token }}
-      - run: pnpm install --frozen-lockfile --ignore-scripts
+${githubPackageAuthenticationSteps().trimEnd()}
       - run: pnpm validate:starter
       - name: Start disposable runtime dependencies
         run: cp .env.example .env && pnpm dev:deps
-${plan.needsDatabase ? "      - name: Apply reviewed migrations for runtime inspection\n        run: pnpm db:migrate\n" : ""}      - name: Record dependency vulnerability report
+${plan.needsDatabase ? "      - name: Bootstrap database roles\n        run: pnpm db:bootstrap-roles\n      - name: Apply reviewed migrations for runtime inspection\n        shell: bash\n        run: set -a; . .artifacts/database-credentials.env; set +a; pnpm db:migrate\n" : ""}      - name: Record dependency vulnerability report
         run: ${plan.profiles.includes("mobile") ? "pnpm audit --prod --json > dependency-vulnerabilities.json || (cp dependency-vulnerabilities.json .thaarei/pnpm-audit.json && pnpm security:waiver-check)" : "pnpm audit --prod --json > dependency-vulnerabilities.json"}
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
@@ -3132,6 +3237,8 @@ ${plan.needsDatabase ? "      - name: Apply reviewed migrations for runtime insp
           build-args: |
             SOURCE_COMMIT=\${{ github.sha }}
             IMAGE_VERSION=${PACKAGE_VERSION}-dev.1
+          secrets: |
+            npmrc=\${{ runner.temp }}/thaarei-npmrc
       - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
         with:
           image: \${{ steps.image.outputs.image }}@\${{ steps.build.outputs.digest }}
@@ -3158,6 +3265,7 @@ ${plan.needsDatabase ? "      - name: Apply reviewed migrations for runtime insp
           TRIVY_PASSWORD: \${{ github.token }}
         run: pnpm security:sbom -- "\${{ steps.image.outputs.image }}@\${{ steps.build.outputs.digest }}"
       - name: Inspect runtime hardening and image contents
+        if: matrix.application != 'migration'
         run: pnpm runtime:inspect -- "\${{ steps.image.outputs.image }}@\${{ steps.build.outputs.digest }}" "\${{ matrix.application }}"
       - name: Record immutable application digest
         shell: bash
@@ -3205,10 +3313,7 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-      - run: pnpm config set "//npm.pkg.github.com/:_authToken" "$GITHUB_TOKEN"
-        env:
-          GITHUB_TOKEN: \${{ github.token }}
-      - run: pnpm install --frozen-lockfile --ignore-scripts
+${githubPackageAuthenticationSteps().trimEnd()}
       - run: pnpm security:secrets
       - if: github.event_name != 'pull_request'
         run: pnpm security:secrets:full
@@ -3256,10 +3361,7 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-      - run: pnpm config set "//npm.pkg.github.com/:_authToken" "$GITHUB_TOKEN"
-        env:
-          GITHUB_TOKEN: \${{ github.token }}
-      - run: pnpm install --frozen-lockfile --ignore-scripts
+${githubPackageAuthenticationSteps().trimEnd()}
       - run: pnpm security:policy-test
       - run: pnpm validate:deep
 ${plan.needsDatabase ? "      - run: pnpm recovery:verify\n" : ""}${
@@ -3336,7 +3438,7 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
           : {}),
         "dev:deps":
           plan.needsDatabase || plan.localServices.length > 0
-            ? `docker compose${resolveCapabilities(plan.profiles, plan.providers).definitions.some((definition) => definition.sourceMaturity === "experimental" && definition.localServices.length > 0) ? " --profile experimental" : ""} up -d`
+            ? `docker compose${resolveCapabilities(plan.profiles, plan.providers).definitions.some((definition) => definition.sourceMaturity === "experimental" && definition.localServices.length > 0) ? " --profile experimental" : ""} up -d --wait --wait-timeout 120`
             : "node -e \"process.stdout.write('No local dependencies selected\\n')\"",
         dev: `pnpm dev:deps && turbo run dev --parallel`,
         "dev:full": `pnpm dev:deps && turbo run dev --parallel`,
@@ -3357,6 +3459,7 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
         ...(plan.needsDatabase
           ? {
               "db:up": "docker compose up -d postgres",
+              "db:bootstrap-roles": "tsx tooling/db/bootstrap-roles.ts",
               "db:migrate": "tsx packages/database/src/migrate.ts",
               "db:down": "docker compose down",
             }
@@ -3956,6 +4059,9 @@ process.stdout.write("Project metadata is valid\\n");
     ...(plan.needsDatabase || hasProfile(config, "web")
       ? [
           ...(plan.needsDatabase
+            ? [databaseRoleBootstrapFile(), databaseMigrationDockerfile(config)]
+            : []),
+          ...(plan.needsDatabase
             ? [
                 textFile(
                   "docker/postgres/init.sql",
@@ -4212,7 +4318,7 @@ try {
     ),
     textFile(
       ".github/workflows/product-validation.yml",
-      `name: Starter validation\n\non:\n  push:\n  pull_request:\n\npermissions:\n  contents: read\n  packages: read\n\njobs:\n  validate:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa\n        with:\n          version: ${PNPM_VERSION}\n      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020\n        with:\n          node-version-file: .nvmrc\n          cache: pnpm\n      - run: pnpm config set "//npm.pkg.github.com/:_authToken" "$GITHUB_TOKEN"\n        env:\n          GITHUB_TOKEN: \${{ github.token }}\n      - run: pnpm install --frozen-lockfile --ignore-scripts\n      - run: ${hasProfile(config, "mobile") ? "pnpm audit --prod --audit-level high --json > .thaarei/pnpm-audit.json || pnpm security:waiver-check" : "pnpm audit --prod --audit-level high"}\n${hasProfile(config, "python") ? "      - run: docker build --file services/python/Dockerfile .\n" : ""}      - run: pnpm validate:starter\n`,
+      `name: Starter validation\n\non:\n  push:\n  pull_request:\n\npermissions:\n  contents: read\n  packages: read\n\njobs:\n  validate:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262\n      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa\n        with:\n          version: ${PNPM_VERSION}\n      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020\n        with:\n          node-version-file: .nvmrc\n          cache: pnpm\n${githubPackageAuthenticationSteps()}      - run: ${hasProfile(config, "mobile") ? "pnpm audit --prod --audit-level high --json > .thaarei/pnpm-audit.json || pnpm security:waiver-check" : "pnpm audit --prod --audit-level high"}\n${hasProfile(config, "python") ? "      - run: docker build --file services/python/Dockerfile .\n" : ""}      - run: pnpm validate:starter\n`,
     ),
     securityWorkflowFile(),
     deepValidationWorkflowFile(config, plan),
@@ -5814,10 +5920,13 @@ await startApi();
     ),
     textFile(
       "apps/api/Dockerfile",
-      `FROM ${NODE_IMAGE} AS build
+      `# syntax=docker/dockerfile:1
+FROM ${NODE_IMAGE} AS build
 WORKDIR /workspace
 COPY . .
-RUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts
+RUN corepack enable
+RUN --mount=type=secret,id=npmrc,target=/run/secrets/npmrc,required=true \\
+    NPM_CONFIG_USERCONFIG=/run/secrets/npmrc pnpm install --frozen-lockfile --ignore-scripts
 RUN pnpm --filter ${packageName(config, "api-app")}... build
 RUN pnpm --filter ${packageName(config, "api-app")} --prod deploy /runtime && rm -rf /runtime/src
 FROM ${NODE_IMAGE} AS runtime
@@ -5964,10 +6073,13 @@ await startWorker();
     ),
     textFile(
       "apps/worker/Dockerfile",
-      `FROM ${NODE_IMAGE} AS build
+      `# syntax=docker/dockerfile:1
+FROM ${NODE_IMAGE} AS build
 WORKDIR /workspace
 COPY . .
-RUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts
+RUN corepack enable
+RUN --mount=type=secret,id=npmrc,target=/run/secrets/npmrc,required=true \\
+    NPM_CONFIG_USERCONFIG=/run/secrets/npmrc pnpm install --frozen-lockfile --ignore-scripts
 RUN pnpm --filter ${packageName(config, "worker-app")}... build
 RUN pnpm --filter ${packageName(config, "worker-app")} --prod deploy /runtime && rm -rf /runtime/src
 FROM ${NODE_IMAGE} AS runtime
@@ -6291,9 +6403,11 @@ const config: NextConfig = {
 export default config;
 `,
     ),
-    textFile(
-      "apps/web/Dockerfile",
-      `FROM ${NODE_IMAGE} AS build\nWORKDIR /workspace\nCOPY . .\nRUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts\nRUN pnpm --filter ${packageName(config, "web-app")}... build\nRUN pnpm --filter ${packageName(config, "web-app")} --prod deploy /runtime\nFROM ${NODE_IMAGE} AS runtime\nENV NODE_ENV=production\nARG SOURCE_COMMIT=local\nARG IMAGE_VERSION=${PACKAGE_VERSION}-dev.1\nLABEL org.opencontainers.image.source="generated-private-repository" \\\n      org.opencontainers.image.description="${config.displayName} web" \\\n      org.opencontainers.image.version="$IMAGE_VERSION" \\\n      org.opencontainers.image.revision="$SOURCE_COMMIT"\nWORKDIR /app\nCOPY --from=build --chown=1000:1000 /runtime/ ./\nUSER 1000:1000\nEXPOSE 3000\nHEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]\nSTOPSIGNAL SIGTERM\nCMD ["./node_modules/.bin/next", "start"]\n`,
+    withPrivateRegistryBuildSecret(
+      textFile(
+        "apps/web/Dockerfile",
+        `FROM ${NODE_IMAGE} AS build\nWORKDIR /workspace\nCOPY . .\nRUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts\nRUN pnpm --filter ${packageName(config, "web-app")}... build\nRUN pnpm --filter ${packageName(config, "web-app")} --prod deploy /runtime\nFROM ${NODE_IMAGE} AS runtime\nENV NODE_ENV=production\nARG SOURCE_COMMIT=local\nARG IMAGE_VERSION=${PACKAGE_VERSION}-dev.1\nLABEL org.opencontainers.image.source="generated-private-repository" \\\n      org.opencontainers.image.description="${config.displayName} web" \\\n      org.opencontainers.image.version="$IMAGE_VERSION" \\\n      org.opencontainers.image.revision="$SOURCE_COMMIT"\nWORKDIR /app\nCOPY --from=build --chown=1000:1000 /runtime/ ./\nUSER 1000:1000\nEXPOSE 3000\nHEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]\nSTOPSIGNAL SIGTERM\nCMD ["./node_modules/.bin/next", "start"]\n`,
+      ),
     ),
   ];
 }
@@ -6527,6 +6641,8 @@ function environmentFile(config: InitConfig): GeneratedFile {
       : []),
     ...(plan.needsDatabase
       ? [
+          "DATABASE_ADMIN_URL=postgres://starter_admin:starter_admin_local@127.0.0.1:5432/starter",
+          "DATABASE_CREDENTIALS_FILE=.artifacts/database-credentials.env",
           "DATABASE_URL=postgres://starter_runtime:starter_runtime_local@127.0.0.1:5432/starter",
           "MIGRATOR_DATABASE_URL=postgres://starter_migrator:starter_migrator_local@127.0.0.1:5432/starter",
         ]
@@ -6651,7 +6767,9 @@ function deploymentFiles(config: InitConfig): GeneratedFile[] {
             resourceLimitsRequiredBeforeProduction: true,
           },
           domain: {
-            required: service.name === "web" || service.name === "api",
+            required:
+              service.name === "web" ||
+              (service.name === "api" && hasProfile(config, "external-api")),
             provider: "dokploy-traefik",
           },
         })),
