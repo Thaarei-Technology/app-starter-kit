@@ -158,8 +158,16 @@ function initializerArguments(fixture: Fixture, output: string): readonly string
   ];
 }
 
-async function runPnpm(root: string, arguments_: readonly string[]): Promise<void> {
-  await execFileAsync("pnpm", arguments_, { cwd: root, maxBuffer: 20 * 1024 * 1024 });
+async function runPnpm(
+  root: string,
+  arguments_: readonly string[],
+  environment?: Readonly<Record<string, string>>,
+): Promise<void> {
+  await execFileAsync("pnpm", arguments_, {
+    cwd: root,
+    ...(environment ? { env: { ...process.env, ...environment } } : {}),
+    maxBuffer: 20 * 1024 * 1024,
+  });
 }
 
 interface ManagedProcess {
@@ -234,6 +242,15 @@ export async function allocatePorts(
   }
 }
 
+export function parseEnvironmentFile(content: string): Readonly<Record<string, string>> {
+  const values: Record<string, string> = {};
+  for (const line of content.split("\n")) {
+    const match = /^(\w+)=(.*)$/.exec(line);
+    if (match?.[1]) values[match[1]] = match[2] ?? "";
+  }
+  return values;
+}
+
 export async function configureFixtureEnvironment(
   root: string,
   ports: Readonly<Record<string, number>>,
@@ -241,11 +258,7 @@ export async function configureFixtureEnvironment(
 ): Promise<Record<string, string>> {
   const path = join(root, ".env");
   const original = await readFile(join(root, ".env.example"), "utf8");
-  const values: Record<string, string> = {};
-  for (const line of original.split("\n")) {
-    const match = /^(\w+)=(.*)$/.exec(line);
-    if (match?.[1]) values[match[1]] = match[2] ?? "";
-  }
+  const values: Record<string, string> = { ...parseEnvironmentFile(original) };
   const fixtureIdName = `${productIdentity({ productId }).environmentPrefix}_FIXTURE_ID`;
   const fixtureInstanceId = `fixture-${ports.api ?? ports.web}`;
   const replacements: Readonly<Record<string, string>> = {
@@ -352,16 +365,27 @@ async function proveAllServerRuntime(root: string, productId: string): Promise<v
     maxBuffer: 20 * 1024 * 1024,
   });
   await runPnpm(root, ["db:bootstrap-roles"]);
-  await runPnpm(root, ["db:migrate"]);
+  const databaseCredentials = parseEnvironmentFile(
+    await readFile(join(root, ".artifacts", "database-credentials.env"), "utf8"),
+  );
+  const migratorDatabaseUrl = databaseCredentials.MIGRATOR_DATABASE_URL;
+  const apiDatabaseUrl = databaseCredentials.DATABASE_API_URL;
+  const workerDatabaseUrl = databaseCredentials.DATABASE_WORKER_URL;
+  if (!migratorDatabaseUrl || !apiDatabaseUrl || !workerDatabaseUrl) {
+    throw new Error("Database role bootstrap did not produce all protected connection URLs");
+  }
+  await runPnpm(root, ["db:migrate"], { MIGRATOR_DATABASE_URL: migratorDatabaseUrl });
   await runPnpm(root, ["build"]);
   const processes = [
     startProcess(root, "python", ["dev:python"], { ...environment, PORT: String(ports.python) }),
     startProcess(root, "api", ["--filter", "@fixture/api-app", "start"], {
       ...environment,
+      DATABASE_URL: apiDatabaseUrl,
       PORT: String(ports.api),
     }),
     startProcess(root, "worker", ["--filter", "@fixture/worker-app", "start"], {
       ...environment,
+      DATABASE_URL: workerDatabaseUrl,
       PORT: String(ports.api),
       WORKER_PORT: String(ports.worker),
     }),

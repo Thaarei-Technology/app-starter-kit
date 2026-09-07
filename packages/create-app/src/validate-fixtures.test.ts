@@ -2,7 +2,11 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { allocatePorts, configureFixtureEnvironment } from "./validate-fixtures.js";
+import {
+  allocatePorts,
+  configureFixtureEnvironment,
+  parseEnvironmentFile,
+} from "./validate-fixtures.js";
 
 describe("fixture port allocation", () => {
   test("reserves a unique port for every service in one allocation", async () => {
@@ -45,5 +49,16 @@ describe("fixture port allocation", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  test("parses protected role credentials without requiring a shell source", () => {
+    const values = parseEnvironmentFile(
+      "DATABASE_API_URL=postgres://api@127.0.0.1:41003/starter\nMIGRATOR_DATABASE_URL=postgres://migrator@127.0.0.1:41003/starter\n",
+    );
+
+    expect(values).toEqual({
+      DATABASE_API_URL: "postgres://api@127.0.0.1:41003/starter",
+      MIGRATOR_DATABASE_URL: "postgres://migrator@127.0.0.1:41003/starter",
+    });
   });
 });
