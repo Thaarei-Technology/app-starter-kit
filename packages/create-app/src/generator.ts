@@ -5928,7 +5928,7 @@ WORKDIR /workspace
 COPY . .
 RUN corepack enable
 RUN --mount=type=secret,id=npmrc,target=/run/secrets/npmrc,required=true \\
-    NPM_CONFIG_USERCONFIG=/run/secrets/npmrc pnpm install --frozen-lockfile --ignore-scripts
+    NPM_CONFIG_USERCONFIG=/run/secrets/npmrc pnpm install --frozen-lockfile --ignore-scripts --filter ${packageName(config, "api-app")}...
 RUN pnpm --filter ${packageName(config, "api-app")}... build
 RUN pnpm --filter ${packageName(config, "api-app")} --prod deploy /runtime && rm -rf /runtime/src
 FROM ${NODE_IMAGE} AS runtime
@@ -6081,7 +6081,7 @@ WORKDIR /workspace
 COPY . .
 RUN corepack enable
 RUN --mount=type=secret,id=npmrc,target=/run/secrets/npmrc,required=true \\
-    NPM_CONFIG_USERCONFIG=/run/secrets/npmrc pnpm install --frozen-lockfile --ignore-scripts
+    NPM_CONFIG_USERCONFIG=/run/secrets/npmrc pnpm install --frozen-lockfile --ignore-scripts --filter ${packageName(config, "worker-app")}...
 RUN pnpm --filter ${packageName(config, "worker-app")}... build
 RUN pnpm --filter ${packageName(config, "worker-app")} --prod deploy /runtime && rm -rf /runtime/src
 FROM ${NODE_IMAGE} AS runtime
