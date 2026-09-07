@@ -1687,8 +1687,7 @@ const migratorUrl = process.env.MIGRATOR_DATABASE_URL;
 if (appEnvironment !== "local" && !migratorUrl) throw new Error("MIGRATOR_DATABASE_URL is required outside local development");
 const databaseUrl = migratorUrl ?? process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error("MIGRATOR_DATABASE_URL or local DATABASE_URL is required");
-const ownerRole = process.env.DATABASE_OWNER_ROLE ?? "starter_owner";
-const workerRole = process.env.DATABASE_WORKER_ROLE ?? "starter_worker";
+${plan.needsWorker ? 'const workerRole = process.env.DATABASE_WORKER_ROLE ?? "starter_worker";' : ""}
 const migrationsDirectory = resolve(dirname(fileURLToPath(import.meta.url)), "../migrations");
 const sql = postgres(databaseUrl, { max: 1 });
 const checksum = (content: string): string => createHash("sha256").update(content).digest("hex");
@@ -1771,7 +1770,7 @@ function databaseRoleBootstrapFile(): GeneratedFile {
     "const sql = postgres(adminUrl, { max: 1 });",
     'const quoteIdentifier = (value: string): string => "\\\"" + value.replaceAll("\\\"", "\\\\\\\"") + "\\\"";',
     'const roles = [["starter_owner", "NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS", null], ["starter_migrator", "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS", rolePasswords.migrator], ["starter_api", "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS", rolePasswords.api], ["starter_worker", "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS", rolePasswords.worker]] as const;',
-    'for (const [role, attributes, password] of roles) { const exists = await sql.unsafe("SELECT 1 FROM pg_roles WHERE rolname = $1::text", [role]); if (exists.length === 0) await sql.unsafe("CREATE ROLE " + quoteIdentifier(role) + " " + attributes); if (password) { const rows = await sql.unsafe("SELECT format(\'ALTER ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS\', $1, $2) AS statement", [role, password]); const statement = rows[0]?.statement; if (typeof statement !== "string") throw new Error("Role password statement was not generated"); await sql.unsafe(statement); } }',
+    'for (const [role, attributes, password] of roles) { const exists = await sql.unsafe("SELECT 1 FROM pg_roles WHERE rolname = $1::text", [role]); if (exists.length === 0) await sql.unsafe("CREATE ROLE " + quoteIdentifier(role) + " " + attributes); if (password) { const rows = await sql.unsafe("SELECT format(\'ALTER ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS\', $1::text, $2::text) AS statement", [role, password]); const statement = rows[0]?.statement; if (typeof statement !== "string") throw new Error("Role password statement was not generated"); await sql.unsafe(statement); } }',
     'await sql.unsafe("GRANT " + quoteIdentifier("starter_owner") + " TO " + quoteIdentifier("starter_migrator"));',
     'await sql.unsafe("GRANT CONNECT ON DATABASE " + quoteIdentifier(databaseName) + " TO starter_migrator, starter_api, starter_worker");',
     'await sql.unsafe("GRANT CREATE ON DATABASE " + quoteIdentifier(databaseName) + " TO starter_migrator");',
@@ -3166,7 +3165,7 @@ function githubPackageAuthenticationSteps(): string {
           GITHUB_TOKEN: \${{ github.token }}
         run: |
           umask 077
-          printf '//npm.pkg.github.com/:_authToken=%s\\n' "$GITHUB_TOKEN" > "$RUNNER_TEMP/thaarei-npmrc"
+          printf '@thaarei-technology:registry=https://npm.pkg.github.com\\n//npm.pkg.github.com/:_authToken=%s\\n' "$GITHUB_TOKEN" > "$RUNNER_TEMP/thaarei-npmrc"
       - run: pnpm install --frozen-lockfile --ignore-scripts
         env:
           NPM_CONFIG_USERCONFIG: \${{ runner.temp }}/thaarei-npmrc
@@ -5929,7 +5928,7 @@ WORKDIR /workspace
 COPY . .
 RUN corepack enable
 RUN --mount=type=secret,id=npmrc,target=/run/secrets/npmrc,required=true \\
-    NPM_CONFIG_USERCONFIG=/run/secrets/npmrc pnpm install --frozen-lockfile --ignore-scripts
+    NPM_CONFIG_USERCONFIG=/run/secrets/npmrc pnpm install --frozen-lockfile --ignore-scripts --filter ${packageName(config, "api-app")}...
 RUN pnpm --filter ${packageName(config, "api-app")}... build
 RUN pnpm --filter ${packageName(config, "api-app")} --prod deploy /runtime && rm -rf /runtime/src
 FROM ${NODE_IMAGE} AS runtime
@@ -6082,7 +6081,7 @@ WORKDIR /workspace
 COPY . .
 RUN corepack enable
 RUN --mount=type=secret,id=npmrc,target=/run/secrets/npmrc,required=true \\
-    NPM_CONFIG_USERCONFIG=/run/secrets/npmrc pnpm install --frozen-lockfile --ignore-scripts
+    NPM_CONFIG_USERCONFIG=/run/secrets/npmrc pnpm install --frozen-lockfile --ignore-scripts --filter ${packageName(config, "worker-app")}...
 RUN pnpm --filter ${packageName(config, "worker-app")}... build
 RUN pnpm --filter ${packageName(config, "worker-app")} --prod deploy /runtime && rm -rf /runtime/src
 FROM ${NODE_IMAGE} AS runtime
