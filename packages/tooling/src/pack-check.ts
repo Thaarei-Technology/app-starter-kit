@@ -1,9 +1,8 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { access, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { PUBLISHABLE_PACKAGES } from "./publication.js";
@@ -18,33 +17,21 @@ export interface PackedPackageEvidence {
   readonly sha256: string;
 }
 
-export async function resolvePnpmCommand(): Promise<string> {
-  const suffix = process.platform === "win32" ? ".CMD" : "";
-  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
-    if (!directory) continue;
-    const candidate = resolve(directory, `pnpm${suffix}`);
-    try {
-      await access(candidate, constants.X_OK);
-      return candidate;
-    } catch {
-      // Not executable here; keep searching.
-    }
-  }
-  const pnpmHome = process.env.PNPM_HOME;
-  if (pnpmHome) {
-    const candidate = resolve(pnpmHome, `pnpm${suffix}`);
-    try {
-      await access(candidate, constants.X_OK);
-      return candidate;
-    } catch {
-      // Fall through to the bare command so the caller reports the original error.
-    }
-  }
-  return "pnpm";
+export function resolvePackCheckArguments(argv: readonly string[]): {
+  readonly root: string;
+  readonly manifestPath: string | undefined;
+} {
+  const args = argv.slice(2);
+  const manifestIndex = args.indexOf("--manifest");
+  const manifestPath = manifestIndex >= 0 ? args[manifestIndex + 1] : undefined;
+  if (manifestIndex >= 0 && !manifestPath) throw new Error("--manifest requires a path");
+  const rootArgument = args.find(
+    (argument) => argument !== "--" && argument !== "--manifest" && argument !== manifestPath,
+  );
+  return { root: rootArgument ? resolve(rootArgument) : process.cwd(), manifestPath };
 }
 
 export async function checkPackedPackages(root: string): Promise<readonly PackedPackageEvidence[]> {
-  const pnpmCommand = await resolvePnpmCommand();
   const output = await mkdtemp(resolve(tmpdir(), "thaarei-pack-"));
   const consumer = await mkdtemp(resolve(tmpdir(), "thaarei-consumer-"));
   try {
@@ -52,7 +39,7 @@ export async function checkPackedPackages(root: string): Promise<readonly Packed
     for (const packageName of PUBLISHABLE_PACKAGES) {
       const directory = packageName.slice("@thaarei-technology/".length);
       const before = new Set(await readdir(output));
-      await execFileAsync(pnpmCommand, ["pack", "--pack-destination", output], {
+      await execFileAsync("pnpm", ["pack", "--pack-destination", output], {
         cwd: resolve(root, "packages", directory),
       });
       const filename = (await readdir(output)).find(
@@ -79,7 +66,7 @@ export async function checkPackedPackages(root: string): Promise<readonly Packed
       `${JSON.stringify({ name: "thaarei-package-consumer", version: "1.0.0", private: true }, null, 2)}\n`,
     );
     await execFileAsync(
-      pnpmCommand,
+      "pnpm",
       ["add", "--offline", "--ignore-scripts", "--ignore-workspace", ...tarballs],
       {
         cwd: consumer,
@@ -102,13 +89,8 @@ export async function checkPackedPackages(root: string): Promise<readonly Packed
 }
 
 async function main(): Promise<void> {
-  const manifestIndex = process.argv.indexOf("--manifest");
-  const manifestPath = manifestIndex >= 0 ? process.argv[manifestIndex + 1] : undefined;
-  if (manifestIndex >= 0 && !manifestPath) throw new Error("--manifest requires a path");
-  const rootArgument = process.argv
-    .slice(2)
-    .find((argument) => argument !== "--manifest" && argument !== manifestPath);
-  const evidence = await checkPackedPackages(rootArgument ? resolve(rootArgument) : process.cwd());
+  const { root, manifestPath } = resolvePackCheckArguments(process.argv);
+  const evidence = await checkPackedPackages(root);
   if (manifestPath) {
     await writeFile(
       resolve(manifestPath),
