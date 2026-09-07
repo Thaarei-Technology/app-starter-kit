@@ -3238,7 +3238,7 @@ ${plan.needsDatabase ? "      - name: Bootstrap database roles\n        run: pnp
           build-args: |
             SOURCE_COMMIT=\${{ github.sha }}
             IMAGE_VERSION=${PACKAGE_VERSION}-dev.1
-          secrets: |
+          secret-files: |
             npmrc=\${{ runner.temp }}/thaarei-npmrc
       - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
         with:
