@@ -151,10 +151,13 @@ describe("starter profile generation", () => {
       )) {
         expect(file.content).toContain("pnpm install --frozen-lockfile --ignore-scripts");
         expect(file.content).toContain(
-          "--mount=type=secret,id=npmrc,target=/run/secrets/npmrc,required=true",
+          "--mount=type=secret,id=npmrc,target=/workspace/.npmrc,required=true",
         );
-        expect(file.content).toContain("NPM_CONFIG_USERCONFIG=/run/secrets/npmrc");
         expect(file.content).toMatch(/pnpm --filter @[^\s]+\.\.\. build/);
+        const runtimeCleanup =
+          "RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx";
+        expect(file.content).toContain(runtimeCleanup);
+        expect(file.content.indexOf(runtimeCleanup)).toBeLessThan(file.content.indexOf("USER "));
       }
       expect(paths).not.toContain("docs/engineering-starter-kit.md");
       expect(paths).not.toContain("templates/AGENTS.md");
