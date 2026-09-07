@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -15,6 +15,7 @@ import {
   type Profile,
   writeGeneratedProject,
 } from "./generator.js";
+import { finalizeRepository } from "./index.js";
 import { InitValidationError, validateInitOptions } from "./validation.js";
 
 function config(profiles: readonly Profile[], mobile = false): InitConfig {
@@ -113,6 +114,14 @@ describe("starter profile generation", () => {
         generated.files.find((file) => file.path === ".github/workflows/product-validation.yml")
           ?.content,
       ).toContain("pnpm install --frozen-lockfile --ignore-scripts");
+      expect(
+        generated.files.find((file) => file.path === ".github/workflows/product-validation.yml")
+          ?.content,
+      ).toContain(`NPM_CONFIG_USERCONFIG: \${{ runner.temp }}/thaarei-npmrc`);
+      expect(
+        generated.files.find((file) => file.path === ".github/workflows/product-validation.yml")
+          ?.content,
+      ).not.toContain("pnpm config set");
       expect(paths).toEqual(
         expect.arrayContaining([
           ".github/workflows/security.yml",
@@ -141,6 +150,10 @@ describe("starter profile generation", () => {
           candidate.path.endsWith("Dockerfile") && candidate.path !== "services/python/Dockerfile",
       )) {
         expect(file.content).toContain("pnpm install --frozen-lockfile --ignore-scripts");
+        expect(file.content).toContain(
+          "--mount=type=secret,id=npmrc,target=/run/secrets/npmrc,required=true",
+        );
+        expect(file.content).toContain("NPM_CONFIG_USERCONFIG=/run/secrets/npmrc");
         expect(file.content).toMatch(/pnpm --filter @[^\s]+\.\.\. build/);
       }
       expect(paths).not.toContain("docs/engineering-starter-kit.md");
@@ -369,6 +382,25 @@ describe("starter profile generation", () => {
 
     expect(supplyChain).toContain("TRIVY_USERNAME");
     expect(supplyChain).toContain("TRIVY_PASSWORD");
+    expect(generatedJson(generated, "package.json")).toMatchObject({
+      scripts: {
+        "dev:deps": "docker compose up -d --wait --wait-timeout 120",
+        "db:bootstrap-roles": "tsx tooling/db/bootstrap-roles.ts",
+      },
+      devDependencies: { postgres: expect.any(String) },
+    });
+    expect(
+      generated.files.find((file) => file.path === "tooling/db/bootstrap-roles.ts")?.content,
+    ).toContain("DATABASE_ADMIN_URL");
+    expect(
+      generated.files.find((file) => file.path === "tooling/db/bootstrap-roles.ts")?.content,
+    ).toContain('process.loadEnvFile(resolve(process.cwd(), ".env"))');
+    expect(
+      generated.files.find((file) => file.path === "packages/database/Dockerfile")?.content,
+    ).toContain("node");
+    expect(supplyChain).toContain('application":"migration"');
+    expect(supplyChain).toContain("packages/database/Dockerfile");
+    expect(supplyChain).toContain("Bootstrap database roles");
     expect(() => parseYaml(supplyChain)).not.toThrow();
     expect(supplyChain).toContain(
       `pnpm runtime:inspect -- "\${{ steps.image.outputs.image }}@\${{ steps.build.outputs.digest }}" "\${{ matrix.application }}"`,
@@ -378,6 +410,15 @@ describe("starter profile generation", () => {
     expect(runtimeInspector).toContain('["stop", "--signal", "SIGTERM"');
     expect(runtimeInspector).toContain('"graceful-sigterm"');
     expect(dokployServices).toContain('"applicationMode":"docker-provider"');
+    const dokployDefinition = generatedJson(generated, "deployment/dokploy/services.json") as {
+      services: Array<{ name: string; domain: { required: boolean } }>;
+    };
+    expect(
+      dokployDefinition.services.find((service) => service.name === "web")?.domain.required,
+    ).toBe(true);
+    expect(
+      dokployDefinition.services.find((service) => service.name === "api")?.domain.required,
+    ).toBe(false);
     expect(dokployAdapter).toContain('request("application.update"');
     expect(dokployAdapter).toContain("waitForDeployment");
     expect(dokployAdapter).toContain("previousDeploymentIds");
@@ -954,6 +995,34 @@ describe("starter profile validation", () => {
 
   test("uses a safe deterministic output directory when output is omitted", () => {
     expect(validateInitOptions(options("web")).outputDir).toBe(".thaarei/generated/client");
+  });
+
+  test("models skipGit and rejects remote creation combinations", () => {
+    expect(validateInitOptions(options("web", { "skip-git": "true" })).skipGit).toBe(true);
+    expect(() =>
+      validateInitOptions(
+        options("web", {
+          "skip-git": "true",
+          "create-remote": "true",
+          "github-repo": "Thaarei/example",
+        }),
+      ),
+    ).toThrow("--skip-git cannot be combined");
+    expect(() =>
+      validateInitOptions(options("web", { "skip-git": "true", "github-repo": "Thaarei/example" })),
+    ).toThrow("--skip-git cannot be combined");
+  });
+
+  test("initializes the default repository on main", async () => {
+    const root = await mkdtemp(join(tmpdir(), "thaarei-git-"));
+    try {
+      await finalizeRepository(root, config(["web"]));
+      await expect(readFile(join(root, ".git", "HEAD"), "utf8")).resolves.toBe(
+        "ref: refs/heads/main\n",
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test("accepts syntax-sensitive Unicode text and rejects control characters", () => {

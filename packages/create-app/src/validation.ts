@@ -252,6 +252,11 @@ export function validateInitOptions(options: ReadonlyMap<string, string>): InitC
     throw new InitValidationError("--topology must be standard or hardened");
   const githubRepository = options.get("github-repo")?.trim() || null;
   const createRemote = options.has("create-remote");
+  const skipGit = options.has("skip-git");
+  if (skipGit && (createRemote || githubRepository !== null))
+    throw new InitValidationError(
+      "--skip-git cannot be combined with --create-remote or --github-repo",
+    );
   if ((githubRepository !== null) !== createRemote)
     throw new InitValidationError("--github-repo and --create-remote must be supplied together");
   if (githubRepository !== null && !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(githubRepository))
@@ -276,6 +281,7 @@ export function validateInitOptions(options: ReadonlyMap<string, string>): InitC
     topology,
     githubRepository,
     createRemote,
+    skipGit,
   };
   if (agentTemplate) return { ...config, agentTemplate };
   return config;

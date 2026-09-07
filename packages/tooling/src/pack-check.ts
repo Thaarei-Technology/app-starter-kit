@@ -17,6 +17,20 @@ export interface PackedPackageEvidence {
   readonly sha256: string;
 }
 
+export function resolvePackCheckArguments(argv: readonly string[]): {
+  readonly root: string;
+  readonly manifestPath: string | undefined;
+} {
+  const args = argv.slice(2);
+  const manifestIndex = args.indexOf("--manifest");
+  const manifestPath = manifestIndex >= 0 ? args[manifestIndex + 1] : undefined;
+  if (manifestIndex >= 0 && !manifestPath) throw new Error("--manifest requires a path");
+  const rootArgument = args.find(
+    (argument) => argument !== "--" && argument !== "--manifest" && argument !== manifestPath,
+  );
+  return { root: rootArgument ? resolve(rootArgument) : process.cwd(), manifestPath };
+}
+
 export async function checkPackedPackages(root: string): Promise<readonly PackedPackageEvidence[]> {
   const output = await mkdtemp(resolve(tmpdir(), "thaarei-pack-"));
   const consumer = await mkdtemp(resolve(tmpdir(), "thaarei-consumer-"));
@@ -51,9 +65,13 @@ export async function checkPackedPackages(root: string): Promise<readonly Packed
       resolve(consumer, "package.json"),
       `${JSON.stringify({ name: "thaarei-package-consumer", version: "1.0.0", private: true }, null, 2)}\n`,
     );
-    await execFileAsync("pnpm", ["add", "--offline", "--ignore-scripts", ...tarballs], {
-      cwd: consumer,
-    });
+    await execFileAsync(
+      "pnpm",
+      ["add", "--offline", "--ignore-scripts", "--ignore-workspace", ...tarballs],
+      {
+        cwd: consumer,
+      },
+    );
     const installed = JSON.parse(await readFile(resolve(consumer, "package.json"), "utf8")) as {
       dependencies?: Record<string, string>;
     };
@@ -71,13 +89,8 @@ export async function checkPackedPackages(root: string): Promise<readonly Packed
 }
 
 async function main(): Promise<void> {
-  const manifestIndex = process.argv.indexOf("--manifest");
-  const manifestPath = manifestIndex >= 0 ? process.argv[manifestIndex + 1] : undefined;
-  if (manifestIndex >= 0 && !manifestPath) throw new Error("--manifest requires a path");
-  const rootArgument = process.argv
-    .slice(2)
-    .find((argument) => argument !== "--manifest" && argument !== manifestPath);
-  const evidence = await checkPackedPackages(rootArgument ? resolve(rootArgument) : process.cwd());
+  const { root, manifestPath } = resolvePackCheckArguments(process.argv);
+  const evidence = await checkPackedPackages(root);
   if (manifestPath) {
     await writeFile(
       resolve(manifestPath),
