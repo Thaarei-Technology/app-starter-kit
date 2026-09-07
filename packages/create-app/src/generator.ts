@@ -1785,7 +1785,7 @@ function databaseRoleBootstrapFile(): GeneratedFile {
     "await sql.end({ timeout: 5 });",
     'process.stdout.write("Database roles bootstrapped; credentials written to the protected output file.\\n");',
   ];
-  return textFile("tooling/db/bootstrap-roles.ts", lines.join("\\n"));
+  return textFile("tooling/db/bootstrap-roles.ts", lines.join("\n"));
 }
 
 function databaseMigrationDockerfile(config: InitConfig): GeneratedFile {
