@@ -392,7 +392,7 @@ function withPrivateRegistryBuildSecret(file: GeneratedFile): GeneratedFile {
       .replace(
         "RUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts",
         `RUN corepack enable
-RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=true \\
+RUN --mount=type=secret,id=npmrc,target=/workspace/.npmrc,required=true \\
     pnpm install --frozen-lockfile --ignore-scripts`,
       ),
   );
@@ -1797,7 +1797,7 @@ FROM ${NODE_IMAGE} AS build
 WORKDIR /workspace
 COPY . .
 RUN corepack enable
-RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=true \\
+RUN --mount=type=secret,id=npmrc,target=/workspace/.npmrc,required=true \\
     pnpm install --frozen-lockfile --ignore-scripts
 RUN pnpm --filter ${packageName(config, "database")}... build
 RUN pnpm --filter ${packageName(config, "database")} --prod deploy /runtime
@@ -5927,7 +5927,7 @@ FROM ${NODE_IMAGE} AS build
 WORKDIR /workspace
 COPY . .
 RUN corepack enable
-RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=true \\
+RUN --mount=type=secret,id=npmrc,target=/workspace/.npmrc,required=true \\
     pnpm install --frozen-lockfile --ignore-scripts --filter ${packageName(config, "api-app")}...
 RUN pnpm --filter ${packageName(config, "api-app")}... build
 RUN pnpm --filter ${packageName(config, "api-app")} --prod deploy /runtime && rm -rf /runtime/src
@@ -6080,7 +6080,7 @@ FROM ${NODE_IMAGE} AS build
 WORKDIR /workspace
 COPY . .
 RUN corepack enable
-RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=true \\
+RUN --mount=type=secret,id=npmrc,target=/workspace/.npmrc,required=true \\
     pnpm install --frozen-lockfile --ignore-scripts --filter ${packageName(config, "worker-app")}...
 RUN pnpm --filter ${packageName(config, "worker-app")}... build
 RUN pnpm --filter ${packageName(config, "worker-app")} --prod deploy /runtime && rm -rf /runtime/src

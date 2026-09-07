@@ -151,7 +151,7 @@ describe("starter profile generation", () => {
       )) {
         expect(file.content).toContain("pnpm install --frozen-lockfile --ignore-scripts");
         expect(file.content).toContain(
-          "--mount=type=secret,id=npmrc,target=/root/.npmrc,required=true",
+          "--mount=type=secret,id=npmrc,target=/workspace/.npmrc,required=true",
         );
         expect(file.content).toMatch(/pnpm --filter @[^\s]+\.\.\. build/);
       }
