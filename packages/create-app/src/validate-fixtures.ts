@@ -343,7 +343,26 @@ async function stopProcess(processHandle: ManagedProcess): Promise<void> {
   });
 }
 
+async function requireDockerRuntime(root: string): Promise<void> {
+  const checks = [
+    { label: "Docker daemon", arguments_: ["version", "--format", "{{.Server.Version}}"] },
+    { label: "Docker Compose v2", arguments_: ["compose", "version", "--short"] },
+  ] as const;
+  for (const check of checks) {
+    try {
+      await execFileAsync("docker", check.arguments_, {
+        cwd: root,
+        maxBuffer: 1024 * 1024,
+      });
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`${check.label} is required for all-server-capabilities: ${detail}`);
+    }
+  }
+}
+
 async function proveAllServerRuntime(root: string, productId: string): Promise<void> {
+  await requireDockerRuntime(root);
   const ports = await allocatePorts([
     "api",
     "web",
