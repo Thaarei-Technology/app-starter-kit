@@ -22,8 +22,8 @@ Canonical records: `.thaarei/work/*.md`.
 
 - Status: in_progress
 - Owner: Starter maintainers
-- Updated: 2026-09-07
-- Paths: packages/create-app/src/generator.ts, packages/create-app/src/initializer.test.ts, .thaarei/work/STARTER-021.md
+- Updated: 2026-09-08
+- Paths: packages/create-app/src/generator.ts, packages/create-app/src/initializer.test.ts, packages/create-app/src/validate-fixtures.ts, .thaarei/work/STARTER-021.md
 
 ## STARTER-018: Reconcile final documentation and qualification tracking
 
