@@ -160,13 +160,9 @@ export const IMAGE_CATALOG = {
     reference: "python:3.12.13-slim-bookworm",
     digest: "sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2",
   },
-  minio: {
-    reference: "minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1",
-    digest: "sha256:13582eff79c6605a2d315bdd0e70164142ea7e98fc8411e9e10d089502a6d883",
-  },
-  minioMc: {
-    reference: "minio/mc:RELEASE.2025-08-13T08-35-41Z-cpuv1",
-    digest: "sha256:95b5f3f7969a5c5a9f3a700ba72d5c84172819e13385aaf916e237cf111ab868",
+  seaweedfs: {
+    reference: "chrislusf/seaweedfs:4.45",
+    digest: "sha256:fc9f76fa993ad69966ffeb2f65d0318fcae39c6f8e20cf68ef7b3a5cb97769e5",
   },
   valkey: {
     reference: "valkey/valkey:8.1.1",
@@ -377,7 +373,12 @@ export const CAPABILITY_REGISTRY: Readonly<Record<CanonicalProfile, CapabilityDe
   storage: definition("storage", ["api", "data", "identity"], {
     fixtures: ["object-storage"],
     localServices: [
-      service("minio", "minio", "curl -fsS http://localhost:9000/minio/health/live", "storage"),
+      service(
+        "seaweedfs",
+        "seaweedfs",
+        "wget -S -O /dev/null http://127.0.0.1:8333/ 2>&1 | grep -q 'HTTP/'",
+        "storage",
+      ),
     ],
   }),
   python: definition("python", [], {

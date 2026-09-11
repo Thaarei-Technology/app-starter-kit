@@ -47,6 +47,7 @@ export interface SourceOfTruthRecord {
 export interface SourceOfTruthOptions {
   readonly roots?: readonly string[];
   readonly include?: readonly string[];
+  readonly allowEmpty?: boolean;
 }
 
 const IGNORED_DIRECTORIES = new Set([
@@ -393,6 +394,16 @@ export const checkSourceOfTruth = async (
     } else if (keywordSet.length > 0) {
       byKeywordSet.set(keywordSet, record);
     }
+  }
+  if (records.length === 0 && options.allowEmpty !== true) {
+    diagnostics.push(
+      makeDiagnostic(
+        "SOT_EMPTY",
+        "No source-of-truth records were found, so the check would pass vacuously. Add an architectural owner or pass --allow-empty for infrastructure repositories.",
+        absoluteRoot,
+        1,
+      ),
+    );
   }
   return {
     diagnostics,

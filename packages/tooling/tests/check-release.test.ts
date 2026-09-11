@@ -38,14 +38,14 @@ describe("checkRelease", () => {
     const fixture = await createFixture();
     const packagePath = resolve(fixture, "package.json");
     const packageData = JSON.parse(await readFile(packagePath, "utf8")) as Record<string, unknown>;
-    packageData.version = "1.0.0-dev.2";
+    packageData.version = "1.0.0-dev.3";
     await writeFile(packagePath, `${JSON.stringify(packageData, null, 2)}\n`);
 
     const result = await checkRelease(fixture);
     expect(result.kind).toBe("invalid");
     if (result.kind === "invalid") {
       expect(result.errors).toContain(
-        "package.json version must match starter-release.json release 1.0.0-dev.1",
+        "package.json version must match starter-release.json release 1.0.0-dev.2",
       );
     }
   });

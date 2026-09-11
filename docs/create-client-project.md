@@ -138,6 +138,7 @@ The initializer requires these values:
 | `--package-scope` | `scope` or `@scope`, using lowercase letters, numbers, `.`, `_`, and `-`. | The initializer normalizes `scope` to `@scope`. |
 | `--profiles` | A comma-separated list of supported profile names. Whitespace around commas is allowed. | Select at least one profile. Do not repeat a profile. The `base` profile is always included and is not passed in this list. |
 | `--deployment` | `dokploy` or `railway` | Selects the generated deployment files. |
+| `--transport` | `trpc` or `rest` | Selects the `packages/api` transport. Defaults to `trpc` when `web` or `mobile` is selected, and to `rest` when `external-api` is selected without a first-party typed client. `rest` requires `api` and is incompatible with `web` or `mobile`. |
 | `--technical-owner` | Non-empty text, at least 2 and at most 120 characters. Newlines and control characters are rejected. | The technical owner recorded in `INIT-001`. |
 | `--operations-owner` | Non-empty text, at least 2 and at most 120 characters. Newlines and control characters are rejected. | The operations owner recorded in `INIT-001`. |
 
@@ -164,13 +165,13 @@ variable, or CI job.
 | --- | --- | --- |
 | `web` | Next.js web application and presentation packages | `api` |
 | `mobile` | Experimental Expo and React Native application; production forbidden in Starter 1.0 | `api` plus explicit `--allow-experimental` |
-| `api` | Fastify and tRPC API | Base, which is implicit |
+| `api` | Fastify API with a tRPC or REST transport (`--transport`) | Base, which is implicit |
 | `data` | PostgreSQL, Drizzle, migrations, and database package | Base, which is implicit |
 | `identity` | Better Auth authentication artifacts | `api`, `data` |
 | `jobs` | Graphile Worker and `apps/worker` | `data` |
 | `ai` | AI SDK adapter and policy components | `api`, `data`, `identity` |
 | `external-api` | REST and OpenAPI contract plus generated client | `api` |
-| `storage` | S3-compatible storage adapter and metadata persistence | `api`, `data`, `identity` |
+| `storage` | S3-compatible storage adapter (SeaweedFS local fixture) and metadata persistence | `api`, `data`, `identity` |
 | `python` | Separate Python 3.12 service | `api` or `jobs` |
 | `tenancy` | Organization control plane, membership authorization, RLS context, invitations, grants, and audit events | `identity`, `api`, `data` |
 | `events` | Transactional outbox, inbox receipts, delivery leases, fencing, retry, dead-letter, and replay ports | `data`, `jobs` |
@@ -230,7 +231,7 @@ pnpm starter:init \
 ```
 
 `pnpm validate:starter` runs this fixture with allocated ports and local
-PostgreSQL/pgvector, MinIO, Valkey, Mailpit, collector, deterministic AI, and
+PostgreSQL/pgvector, SeaweedFS, Valkey, Mailpit, collector, deterministic AI, and
 recorded provider protocol fixtures. The generated `.env` owns provider
 variables such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `STRIPE_SECRET_KEY`,
 `RAZORPAY_KEY_SECRET`, `RESEND_API_KEY`, and `SENTRY_DSN`; local proof leaves

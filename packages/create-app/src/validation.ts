@@ -253,6 +253,15 @@ export function validateInitOptions(options: ReadonlyMap<string, string>): InitC
   const githubRepository = options.get("github-repo")?.trim() || null;
   const createRemote = options.has("create-remote");
   const skipGit = options.has("skip-git");
+  const rawTransport = options.get("transport")?.trim();
+  if (rawTransport !== undefined && rawTransport !== "trpc" && rawTransport !== "rest")
+    throw new InitValidationError("--transport must be trpc or rest");
+  if (rawTransport === "rest" && !profiles.includes("api"))
+    throw new InitValidationError("--transport rest requires the api profile");
+  if (rawTransport === "rest" && (profiles.includes("web") || profiles.includes("mobile")))
+    throw new InitValidationError(
+      "--transport rest cannot be combined with web or mobile, which consume the first-party tRPC client",
+    );
   if (skipGit && (createRemote || githubRepository !== null))
     throw new InitValidationError(
       "--skip-git cannot be combined with --create-remote or --github-repo",
@@ -278,6 +287,7 @@ export function validateInitOptions(options: ReadonlyMap<string, string>): InitC
     providers: selectedProviders,
     allowExperimental: options.has("allow-experimental"),
     allowBetaTarget: options.has("allow-beta-target"),
+    ...(rawTransport ? { transport: rawTransport as "trpc" | "rest" } : {}),
     topology,
     githubRepository,
     createRemote,

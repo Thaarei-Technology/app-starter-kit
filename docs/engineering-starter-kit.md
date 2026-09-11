@@ -32,16 +32,16 @@ listed in the project configuration.
 
 | Profile | Approved stack and boundary | Required profiles |
 | --- | --- | --- |
-| `base` | Node 24 LTS, pnpm 11, Turborepo, strict TypeScript, Biome, Vitest, CI gates, package boundaries, source-of-truth checks, and `.thaarei/work` | None |
+| `base` | The mandatory foundation applied to every project. Node 24 LTS, pnpm 11, Turborepo, strict TypeScript, Biome, Vitest, CI gates, package boundaries, source-of-truth checks, and `.thaarei/work`. It is never passed in `--profiles`. | None |
 | `web` | Next.js, React, Tailwind CSS v4, shadcn configured with Base UI, TanStack Query, TanStack Form, and `packages/design-tokens` | None |
 | `mobile` | Experimental internal-only Expo SDK 57 profile. Selection requires `--allow-experimental`; production admission is forbidden in Starter 1.0 and native iOS/Android qualification remains blocked. | `api` |
-| `api` | Fastify 5, tRPC 11, Zod, Pino, request context, and health checks | `base` |
+| `api` | Fastify 5, Zod, Pino, request context, health checks, and a tRPC 11 or REST transport selected by `--transport` | `base` |
 | `data` | PostgreSQL and Drizzle, isolated in `packages/database` | `base` |
 | `identity` | Better Auth for authentication artifacts only. The application owns authorization and its records. | `api`, `data` |
 | `jobs` | Graphile Worker, idempotent task handlers, and PostgreSQL-backed workflow state in the `apps/worker` application | `data` |
 | `ai` | AI SDK, a logical model registry, typed tools, authorization, risk classification, approval records, evaluations, telemetry, and cost limits | `api`, `data`, `identity` |
 | `external-api` | Fastify REST adapters, OpenAPI, RFC 9457 Problem Details, and generated clients | `api` |
-| `storage` | An S3-compatible object-storage adapter with application-owned metadata and access policy | `api`, `data`, `identity` |
+| `storage` | An S3-compatible object-storage adapter with application-owned metadata and access policy. Provider is selectable: SeaweedFS is the local and integration fixture; a managed S3-compatible endpoint is the production reference. | `api`, `data`, `identity` |
 | `python` | An isolated Python 3.12 service for work that TypeScript cannot meet cleanly | `api` or `jobs` |
 
 The remaining V2 profiles complete the reusable foundation:
@@ -69,7 +69,7 @@ metadata. Supported selections are Stripe/Razorpay, OpenAI/Anthropic,
 Resend, Valkey, and OTLP/Sentry. RAG requires OpenAI because
 `embedding.default` is pinned to `text-embedding-3-small` with 1536 dimensions;
 Anthropic remains available for chat roles. Local proof uses deterministic AI,
-Mailpit, MinIO, Valkey, PostgreSQL/pgvector, and an OpenTelemetry collector.
+Mailpit, SeaweedFS, Valkey, PostgreSQL/pgvector, and an OpenTelemetry collector.
 It does not claim paid-provider, live deployment, restore/rollback, or native
 iOS/Android runtime evidence.
 
@@ -106,15 +106,21 @@ packages remain private and non-publishable.
 
 ## Package ownership
 
+The generated monorepo imports the published `@thaarei-technology/foundation`
+package for shared primitives: request context, redacted logging, application
+errors, branded identifiers, and `loadRuntimeConfig`. Generated code imports it
+directly. It is an exact-version private dependency, not a local workspace
+directory.
+
 The generated monorepo uses these private workspace packages when their
 profiles require them:
 
-- `packages/foundation` contains shared primitives and configuration-free utilities.
+- `packages/config` contains the process-role configuration schema, environment parsing, and fail-closed admission. It is the only package that may read `process.env`; every other package receives configuration as parameters.
 - `packages/core` contains domain rules, use cases, and provider ports.
 - `packages/contracts` contains product wire schemas and shared contract types.
 - `packages/database` contains Drizzle schema, migrations, transactions, and repositories that need persistence.
 - `packages/adapters` contains provider implementations and infrastructure clients.
-- `packages/api` contains the Fastify and tRPC transport composition.
+- `packages/api` contains the Fastify transport composition and, when selected, the tRPC router.
 - `packages/api-client` contains generated external clients. Generated output is not hand-edited.
 - `packages/design-tokens` contains shared design values and UI boundary types.
 - `packages/test-support` contains test fixtures and explicit local test doubles.
@@ -129,9 +135,15 @@ Use strict TypeScript settings, including `noUncheckedIndexedAccess`,
 `exactOptionalPropertyTypes`, `noImplicitOverride`, `noImplicitReturns`, and
 `useUnknownInCatchVariables`.
 
-Use tRPC for first-party application calls. Build reusable immutable procedures
-with centralized context and base procedures. Use REST and OpenAPI only through
-the `external-api` profile. Keep RFC 9457 errors at external boundaries.
+Use tRPC for first-party application calls when a generated web or mobile app
+consumes the typed client. Build reusable immutable procedures with centralized
+context and base procedures. Select `--transport rest` when the product is a
+REST-only API: the generated `packages/api` then emits no tRPC imports,
+procedures, or `/trpc` route, and the product owns any REST routes it needs.
+The default is tRPC when `web` or `mobile` is selected, and REST when
+`external-api` is selected without a first-party typed client. Use REST and
+OpenAPI through the `external-api` profile. Keep RFC 9457 errors at external
+boundaries.
 
 Use PostgreSQL transactions for business state and Graphile Worker enqueueing.
 Task payloads must be validated, idempotent, and safe to retry. Store durable
@@ -144,7 +156,8 @@ model selection belongs in the logical model registry, not in domain code.
 ## Source-of-truth blocks
 
 Add an inline block to architectural owners only: schemas, domain services,
-tRPC router groups, repositories, adapters, policies, job definitions, AI
+tRPC router or REST route groups, repositories, adapters, policies, job
+definitions, AI
 tools, and reusable UI boundaries. Do not annotate trivial helpers.
 
 Use this exact shape:
@@ -180,7 +193,7 @@ client project](create-client-project.md).
 Initialize a client repository with one deterministic command:
 
 ```text
-pnpm starter:init --product-id <id> --client-id <id> --display-name <name> --package-scope <scope> --profiles <list> --deployment <dokploy|railway> --technical-owner <name> --operations-owner <name>
+pnpm starter:init --product-id <id> --client-id <id> --display-name <name> --package-scope <scope> --profiles <list> --deployment <dokploy|railway> [--transport <trpc|rest>] --technical-owner <name> --operations-owner <name>
 ```
 
 The initializer validates profile dependencies and rejects unknown profiles.

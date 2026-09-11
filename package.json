@@ -1,6 +1,6 @@
 {
   "name": "thaarei-starter-source",
-  "version": "1.0.0-dev.1",
+  "version": "1.0.0-dev.2",
   "private": true,
   "description": "Source template and validation tooling for independent Thaarei client repositories.",
   "type": "module",
@@ -12,7 +12,7 @@
     "check:boundaries": "tsx packages/tooling/src/governance/cli.ts check:boundaries",
     "check:implementation": "tsx packages/tooling/src/governance/cli.ts check:implementation",
     "check:publication": "tsx packages/tooling/src/publication.ts",
-    "check:source-of-truth": "tsx packages/tooling/src/governance/cli.ts check:source-of-truth",
+    "check:source-of-truth": "tsx packages/tooling/src/governance/cli.ts check:source-of-truth --allow-empty",
     "check:fixtures": "tsx packages/create-app/src/validate-fixtures.ts",
     "format": "biome format --write .",
     "format:check": "biome format .",

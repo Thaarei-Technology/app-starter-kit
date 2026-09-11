@@ -1,7 +1,7 @@
 {
   "$schema": "./packages/tooling/schemas/starter-release.schema.json",
   "schemaVersion": 2,
-  "release": "1.0.0-dev.1",
+  "release": "1.0.0-dev.2",
   "status": "prerelease",
   "releasedAt": null,
   "runtime": {
@@ -135,13 +135,9 @@
       "reference": "python:3.12.13-slim-bookworm",
       "digest": "sha256:4766d8b510c428e595d74b9cc5bbb2fae8e26316fffb4adc89908d79aacd58a2"
     },
-    "minio": {
-      "reference": "minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1",
-      "digest": "sha256:13582eff79c6605a2d315bdd0e70164142ea7e98fc8411e9e10d089502a6d883"
-    },
-    "minioMc": {
-      "reference": "minio/mc:RELEASE.2025-08-13T08-35-41Z-cpuv1",
-      "digest": "sha256:95b5f3f7969a5c5a9f3a700ba72d5c84172819e13385aaf916e237cf111ab868"
+    "seaweedfs": {
+      "reference": "chrislusf/seaweedfs:4.45",
+      "digest": "sha256:fc9f76fa993ad69966ffeb2f65d0318fcae39c6f8e20cf68ef7b3a5cb97769e5"
     },
     "valkey": {
       "reference": "valkey/valkey:8.1.1",
@@ -229,9 +225,9 @@
     }
   ],
   "packageVersions": {
-    "@thaarei-technology/create-app": "1.0.0-dev.1",
-    "@thaarei-technology/foundation": "1.0.0-dev.1",
-    "@thaarei-technology/tooling": "1.0.0-dev.1"
+    "@thaarei-technology/create-app": "1.0.0-dev.2",
+    "@thaarei-technology/foundation": "1.0.0-dev.2",
+    "@thaarei-technology/tooling": "1.0.0-dev.2"
   },
   "qualifications": [
     {

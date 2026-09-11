@@ -273,7 +273,6 @@ export async function configureFixtureEnvironment(
     OTEL_EXPORTER_OTLP_ENDPOINT: `http://127.0.0.1:${ports.otelHttp ?? 0}`,
     POSTGRES_PORT: String(ports.postgres ?? 0),
     STORAGE_PORT: String(ports.storage ?? 0),
-    STORAGE_CONSOLE_PORT: String(ports.storageConsole ?? 0),
     VALKEY_PORT: String(ports.valkey ?? 0),
     MAILPIT_SMTP_PORT: String(ports.mailpitSmtp ?? 0),
     MAILPIT_UI_PORT: String(ports.mailpitUi ?? 0),
@@ -370,7 +369,6 @@ async function proveAllServerRuntime(root: string, productId: string): Promise<v
     "python",
     "postgres",
     "storage",
-    "storageConsole",
     "valkey",
     "mailpitUi",
     "otelHealth",
@@ -445,7 +443,7 @@ async function proveAllServerRuntime(root: string, productId: string): Promise<v
       fixtureInstanceId,
     );
     await waitForHttp(`http://127.0.0.1:${ports.web}/`, 200, processes);
-    await waitForHttp(`http://127.0.0.1:${ports.storage}/minio/health/live`, 200, processes);
+    await waitForHttp(`http://127.0.0.1:${ports.storage}/`, 200, processes);
   } finally {
     await Promise.all(processes.map(stopProcess));
     try {

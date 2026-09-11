@@ -22,7 +22,9 @@ selection, and allowed write scope are known.
 - Keep domain rules in `packages/core` and persistence in `packages/database`.
 - Keep `drizzle-orm`, `pg`, and `postgres` imports in `packages/database`.
 - Keep provider SDKs in `packages/adapters`.
-- Keep `packages/api` as a thin Fastify 5 and tRPC 11 transport adapter.
+- Read `process.env` only in `packages/config` and application entrypoints. Pass configuration into packages as parameters; packages must not read the environment directly.
+- Import `@thaarei-technology/foundation` for request context, redacted logging, application errors, branded identifiers, and runtime configuration loading instead of re-implementing them.
+- Keep `packages/api` as a thin Fastify 5 transport adapter. It exposes a tRPC 11 router when the transport is tRPC, and a REST-only surface when the product selected `--transport rest`.
 - Keep clients on `packages/api-client` or an explicit API boundary. Client code does not import server-only packages.
 - Use Better Auth for authentication artifacts. Keep authorization in application code.
 - Use Graphile Worker for idempotent tasks and PostgreSQL-backed workflow state. Enqueue jobs through the public SQL API inside the business transaction.
@@ -44,7 +46,7 @@ or native mobile runtime behavior.
 ## Inline ownership metadata
 
 Add a source-of-truth block only to an architectural owner: a schema, domain
-service, tRPC router group, repository, adapter, policy, job definition, AI
+service, transport route group, repository, adapter, policy, job definition, AI
 tool, or reusable UI boundary. Do not annotate trivial helpers.
 
 ```ts

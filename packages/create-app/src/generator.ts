@@ -29,6 +29,7 @@ export interface InitConfig {
   readonly requestedProfiles?: readonly Profile[];
   readonly preset?: import("./capabilities.js").Preset | null;
   readonly deployment: Deployment;
+  readonly transport?: "trpc" | "rest";
   readonly technicalOwner: string;
   readonly operationsOwner: string;
   readonly outputDir: string;
@@ -100,9 +101,9 @@ export function productIdentity(config: Pick<InitConfig, "productId">): ProductI
 }
 
 const PACKAGE_VERSION = "0.1.0";
-const GENERATOR_VERSION = "1.0.0-dev.1";
-const FOUNDATION_VERSION = "1.0.0-dev.1";
-const TOOLING_VERSION = "1.0.0-dev.1";
+const GENERATOR_VERSION = "1.0.0-dev.2";
+const FOUNDATION_VERSION = "1.0.0-dev.2";
+const TOOLING_VERSION = "1.0.0-dev.2";
 const MOBILE_WAIVER_EXPIRES_AT = "2026-10-05T00:00:00.000Z";
 const MOBILE_WAIVER_EVIDENCE_DIGEST =
   "sha256:84f526a95e79f294bed88c718016538fb0bb9130b9539b82958653aacfbaec4b";
@@ -114,8 +115,7 @@ const NODE_RUNTIME_CLEANUP =
 const PYTHON_VERSION = "3.12.13";
 const PYTHON_IMAGE = `${IMAGE_CATALOG.python.reference}@${IMAGE_CATALOG.python.digest}`;
 const POSTGRES_IMAGE = `${IMAGE_CATALOG.postgresql.reference}@${IMAGE_CATALOG.postgresql.digest}`;
-const MINIO_IMAGE = `${IMAGE_CATALOG.minio.reference}@${IMAGE_CATALOG.minio.digest}`;
-const MINIO_MC_IMAGE = `${IMAGE_CATALOG.minioMc.reference}@${IMAGE_CATALOG.minioMc.digest}`;
+const SEAWEEDFS_IMAGE = `${IMAGE_CATALOG.seaweedfs.reference}@${IMAGE_CATALOG.seaweedfs.digest}`;
 
 /**
  * The profile graph is deliberately computed once.  Generation functions consume this
@@ -129,6 +129,7 @@ interface CapabilityPlan {
   readonly capabilityFixtures: readonly string[];
   readonly localServices: readonly string[];
   readonly providers: ProviderSelection;
+  readonly needsTrpc: boolean;
   readonly needsApi: boolean;
   readonly needsApiClient: boolean;
   readonly needsDatabase: boolean;
@@ -158,6 +159,22 @@ interface CapabilityPlan {
 function hasProfile(config: InitConfig, profile: Profile): boolean {
   const canonical = resolveCapabilities(config.profiles, config.providers).profiles;
   return canonical.includes(profile);
+}
+
+/**
+ * Decides whether the generated API exposes the first-party tRPC surface.
+ *
+ * Explicit `--transport` wins. The derived default matches the generated
+ * consumers: a selected web or mobile app consumes the typed tRPC client, so
+ * tRPC stays on. A REST-only product that selects `external-api` without a
+ * first-party typed client is not forced to emit a dead tRPC transport.
+ */
+function needsTrpcTransport(config: InitConfig): boolean {
+  if (config.transport === "rest") return false;
+  if (config.transport === "trpc") return true;
+  return (
+    hasProfile(config, "web") || hasProfile(config, "mobile") || !hasProfile(config, "external-api")
+  );
 }
 
 function createCapabilityPlan(config: InitConfig): CapabilityPlan {
@@ -301,6 +318,7 @@ function createCapabilityPlan(config: InitConfig): CapabilityPlan {
     capabilityFixtures: manifest.fixtures,
     localServices: manifest.localServices.map((service) => service.name),
     providers: manifest.providers,
+    needsTrpc: needsTrpcTransport(config),
     needsApi,
     needsApiClient,
     needsDatabase,
@@ -529,12 +547,14 @@ function testedPackages(config: InitConfig): Readonly<Record<string, string>> {
   };
   if (hasProfile(config, "api")) {
     Object.assign(packages, {
-      "@trpc/client": DEPENDENCY_VERSIONS.trpcClient,
-      "@trpc/server": DEPENDENCY_VERSIONS.trpcServer,
       fastify: DEPENDENCY_VERSIONS.fastify,
       pino: DEPENDENCY_VERSIONS.pino,
       zod: DEPENDENCY_VERSIONS.zod,
     });
+    if (needsTrpcTransport(config)) {
+      packages["@trpc/client"] = DEPENDENCY_VERSIONS.trpcClient;
+      packages["@trpc/server"] = DEPENDENCY_VERSIONS.trpcServer;
+    }
   }
   if (hasProfile(config, "jobs") && !hasProfile(config, "api")) {
     packages.zod = DEPENDENCY_VERSIONS.zod;
@@ -2143,14 +2163,9 @@ ${plan.needsTenancy ? "  readonly organization: { readonly hasMembership: (subje
 ${plan.needsEvents ? "  readonly outbox: OutboxPort & OutboxDeliveryPort;\n" : ""}
 ${plan.needsIdentity ? "  readonly authentication: { readonly database: ReturnType<typeof drizzle>; readonly schema: typeof authSchema; readonly recordAssurance: (sessionToken: string, assurance: AssuranceLevel) => Promise<void>; readonly resolveAssurance: (sessionToken: string) => Promise<{ readonly assurance: AssuranceLevel; readonly authenticatedAt: string } | null> };\n  readonly identity: IdentityRepository;\n" : ""}${plan.needsWorker ? "  readonly workflow: WorkflowStore;\n" : ""}${plan.needsStorage ? "  readonly metadata: StorageMetadataStore;\n" : ""}${plan.needsAi ? "  readonly ai: AiPersistence;\n" : ""}
 }
-export function databaseUrl(): string {
-  const value = process.env.DATABASE_URL;
-  if (!value) throw new Error("DATABASE_URL is required");
-  return value;
-}
 ${workflowRuntime}
 ${tenantRuntime}
-export function createDatabaseRuntime(url = databaseUrl()): DatabaseRuntime {
+export function createDatabaseRuntime(url: string): DatabaseRuntime {
   const sql = postgres(url, { max: 2 });
 ${organizationDatabase}
 ${plan.needsIdentity ? '  const authentication = { database: drizzle(sql, { schema: authSchema }), schema: authSchema, recordAssurance: async (sessionToken: string, assurance: AssuranceLevel) => { await sql.unsafe("INSERT INTO authentication_assurance (session_token, assurance, authenticated_at) VALUES ($1, $2, now()) ON CONFLICT (session_token) DO UPDATE SET assurance = EXCLUDED.assurance, authenticated_at = EXCLUDED.authenticated_at", [sessionToken, assurance]); }, resolveAssurance: async (sessionToken: string) => { const rows = await sql.unsafe("SELECT assurance, authenticated_at FROM authentication_assurance WHERE session_token = $1", [sessionToken]); const row = rows[0]; return row && typeof row.assurance === "string" && row.authenticated_at instanceof Date ? { assurance: row.assurance as AssuranceLevel, authenticatedAt: row.authenticated_at.toISOString() } : null; } };\n  const identityDatabase = drizzle(sql, { schema: { applicationUsers } });\n' : ""}${identityDatabase}${workflowDatabase}${eventDatabase}${metadataDatabase}${aiDatabase}
@@ -2910,13 +2925,13 @@ function environmentReferenceFile(config: InitConfig, plan: CapabilityPlan): Gen
           [
             "STORAGE_BUCKET",
             "starter",
-            "Local MinIO bucket; use a managed bucket in production.",
+            "Local SeaweedFS bucket; use a managed S3-compatible bucket in production.",
           ] as const,
           ["STORAGE_REGION", "us-east-1", "S3-compatible region."] as const,
           [
             "STORAGE_ENDPOINT",
-            "http://127.0.0.1:9000",
-            "Local MinIO endpoint; omit for managed S3.",
+            "http://127.0.0.1:8333",
+            "Local SeaweedFS S3 endpoint; omit for managed S3.",
           ] as const,
           [
             "STORAGE_ACCESS_KEY_ID",
@@ -3035,33 +3050,41 @@ function localComposeFile(config: InitConfig, plan: CapabilityPlan): GeneratedFi
   const includeStorage = plan.needsStorage;
   const storageServices = includeStorage
     ? `
-  object-storage:
+  seaweedfs:
     profiles: ["experimental"]
-    image: ${MINIO_IMAGE}
-    command: server /data --console-address ":9001"
+    image: ${SEAWEEDFS_IMAGE}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        cat >/tmp/seaweedfs-s3.json <<EOF
+        {"identities":[{"name":"starter-local","credentials":[{"accessKey":"\${STORAGE_ACCESS_KEY_ID:-starter_local}","secretKey":"\${STORAGE_SECRET_ACCESS_KEY:-starter_local_secret}"}],"actions":["Admin","Read","Write","List","Tagging"]}]}
+        EOF
+        exec weed server -dir=/data -s3 -s3.port=8333 -s3.config=/tmp/seaweedfs-s3.json
     environment:
-      MINIO_ROOT_USER: starter_local
-      MINIO_ROOT_PASSWORD: starter_local_secret
+      STORAGE_ACCESS_KEY_ID: \${STORAGE_ACCESS_KEY_ID:-starter_local}
+      STORAGE_SECRET_ACCESS_KEY: \${STORAGE_SECRET_ACCESS_KEY:-starter_local_secret}
     ports:
-      - "127.0.0.1:\${STORAGE_PORT:-9000}:9000"
-      - "127.0.0.1:\${STORAGE_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:\${STORAGE_PORT:-8333}:8333"
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD-SHELL", "wget -S -O /dev/null http://127.0.0.1:8333/ 2>&1 | grep -q 'HTTP/'"]
       interval: 2s
       timeout: 5s
       retries: 20
     volumes:
       - starter-object-storage:/data
-  object-storage-init:
+  seaweedfs-init:
     profiles: ["experimental"]
-    image: ${MINIO_MC_IMAGE}
+    image: ${SEAWEEDFS_IMAGE}
     depends_on:
-      object-storage:
+      seaweedfs:
         condition: service_healthy
     entrypoint: ["/bin/sh", "-c"]
     command: >-
-      "mc alias set local http://object-storage:9000 starter_local starter_local_secret
-      && mc mb --ignore-existing local/starter"
+      "until wget -qO- http://seaweedfs:9333/cluster/status >/dev/null; do sleep 2; done;
+      if ! printf 's3.bucket.list\n' | weed shell -master=seaweedfs:9333 -filer=seaweedfs:8888
+      | grep -Eq '(^|[[:space:]])starter([[:space:]]|$)'; then
+      printf 's3.bucket.create -name starter\n' | weed shell -master=seaweedfs:9333 -filer=seaweedfs:8888;
+      fi"
     restart: "no"
 `
     : "";
@@ -3470,9 +3493,9 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
           : {}),
         ...(plan.needsStorage
           ? {
-              "storage:up": "docker compose up -d object-storage object-storage-init",
-              "storage:init": "docker compose run --rm object-storage-init",
-              "storage:down": "docker compose stop object-storage object-storage-init",
+              "storage:up": "docker compose up -d seaweedfs seaweedfs-init",
+              "storage:init": "docker compose run --rm seaweedfs-init",
+              "storage:down": "docker compose stop seaweedfs seaweedfs-init",
             }
           : {}),
         ...(hasProfile(config, "web") ? { "smoke:web": "tsx tooling/smoke-web.ts" } : {}),
@@ -4407,13 +4430,9 @@ try {
           : {}),
         ...(plan.needsStorage
           ? {
-              minio: {
-                reference: IMAGE_CATALOG.minio.reference,
-                digest: IMAGE_CATALOG.minio.digest,
-              },
-              minioClient: {
-                reference: IMAGE_CATALOG.minioMc.reference,
-                digest: IMAGE_CATALOG.minioMc.digest,
+              seaweedfs: {
+                reference: IMAGE_CATALOG.seaweedfs.reference,
+                digest: IMAGE_CATALOG.seaweedfs.digest,
               },
             }
           : {}),
@@ -5233,7 +5252,7 @@ test("AI approvals keep tool and subject identities collision-safe", async () =>
       const apiDependencies: Record<string, string> = {
         [packageName(config, "core")]: "workspace:*",
         [packageName(config, "contracts")]: "workspace:*",
-        "@trpc/server": DEPENDENCY_VERSIONS.trpcServer,
+        ...(plan.needsTrpc ? { "@trpc/server": DEPENDENCY_VERSIONS.trpcServer } : {}),
         fastify: DEPENDENCY_VERSIONS.fastify,
         pino: DEPENDENCY_VERSIONS.pino,
         zod: DEPENDENCY_VERSIONS.zod,
@@ -5252,13 +5271,22 @@ test("AI approvals keep tool and subject identities collision-safe", async () =>
       const testReadinessApi = plan.needsIdentity
         ? `${testBuildApi}readinessChecks: [{ name: "provider", check: async () => { throw new Error("provider unavailable"); } }]${testBuildApiEnd}`
         : `buildApi({ readinessChecks: [{ name: "provider", check: async () => { throw new Error("provider unavailable"); } }] })`;
+      const transportProbeUrl = plan.needsTrpc ? "/trpc/viewer" : "/health/live";
+      const anonymousProbe = plan.needsTrpc
+        ? `\n  const anonymous = await server.inject({ method: "GET", url: "/trpc/viewer" });\n  expect(anonymous.statusCode).toBe(401);`
+        : "";
+      const oversizedProbe = plan.needsTrpc
+        ? `\n  const oversized = await server.inject({ method: "POST", url: "/trpc/viewer", headers: { "content-type": "application/json" }, payload: { value: "x".repeat(64) } });\n  expect(oversized.statusCode).toBe(413);`
+        : "";
       files.push(
         packageManifest(config, name, apiDependencies),
         packageTsconfig(name),
         apiPackageFile(config, plan),
         textFile(
           "packages/api/tests/authorization.test.ts",
-          `import { expect, test } from "vitest";\nimport { appRouter, createContext } from "../src/index.js";\n\ntest("protected procedures reject anonymous callers", async () => {\n  const caller = appRouter.createCaller(createContext(null));\n  await expect(caller.viewer()).rejects.toMatchObject({ code: "UNAUTHORIZED" });\n});\n`,
+          plan.needsTrpc
+            ? `import { expect, test } from "vitest";\nimport { appRouter, createContext } from "../src/index.js";\n\ntest("protected procedures reject anonymous callers", async () => {\n  const caller = appRouter.createCaller(createContext(null));\n  await expect(caller.viewer()).rejects.toMatchObject({ code: "UNAUTHORIZED" });\n});\n`
+            : `import { expect, test } from "vitest";\nimport { buildApi } from "../src/index.js";\n\ntest("rest transport does not expose a tRPC surface", async () => {\n  const server = ${testBuildApi}${testBuildApiEnd};\n  const removed = await server.inject({ method: "GET", url: "/trpc/viewer" });\n  expect(removed.statusCode).toBe(404);\n  const live = await server.inject({ method: "GET", url: "/health/live" });\n  expect(live.statusCode).toBe(200);\n  await server.close();\n});\n`,
         ),
         textFile(
           "packages/api/tests/runtime.test.ts",
@@ -5290,20 +5318,16 @@ test("central security policy emits headers and rejects untrusted origins and ov
   expect(allowed.headers["x-request-id"]).toBeTruthy();
   const correlated = await server.inject({ method: "GET", url: "/health/live", headers: { "x-request-id": "safe-request-123" } });
   expect(correlated.headers["x-request-id"]).toBe("safe-request-123");
-  const preflight = await server.inject({ method: "OPTIONS", url: "/trpc/viewer", headers: { origin: "https://app.example.test", "access-control-request-method": "POST" } });
-  expect(preflight.statusCode).toBe(204);
-  const anonymous = await server.inject({ method: "GET", url: "/trpc/viewer" });
-  expect(anonymous.statusCode).toBe(401);
+  const preflight = await server.inject({ method: "OPTIONS", url: "${transportProbeUrl}", headers: { origin: "https://app.example.test", "access-control-request-method": "POST" } });
+  expect(preflight.statusCode).toBe(204);${anonymousProbe}
   const denied = await server.inject({ method: "GET", url: "/health/live", headers: { origin: "https://evil.example.test" } });
   expect(denied.statusCode).toBe(403);
-  const csrfDenied = await server.inject({ method: "POST", url: "/trpc/viewer", headers: { cookie: "session=value", "content-type": "application/json" }, payload: {} });
-  expect(csrfDenied.statusCode).toBe(403);
-  const oversized = await server.inject({ method: "POST", url: "/trpc/viewer", headers: { "content-type": "application/json" }, payload: { value: "x".repeat(64) } });
-  expect(oversized.statusCode).toBe(413);
+  const csrfDenied = await server.inject({ method: "POST", url: "${transportProbeUrl}", headers: { cookie: "session=value", "content-type": "application/json" }, payload: {} });
+  expect(csrfDenied.statusCode).toBe(403);${oversizedProbe}
   await server.close();
 });
 ${
-  plan.needsIdentity
+  plan.needsIdentity && plan.needsTrpc
     ? `
 test("HTTP request context resolves authenticated and anonymous sessions", async () => {
   const server = buildApi({ authentication: { resolveSession: async (headers) => { const subjectId = headers.get("x-subject"); return subjectId ? { subjectId } : null; } }, identity: { ensureAuthenticationSubject: async (subjectId) => ({ subjectId }), resolveAuthenticationSubject: async (subjectId) => ({ subjectId }) }, database: { checkReadiness: async () => undefined } });
@@ -5314,7 +5338,11 @@ test("HTTP request context resolves authenticated and anonymous sessions", async
   expect(authenticated.body).toContain("subject-1");
   await server.close();
 });
-
+`
+    : ""
+}${
+  plan.needsIdentity
+    ? `
 test("authentication routes forward Fastify JSON bodies and response cookies", async () => {
   const server = ${testBuildApi}${testBuildApiEnd};
   let receivedBody: unknown;
@@ -5355,7 +5383,7 @@ test("external health route matches OpenAPI and uses RFC 9457 on dependency fail
     : ""
 }`,
         ),
-        ...(plan.needsAi
+        ...(plan.needsAi && plan.needsTrpc
           ? [
               textFile(
                 "packages/api/tests/ai-runtime.test.ts",
@@ -5383,7 +5411,9 @@ test("authenticated HTTP callers can execute the composed AI tool boundary", asy
       );
     } else if (name === "api-client") {
       const firstPartyClient =
-        plan.needsApi && (hasProfile(config, "web") || hasProfile(config, "mobile"));
+        plan.needsApi &&
+        plan.needsTrpc &&
+        (hasProfile(config, "web") || hasProfile(config, "mobile"));
       const clientDependencies = {
         ...(plan.needsExternalApi
           ? { "@hey-api/client-fetch": DEPENDENCY_VERSIONS.openapiFetch }
@@ -5501,7 +5531,13 @@ function apiPackageFile(config: InitConfig, plan: CapabilityPlan): GeneratedFile
     coreTypes.length > 0
       ? `import type { ${coreTypes.join(", ")} } from "${packageName(config, "core")}";\n`
       : "";
-  const zodImport = plan.needsStorage || plan.needsAi ? `import { z } from "zod";\n` : "";
+  const zodImport =
+    plan.needsTrpc && (plan.needsStorage || plan.needsAi) ? `import { z } from "zod";\n` : "";
+  const trpcImport = plan.needsTrpc
+    ? `import { initTRPC, TRPCError } from "@trpc/server";
+import { fastifyTRPCPlugin } from "@trpc/server/adapters/fastify";
+`
+    : "";
   const externalImports = plan.needsExternalApi
     ? `import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
@@ -5526,7 +5562,7 @@ export async function registerExternalApi(server: FastifyInstance, dependencies:
         ...(dependencies.database ? [{ name: "database", check: dependencies.database.checkReadiness }] : []),
         ...(dependencies.readinessChecks ?? []),
       ];
-      const response = await readinessResponse(checks);
+      const response = await readinessResponse(checks, dependencies.instanceId ?? "local");
       if (response.status === "ok") return reply.code(200).send(response);
       return reply.code(503).type("application/problem+json").send(problemDetailsSchema.parse({ type: "about:blank", title: "Service Unavailable", status: 503, ...(response.detail ? { detail: response.detail } : {}) }));
     });
@@ -5534,13 +5570,67 @@ export async function registerExternalApi(server: FastifyInstance, dependencies:
 }
 `
     : "";
+  const trpcRuntime = plan.needsTrpc
+    ? `const t = initTRPC.context<RequestContext>().create();
+export const publicProcedure = t.procedure;
+export const authenticatedProcedure = t.procedure.use(({ ctx, next }) => {
+  if (ctx.subjectId === null) throw new TRPCError({ code: "UNAUTHORIZED" });
+  return next({ ctx: { ...ctx, subjectId: ctx.subjectId } });
+});
+${
+  plan.needsTenancy
+    ? `export const organizationProcedure = authenticatedProcedure.use(({ ctx, next }) => {
+  if (!ctx.organizationId) throw new TRPCError({ code: "BAD_REQUEST", message: "x-organization-id is required" });
+  return next({ ctx: { ...ctx, organizationId: ctx.organizationId } });
+});
+`
+    : ""
+}
+export const appRouter = t.router({
+  health: publicProcedure.query(({ ctx }) => healthResponseSchema.parse({ status: "ok", checkedAt: new Date().toISOString(), instanceId: ctx.instanceId })),
+  viewer: authenticatedProcedure.query(({ ctx }) => ({ subjectId: ctx.subjectId })),
+${
+  plan.needsStorage
+    ? `  storageUrl: ${storageProcedure}.input(z.object({ key: z.string().min(1) })).mutation(async ({ ctx, input }) => {
+    if (!ctx.storage) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Storage is not configured" });
+    return { url: await ctx.storage.getUrl({ key: input.key, subjectId: ctx.subjectId${storageOrganizationArgument} }) };
+  }),
+  storageUpload: ${storageProcedure}.input(z.object({ key: z.string().min(1), contentType: z.string().min(1), byteLength: z.number().int().positive() }).strict()).mutation(async ({ ctx, input }) => {
+    if (!ctx.storage) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Storage is not configured" });
+    return ctx.storage.createUpload({ key: input.key, contentType: input.contentType, byteLength: input.byteLength, subjectId: ctx.subjectId${storageOrganizationArgument} });
+  }),
+  storageComplete: ${storageProcedure}.input(z.object({ key: z.string().min(1) }).strict()).mutation(async ({ ctx, input }) => {
+    if (!ctx.storage) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Storage is not configured" });
+    return ctx.storage.completeUpload({ key: input.key, subjectId: ctx.subjectId${storageOrganizationArgument} });
+  }),
+`
+    : ""
+}${
+  plan.needsAi
+    ? `  aiCapabilities: authenticatedProcedure.query(({ ctx }) => {
+    if (!ctx.ai) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "AI runtime is not configured" });
+    return { toolNames: ctx.ai.toolNames };
+  }),
+  aiExecute: authenticatedProcedure.input(z.object({ toolName: z.string().min(1), input: z.unknown() }).strict()).mutation(async ({ ctx, input }) => {
+    if (!ctx.ai) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "AI runtime is not configured" });
+    return { output: await ctx.ai.executeTool(input.toolName, input.input, ctx.subjectId) };
+  }),
+  aiRecordEvaluation: authenticatedProcedure.input(z.object({ name: z.string().min(1), score: z.number().min(0).max(1) })).mutation(async ({ ctx, input }) => {
+    if (!ctx.ai) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "AI runtime is not configured" });
+    await ctx.ai.recordEvaluation(input.name, input.score, ctx.subjectId);
+    return { recorded: true };
+  }),
+`
+    : ""
+}});
+export type AppRouter = typeof appRouter;
+`
+    : "";
   return textFile(
     "packages/api/src/index.ts",
     `import { randomUUID } from "node:crypto";
 import Fastify, { ${plan.needsIdentity || plan.needsExternalApi ? "type FastifyInstance, " : ""}type FastifyRequest } from "fastify";
-import { initTRPC, TRPCError } from "@trpc/server";
-import { fastifyTRPCPlugin } from "@trpc/server/adapters/fastify";
-import { ${contractImports} } from "${packageName(config, "contracts")}";
+${trpcImport}import { ${contractImports} } from "${packageName(config, "contracts")}";
 ${coreTypeImport}${zodImport}
 ${externalImports}
 
@@ -5549,7 +5639,7 @@ export interface AiRuntime {
   executeTool(name: string, input: unknown, subjectId: string): Promise<unknown>;
   recordEvaluation(name: string, score: number, subjectId: string): Promise<void>;
 }
-export interface RequestContext { readonly subjectId: string | null;${plan.needsTenancy ? " readonly organizationId: string | null;" : ""}${plan.needsStorage ? " readonly storage?: ObjectStorage;" : ""}${plan.needsAi ? " readonly ai?: AiRuntime;" : ""} }
+export interface RequestContext { readonly subjectId: string | null; readonly instanceId: string;${plan.needsTenancy ? " readonly organizationId: string | null;" : ""}${plan.needsStorage ? " readonly storage?: ObjectStorage;" : ""}${plan.needsAi ? " readonly ai?: AiRuntime;" : ""} }
 export interface ApiDependencies {
 ${plan.needsIdentity ? "  readonly authentication: AuthenticationPort;\n" : ""}
 ${plan.needsIdentity ? "  readonly identity: IdentityRepository;\n" : ""}
@@ -5558,6 +5648,8 @@ ${plan.needsStorage ? "  readonly storage?: ObjectStorage;\n" : ""}
 ${plan.needsAi ? "  readonly ai?: AiRuntime;\n" : ""}
 ${plan.needsTenancy ? "  readonly organizationAuthorization?: { readonly hasMembership: (subjectId: string, organizationId: string) => Promise<boolean>; };\n" : ""}
   readonly readinessChecks?: readonly { readonly name: string; readonly check: () => Promise<void> }[];
+  readonly instanceId?: string;
+  readonly loggerLevel?: "debug" | "info" | "warn" | "error" | "silent";
   readonly security?: {
     readonly allowedOrigins?: readonly string[];
     readonly trustedProxyCidrs?: readonly string[];
@@ -5572,7 +5664,7 @@ ${plan.needsTenancy ? "  readonly organizationAuthorization?: { readonly hasMemb
     };
   };
 }
-export function createContext(subjectId: string | null${plan.needsTenancy ? ", organizationId: string | null = null" : ""}${plan.needsStorage ? ", storage?: ObjectStorage" : ""}${plan.needsAi ? ", ai?: AiRuntime" : ""}): RequestContext { return { subjectId${plan.needsTenancy ? ", organizationId" : ""}${plan.needsStorage ? ", ...(storage ? { storage } : {})" : ""}${plan.needsAi ? ", ...(ai ? { ai } : {})" : ""} }; }
+export function createContext(subjectId: string | null${plan.needsTenancy ? ", organizationId: string | null = null" : ""}${plan.needsStorage ? ", storage?: ObjectStorage" : ""}${plan.needsAi ? ", ai?: AiRuntime" : ""}, instanceId = "local"): RequestContext { return { subjectId, instanceId${plan.needsTenancy ? ", organizationId" : ""}${plan.needsStorage ? ", ...(storage ? { storage } : {})" : ""}${plan.needsAi ? ", ...(ai ? { ai } : {})" : ""} }; }
 ${
   plan.needsIdentity
     ? `
@@ -5612,72 +5704,20 @@ export function registerAuthenticationRoutes(server: FastifyInstance, baseURL: s
     : ""
 }
 export async function resolveContext(${plan.needsIdentity ? "request" : "_request"}: FastifyRequest, ${plan.needsIdentity || plan.needsStorage || plan.needsAi || plan.needsTenancy ? "dependencies" : "_dependencies"}: ApiDependencies): Promise<RequestContext> {
-  ${plan.needsIdentity ? "const session = await dependencies.authentication.resolveSession(toHeaders(request));\n  const applicationSubject = session ? await dependencies.identity.resolveAuthenticationSubject(session.subjectId) : null;\n  " : ""}${plan.needsTenancy ? 'const requestedOrganizationId = typeof request.headers["x-organization-id"] === "string" ? request.headers["x-organization-id"].trim() : "";\n  const organizationId = applicationSubject?.subjectId && requestedOrganizationId && dependencies.organizationAuthorization && (await dependencies.organizationAuthorization.hasMembership(applicationSubject.subjectId, requestedOrganizationId)) ? requestedOrganizationId : null;\n  ' : ""}return createContext(${plan.needsIdentity ? "applicationSubject?.subjectId ?? null" : "null"}${plan.needsTenancy ? ", organizationId" : ""}${plan.needsStorage ? ", dependencies.storage" : ""}${plan.needsAi ? ", dependencies.ai" : ""});
+  ${plan.needsIdentity ? "const session = await dependencies.authentication.resolveSession(toHeaders(request));\n  const applicationSubject = session ? await dependencies.identity.resolveAuthenticationSubject(session.subjectId) : null;\n  " : ""}${plan.needsTenancy ? 'const requestedOrganizationId = typeof request.headers["x-organization-id"] === "string" ? request.headers["x-organization-id"].trim() : "";\n  const organizationId = applicationSubject?.subjectId && requestedOrganizationId && dependencies.organizationAuthorization && (await dependencies.organizationAuthorization.hasMembership(applicationSubject.subjectId, requestedOrganizationId)) ? requestedOrganizationId : null;\n  ' : ""}return createContext(${plan.needsIdentity ? "applicationSubject?.subjectId ?? null" : "null"}${plan.needsTenancy ? ", organizationId" : ""}${plan.needsStorage ? ", dependencies.storage" : ""}${plan.needsAi ? ", dependencies.ai" : ""}, dependencies.instanceId ?? "local");
 }
 
-const t = initTRPC.context<RequestContext>().create();
-export const publicProcedure = t.procedure;
-export const authenticatedProcedure = t.procedure.use(({ ctx, next }) => {
-  if (ctx.subjectId === null) throw new TRPCError({ code: "UNAUTHORIZED" });
-  return next({ ctx: { ...ctx, subjectId: ctx.subjectId } });
-});
-${
-  plan.needsTenancy
-    ? `export const organizationProcedure = authenticatedProcedure.use(({ ctx, next }) => {
-  if (!ctx.organizationId) throw new TRPCError({ code: "BAD_REQUEST", message: "x-organization-id is required" });
-  return next({ ctx: { ...ctx, organizationId: ctx.organizationId } });
-});
-`
-    : ""
-}
-${sourceOfTruthBlock({ id: "starter.api.transport", keywords: "api, fastify, trpc, health, readiness", what: "Thin Fastify and tRPC transport composition root.", why: "Separates request handling from domain and provider code.", when: "Use for first-party API routes and health probes.", how: "buildApi, appRouter", boundaries: "Do not place SQL, authorization policy, or provider SDK calls here." })}
-export const appRouter = t.router({
-  health: publicProcedure.query(() => healthResponseSchema.parse({ status: "ok", checkedAt: new Date().toISOString(), instanceId: process.env.${productIdentity(config).environmentPrefix}_FIXTURE_ID ?? "local" })),
-  viewer: authenticatedProcedure.query(({ ctx }) => ({ subjectId: ctx.subjectId })),
-${
-  plan.needsStorage
-    ? `  storageUrl: ${storageProcedure}.input(z.object({ key: z.string().min(1) })).mutation(async ({ ctx, input }) => {
-    if (!ctx.storage) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Storage is not configured" });
-    return { url: await ctx.storage.getUrl({ key: input.key, subjectId: ctx.subjectId${storageOrganizationArgument} }) };
-  }),
-  storageUpload: ${storageProcedure}.input(z.object({ key: z.string().min(1), contentType: z.string().min(1), byteLength: z.number().int().positive() }).strict()).mutation(async ({ ctx, input }) => {
-    if (!ctx.storage) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Storage is not configured" });
-    return ctx.storage.createUpload({ key: input.key, contentType: input.contentType, byteLength: input.byteLength, subjectId: ctx.subjectId${storageOrganizationArgument} });
-  }),
-  storageComplete: ${storageProcedure}.input(z.object({ key: z.string().min(1) }).strict()).mutation(async ({ ctx, input }) => {
-    if (!ctx.storage) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "Storage is not configured" });
-    return ctx.storage.completeUpload({ key: input.key, subjectId: ctx.subjectId${storageOrganizationArgument} });
-  }),
-`
-    : ""
-}${
-  plan.needsAi
-    ? `  aiCapabilities: authenticatedProcedure.query(({ ctx }) => {
-    if (!ctx.ai) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "AI runtime is not configured" });
-    return { toolNames: ctx.ai.toolNames };
-  }),
-  aiExecute: authenticatedProcedure.input(z.object({ toolName: z.string().min(1), input: z.unknown() }).strict()).mutation(async ({ ctx, input }) => {
-    if (!ctx.ai) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "AI runtime is not configured" });
-    return { output: await ctx.ai.executeTool(input.toolName, input.input, ctx.subjectId) };
-  }),
-  aiRecordEvaluation: authenticatedProcedure.input(z.object({ name: z.string().min(1), score: z.number().min(0).max(1) })).mutation(async ({ ctx, input }) => {
-    if (!ctx.ai) throw new TRPCError({ code: "PRECONDITION_FAILED", message: "AI runtime is not configured" });
-    await ctx.ai.recordEvaluation(input.name, input.score, ctx.subjectId);
-    return { recorded: true };
-  }),
-`
-    : ""
-}});
-export type AppRouter = typeof appRouter;
+${sourceOfTruthBlock({ id: "starter.api.transport", keywords: plan.needsTrpc ? "api, fastify, trpc, health, readiness" : "api, fastify, rest, health, readiness", what: plan.needsTrpc ? "Thin Fastify and tRPC transport composition root." : "Thin Fastify REST transport composition root.", why: "Separates request handling from domain and provider code.", when: plan.needsTrpc ? "Use for first-party API routes and health probes." : "Use for REST API routes and health probes; no first-party typed procedure surface is emitted.", how: plan.needsTrpc ? "buildApi, appRouter" : "buildApi", boundaries: "Do not place SQL, authorization policy, or provider SDK calls here." })}
+${trpcRuntime}
 
-async function readinessResponse(checks: readonly { readonly name: string; readonly check: () => Promise<void> }[]) {
+async function readinessResponse(checks: readonly { readonly name: string; readonly check: () => Promise<void> }[], instanceId: string) {
   const checkedAt = new Date().toISOString();
   for (const check of checks) {
     try { await check.check(); } catch {
-      return healthResponseSchema.parse({ status: "degraded", checkedAt, instanceId: process.env.${productIdentity(config).environmentPrefix}_FIXTURE_ID ?? "local", failedDependency: check.name });
+      return healthResponseSchema.parse({ status: "degraded", checkedAt, instanceId, failedDependency: check.name });
     }
   }
-  return healthResponseSchema.parse({ status: "ok", checkedAt, instanceId: process.env.${productIdentity(config).environmentPrefix}_FIXTURE_ID ?? "local" });
+  return healthResponseSchema.parse({ status: "ok", checkedAt, instanceId });
 }
 
 export function buildApi(dependencies: ApiDependencies${plan.needsIdentity ? "" : " = {}"}) {
@@ -5697,7 +5737,7 @@ export function buildApi(dependencies: ApiDependencies${plan.needsIdentity ? "" 
       return typeof candidate === "string" && /^[A-Za-z0-9._:-]{1,128}$/u.test(candidate) ? candidate : randomUUID();
     },
     logger: {
-      level: process.env.NODE_ENV === "production" ? "info" : "debug",
+      level: dependencies.loggerLevel ?? "info",
       redact: {
         paths: ["req.headers.authorization", "req.headers.cookie", "res.headers.set-cookie", "body", "password", "token", "secret", "apiKey"],
         censor: "[REDACTED]",
@@ -5743,17 +5783,21 @@ export function buildApi(dependencies: ApiDependencies${plan.needsIdentity ? "" 
     return JSON.stringify({ type: "about:blank", title: "Response exceeded configured limit", status: 500 });
   });
   server.addHook("onResponse", async (request, reply) => requestTelemetry.get(request)?.end(reply.statusCode));
-  server.register(fastifyTRPCPlugin, {
+${
+  plan.needsTrpc
+    ? `  server.register(fastifyTRPCPlugin, {
     prefix: "/trpc",
     trpcOptions: { router: appRouter, createContext: ({ req }: { readonly req: FastifyRequest }) => resolveContext(req, dependencies) },
   });
-  server.get("/health/live", async () => healthResponseSchema.parse({ status: "ok", checkedAt: new Date().toISOString(), instanceId: process.env.${productIdentity(config).environmentPrefix}_FIXTURE_ID ?? "local" }));
+`
+    : ""
+}  server.get("/health/live", async () => healthResponseSchema.parse({ status: "ok", checkedAt: new Date().toISOString(), instanceId: dependencies.instanceId ?? "local" }));
   server.get("/health/ready", async (_request, reply) => {
     const checks = [
       ...(dependencies.database ? [{ name: "database", check: dependencies.database.checkReadiness }] : []),
       ...(dependencies.readinessChecks ?? []),
     ];
-    const response = await readinessResponse(checks);
+      const response = await readinessResponse(checks, dependencies.instanceId ?? "local");
     return reply.code(response.status === "ok" ? 200 : 503).send(response);
   });
   return server;
@@ -5824,7 +5868,9 @@ function apiFiles(config: InitConfig): GeneratedFile[] {
       ...(plan.needsObservability ? ["telemetry"] : []),
     ]
       .map((name) => `${name},`)
-      .join(" ")}${
+      .join(
+        " ",
+      )}instanceId: environment.${identity.environmentPrefix}_FIXTURE_ID ?? "local", loggerLevel: environment.APP_ENV === "local" ? "debug" : "info", ${
       plan.needsStorage
         ? ` readinessChecks: [${[
             ...(plan.needsStorage ? ['{ name: "storage", check: storage.checkReadiness }'] : []),
@@ -5851,6 +5897,7 @@ function apiFiles(config: InitConfig): GeneratedFile[] {
   const environmentSchema = [
     "const environmentSchema = z.object({",
     '  APP_ENV: z.enum(["local", "ci", "staging", "production"]).default("local"),',
+    `  ${identity.environmentPrefix}_FIXTURE_ID: z.string().optional(),`,
     "  PORT: z.coerce.number().int().min(1).max(65535).default(3001),",
     "  ALLOWED_ORIGINS: z.string().min(1),",
     '  TRUSTED_PROXY_CIDRS: z.string().optional().default(""),',
@@ -6670,7 +6717,7 @@ function environmentFile(config: InitConfig): GeneratedFile {
       ? [
           "STORAGE_BUCKET=starter",
           "STORAGE_REGION=us-east-1",
-          "STORAGE_ENDPOINT=http://127.0.0.1:9000",
+          "STORAGE_ENDPOINT=http://127.0.0.1:8333",
           "STORAGE_ACCESS_KEY_ID=starter_local",
           "STORAGE_SECRET_ACCESS_KEY=starter_local_secret",
         ]

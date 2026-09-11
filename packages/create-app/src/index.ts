@@ -51,6 +51,7 @@ const VALUE_FLAGS = new Set([
   "add-profile",
   "remove-profile",
   "topology",
+  "transport",
 ]);
 const execFileAsync = promisify(execFile);
 const EXPERIMENTAL_PROFILE_NAMES: ReadonlySet<string> = new Set(
@@ -101,6 +102,7 @@ Usage:
 Presets: web-app,multi-tenant-web-app,api-service
 Profiles: web,mobile,api,data,identity,jobs,events,ai,agentic-ai,external-api,storage,python,tenancy,payments,notifications,cache,rate-limit,search,rag,observability,feature-flags
 Provider options: --payment-providers stripe,razorpay --ai-providers openai,anthropic --identity-mail-provider resend --notification-provider resend --cache-provider valkey --observability-exporters otlp,sentry
+Transport options: --transport trpc|rest (default: trpc when web/mobile is selected, otherwise rest when external-api is selected)
 Mobile-only options: --mobile-scheme --ios-bundle-id --android-application-id
 Safety options: --allow-experimental --allow-beta-target --skip-git --dry-run --json
 Output defaults to .thaarei/generated/<client-id>.
@@ -362,9 +364,6 @@ export async function runInitializer(argv: readonly string[]): Promise<string> {
     );
     if (config.profiles.includes("external-api"))
       await execFileAsync("pnpm", ["generate:api-client"], { cwd: written.outputDir });
-    await execFileAsync("pnpm", ["exec", "biome", "format", "--write", "."], {
-      cwd: written.outputDir,
-    });
     await execFileAsync("pnpm", ["exec", "biome", "format", "--write", "."], {
       cwd: written.outputDir,
     });

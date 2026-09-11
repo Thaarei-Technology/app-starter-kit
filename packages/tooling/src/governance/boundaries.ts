@@ -167,6 +167,21 @@ export const checkBoundaries = async (root: string): Promise<CheckResult> => {
   for (const file of files.sort()) {
     const owner = packageForFile(file, packages, absoluteRoot);
     const source = await readFile(file, "utf8");
+    if (
+      owner?.kind === "package" &&
+      !isStarterInfrastructureOwner(owner) &&
+      /\bprocess\s*\.\s*env\b/u.test(source) &&
+      !relative(absoluteRoot, file).endsWith("packages/database/src/migrate.ts") &&
+      !relative(absoluteRoot, file).startsWith("packages/config/")
+    ) {
+      diagnostics.push(
+        diagnostic(
+          "BOUNDARY_ENVIRONMENT",
+          "Only applications and packages/config may read process.env; pass configuration into packages as parameters.",
+          file,
+        ),
+      );
+    }
     for (const specifier of importSpecifiers(source)) {
       const target = isRelative(specifier) ? undefined : packageForSpecifier(specifier, packages);
       const relativeTargetPath = isRelative(specifier)

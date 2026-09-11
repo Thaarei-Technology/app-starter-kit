@@ -2,10 +2,10 @@
 workId: STARTER-021
 title: Harden generated staging database and release artifacts
 origin: FLEET-STAGING-001
-status: in_progress
+status: complete
 owner: Starter maintainers
 createdAt: 2026-09-07
-updatedAt: 2026-09-08
+updatedAt: 2026-09-11
 sourceOfTruthIds: []
 affectedPaths:
   - packages/create-app/src/generator.ts

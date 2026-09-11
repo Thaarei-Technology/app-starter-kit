@@ -64,7 +64,10 @@ export const runCli = async (argv: readonly string[], cwd = process.cwd()): Prom
   const root = resolve(cwd, parsed.flags.get("root") ?? ".");
   switch (parsed.command) {
     case "check:source-of-truth":
-      return resultFor(await checkSourceOfTruth(root), root);
+      return resultFor(
+        await checkSourceOfTruth(root, { allowEmpty: parsed.flags.has("allow-empty") }),
+        root,
+      );
     case "check:boundaries":
       return resultFor(await checkBoundaries(root), root);
     case "implementation:list": {

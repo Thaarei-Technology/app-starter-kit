@@ -535,11 +535,55 @@ describe("starter profile generation", () => {
       withStorage.files.find((file) => file.path === ".env.example")?.content ?? "";
     const plainCompose =
       withoutStorage.files.find((file) => file.path === "compose.yaml")?.content ?? "";
-    expect(compose).toContain("minio/minio:");
-    expect(compose).toContain("object-storage-init:");
-    expect(environment).toContain("STORAGE_ENDPOINT=http://127.0.0.1:9000");
+    expect(compose).toContain("chrislusf/seaweedfs:");
+    expect(compose).toContain("seaweedfs-init:");
+    expect(environment).toContain("STORAGE_ENDPOINT=http://127.0.0.1:8333");
     expect(environment).toContain("STORAGE_BUCKET=starter");
-    expect(plainCompose).not.toContain("object-storage");
+    expect(plainCompose).not.toContain("seaweedfs");
+  });
+
+  test("omits the tRPC transport when rest is requested", () => {
+    const rest = generateProject({
+      ...config(["api", "data", "identity", "external-api"]),
+      transport: "rest",
+    });
+    const apiSource =
+      rest.files.find((file) => file.path === "packages/api/src/index.ts")?.content ?? "";
+    const apiManifest = generatedJson(rest, "packages/api/package.json") as {
+      dependencies: Record<string, string>;
+    };
+    const release = generatedJson(rest, "release-manifest.json");
+    expect(apiSource).not.toContain("@trpc/server");
+    expect(apiSource).not.toContain("initTRPC");
+    expect(apiSource).not.toContain("/trpc");
+    expect(apiManifest.dependencies["@trpc/server"]).toBeUndefined();
+    expect(JSON.stringify(release)).not.toContain('"@trpc/server"');
+    expect(apiSource).toContain("registerExternalApi");
+  });
+
+  test("defaults external-api without a typed client to the rest transport", () => {
+    const generated = generateProject(config(["api", "data", "identity", "external-api"]));
+    const apiSource =
+      generated.files.find((file) => file.path === "packages/api/src/index.ts")?.content ?? "";
+    expect(apiSource).not.toContain("initTRPC");
+    expect(apiSource).toContain("registerExternalApi");
+  });
+
+  test("keeps trpc for a web-first product", () => {
+    const generated = generateProject(config(["web", "api", "data", "identity"]));
+    const apiSource =
+      generated.files.find((file) => file.path === "packages/api/src/index.ts")?.content ?? "";
+    expect(apiSource).toContain("initTRPC");
+    expect(apiSource).toContain("/trpc");
+  });
+
+  test("keeps environment access out of the api transport package", () => {
+    const generated = generateProject(config(["api", "data", "identity", "storage"]));
+    const apiSource =
+      generated.files.find((file) => file.path === "packages/api/src/index.ts")?.content ?? "";
+    expect(apiSource).not.toContain("process.env");
+    expect(apiSource).toContain("dependencies.instanceId");
+    expect(apiSource).toContain("dependencies.loggerLevel");
   });
 
   test("separates worker environment and local port from the API", () => {
@@ -706,8 +750,10 @@ describe("starter profile validation", () => {
     expect(compose).toContain(
       `${IMAGE_CATALOG.postgresql.reference}@${IMAGE_CATALOG.postgresql.digest}`,
     );
-    expect(compose).toContain(`${IMAGE_CATALOG.minio.reference}@${IMAGE_CATALOG.minio.digest}`);
-    expect(JSON.stringify(release)).toContain(IMAGE_CATALOG.minio.digest);
+    expect(compose).toContain(
+      `${IMAGE_CATALOG.seaweedfs.reference}@${IMAGE_CATALOG.seaweedfs.digest}`,
+    );
+    expect(JSON.stringify(release)).toContain(IMAGE_CATALOG.seaweedfs.digest);
   });
 
   test("uses published Expo package pins from the shared dependency catalog", () => {
@@ -1014,6 +1060,24 @@ describe("starter profile validation", () => {
     expect(() =>
       validateInitOptions(options("web", { "skip-git": "true", "github-repo": "Thaarei/example" })),
     ).toThrow("--skip-git cannot be combined");
+  });
+
+  test("accepts and validates the transport option", () => {
+    expect(
+      validateInitOptions(
+        options("api,data,external-api", { transport: "rest", "allow-experimental": "true" }),
+      ).transport,
+    ).toBe("rest");
+    expect(validateInitOptions(options("web,api")).transport).toBeUndefined();
+    expect(() => validateInitOptions(options("jobs", { transport: "rest" }))).toThrow(
+      "--transport rest requires the api profile",
+    );
+    expect(() => validateInitOptions(options("web,api", { transport: "rest" }))).toThrow(
+      "--transport rest cannot be combined with web or mobile",
+    );
+    expect(() => validateInitOptions(options("api", { transport: "grpc" }))).toThrow(
+      "--transport must be trpc or rest",
+    );
   });
 
   test("initializes the default repository on main", async () => {
