@@ -37,7 +37,7 @@
     "validate:starter": "pnpm release:check && pnpm check:publication && pnpm check:source-of-truth && pnpm check:boundaries && pnpm check:implementation && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm packages:pack-check && pnpm check:fixtures",
     "validate:deep": "pnpm validate:starter && pnpm test:coverage && pnpm security:secrets && pnpm security:sast && pnpm security:fs && pnpm security:config",
     "validate:web-handoff": "tsx packages/create-app/src/validate-web-handoff.ts",
-    "check": "pnpm validate:starter",
+    "check": "pnpm format:check && pnpm lint && pnpm check:boundaries && pnpm typecheck && pnpm test",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",

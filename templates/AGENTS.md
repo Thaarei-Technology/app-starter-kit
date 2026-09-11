@@ -66,15 +66,17 @@ truth.
 
 ## Work tracking
 
-Create or update one canonical `.thaarei/work/<work-id>.md` file for every
-active task. Record the plan, changed paths, validation commands, results,
-blockers, and unresolved decisions there. Generate the bounded root
+Use a short `.thaarei/work/<work-id>.md` record for meaningful features and
+architecture decisions. Small fixes need concise change and validation notes.
+Overlapping path claims are coordination information. Record changed paths,
+results, blockers, and decisions. Generate the bounded root
 `IMPLEMENTATION.md` with `pnpm implementation:sync`; never edit it by hand.
 
 ## Required validation
 
-Run the smallest relevant checks first. Before handoff, run the applicable
-commands below and record each result in the active work item:
+Run the smallest relevant checks first. `pnpm check` is the everyday feedback
+loop. Governance, deep integration, deployment, restore, rollback, and native
+mobile qualification are separate evidence. Run applicable commands below:
 
 ```text
 pnpm check:source-of-truth
@@ -82,6 +84,7 @@ pnpm check:boundaries
 pnpm check:implementation
 pnpm release:check
 pnpm check
+pnpm validate:deep
 ```
 
 Run `pnpm implementation:sync` when the work item or implementation status
@@ -100,3 +103,7 @@ configuration, logs, and work evidence. Keep new dependencies and provider
 exceptions in the active work item with their owner, reason, and validation.
 Do not publish packages or create an upstream synchronization path. Each client
 repository remains an independent private repository.
+
+The initialization recipe and generated API clients are generator-owned.
+Application, package, migration, deployment, and scaffold code become
+product-owned after initialization unless their header says otherwise.

@@ -244,12 +244,11 @@ describe("starter profile generation", () => {
     const mobile = generateProject(config(["mobile"], true));
     expect(dependencyNames(generatedJson(mobile, "apps/mobile/package.json"))).toEqual(
       expect.arrayContaining([
-        "expo-notifications",
+        "expo-dev-client",
+        "expo-network",
         "expo-router",
-        "expo-secure-store",
-        "react-native-gesture-handler",
-        "react-native-reanimated",
-        "react-native-unistyles",
+        "react-native-safe-area-context",
+        "react-native-screens",
       ]),
     );
     expect(mobile.files.some((file) => file.path === ".thaarei/security-waivers.json")).toBe(true);
@@ -260,6 +259,64 @@ describe("starter profile generation", () => {
     expect(JSON.stringify(waiverFile)).toContain('"scanner":"pnpm-audit"');
     expect(JSON.stringify(waiverFile)).toMatch(/sha256:[a-f0-9]{64}/u);
     expect(web.files.some((file) => file.path === ".thaarei/security-waivers.json")).toBe(false);
+  });
+
+  test("generates fail-closed startup, setup, watch, and native API behavior", () => {
+    const generated = generateProject(config(["web", "mobile", "api", "data", "identity"], true));
+    const root = jsonRecord(generatedJson(generated, "package.json"), "root package");
+    const scripts = jsonRecord(root.scripts, "root scripts");
+    expect(scripts.dev).toContain("turbo watch dev");
+    expect(scripts.setup).toBe("tsx tooling/setup.ts");
+    expect(scripts.doctor).toBe("tsx tooling/doctor.ts");
+    const doctor = generated.files.find((file) => file.path === "tooling/doctor.ts")?.content;
+    expect(doctor).toContain('process.loadEnvFile(".env")');
+
+    const apiEnvironment = generated.files.find(
+      (file) => file.path === "apps/api/src/index.ts",
+    )?.content;
+    expect(apiEnvironment).toContain("APP_ENV: z.enum");
+    expect(apiEnvironment).not.toContain(
+      'APP_ENV: z.enum(["local", "test", "staging", "production"]).default',
+    );
+    expect(apiEnvironment).toContain('process.env.APP_ENV === "local"');
+    const migrator = generated.files.find(
+      (file) => file.path === "packages/database/src/migrate.ts",
+    )?.content;
+    expect(migrator).toContain('appEnvironment === "local"');
+
+    const mobileApi = generated.files.find(
+      (file) => file.path === "apps/mobile/src/api.ts",
+    )?.content;
+    expect(mobileApi).toContain("EXPO_PUBLIC_API_URL");
+    expect(mobileApi).toContain('"x-native-app": "fixture"');
+    expect(mobileApi).toContain("authClient.getCookie");
+    const mobilePackage = jsonRecord(
+      generatedJson(generated, "apps/mobile/package.json"),
+      "mobile package",
+    );
+    const mobileScripts = jsonRecord(mobilePackage.scripts, "mobile scripts");
+    expect(mobileScripts.dev).toContain("./node_modules/expo/bin/cli");
+    expect(mobileScripts.dev).not.toContain("../../node_modules/expo");
+    const mobileScreen = generated.files.find(
+      (file) => file.path === "apps/mobile/app/index.tsx",
+    )?.content;
+    expect(mobileScreen).toContain("callbackURL: verificationCallbackURL");
+    expect(mobileScreen).toContain("requestPasswordReset");
+    expect(generated.files.some((file) => file.path === "apps/mobile/app/auth/verified.tsx")).toBe(
+      true,
+    );
+    expect(
+      generated.files.some((file) => file.path === "apps/mobile/app/auth/reset-password.tsx"),
+    ).toBe(true);
+
+    const dokploy = generated.files.find(
+      (file) => file.path === "deployment/dokploy/adapter.ts",
+    )?.content;
+    expect(dokploy).toContain('if (command === "plan")');
+    const services = generatedJson(generated, "deployment/dokploy/services.json") as {
+      services: Array<{ name: string; domain: { required: boolean } }>;
+    };
+    expect(services.services.find((service) => service.name === "api")?.domain.required).toBe(true);
   });
 
   test("generates database-owned transactional migrations without a custom outbox", () => {
@@ -426,7 +483,11 @@ describe("starter profile generation", () => {
     expect(dokployAdapter).toContain("waitForDeployment");
     expect(dokployAdapter).toContain("previousDeploymentIds");
     expect(dokployAdapter).toContain('request("rollback.rollback"');
-    expect(dokployAdapter).toContain("initiating and approving actor identities");
+    expect(dokployAdapter).not.toContain("initiating and approving actor identities");
+    const hardened = generateProject({ ...config(["api"]), topology: "hardened" });
+    expect(
+      hardened.files.find((file) => file.path === "deployment/dokploy/adapter.ts")?.content,
+    ).toContain("initiating and approving actor identities");
     expect(dokployAdapter).not.toContain("JSON.stringify(deployments).includes");
     expect(dokployAdapter).not.toContain("imageDigest");
   });
@@ -717,9 +778,9 @@ describe("starter profile validation", () => {
     );
     expect(jsonRecord(mobile, "mobile package").dependencies).toMatchObject({
       expo: DEPENDENCY_VERSIONS.expo,
-      "expo-notifications": DEPENDENCY_VERSIONS.notifications,
+      "expo-dev-client": DEPENDENCY_VERSIONS.expoDevClient,
+      "expo-network": DEPENDENCY_VERSIONS.expoNetwork,
       "expo-router": DEPENDENCY_VERSIONS.expoRouter,
-      "expo-secure-store": DEPENDENCY_VERSIONS.secureStore,
     });
   });
 

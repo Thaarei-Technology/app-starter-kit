@@ -34,12 +34,22 @@ describe("structured initializer output", () => {
     const result = JSON.parse(await runInitializer(dryRunArguments)) as {
       ok: boolean;
       pathPlan: { files: string[] };
+      recipe: {
+        inferredProfiles: string[];
+        capabilities: Array<{ id: string; maturity: string }>;
+        prerequisites: string[];
+      };
       validationErrors: unknown[];
     };
     expect(result.ok).toBe(true);
     expect(result.pathPlan.files).toContain("AGENTS.md");
     expect(result.pathPlan.files).toContain("pnpm-lock.yaml");
-    expect(result.pathPlan.files).toContain("tooling/governance/src/cli.ts");
+    expect(result.pathPlan.files).not.toContain("tooling/governance/src/cli.ts");
+    expect(result.recipe.inferredProfiles).toContain("api");
+    expect(result.recipe.capabilities).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "web", maturity: "stable" })]),
+    );
+    expect(result.recipe.prerequisites.length).toBeGreaterThan(0);
     expect(result.validationErrors).toEqual([]);
   });
 

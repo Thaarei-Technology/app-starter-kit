@@ -5,7 +5,7 @@ origin: STARTER-018
 status: planned
 owner: Starter release owners
 createdAt: 2026-09-06
-updatedAt: 2026-09-06
+updatedAt: 2026-09-11
 sourceOfTruthIds: []
 affectedPaths:
   - .github/workflows/
@@ -18,9 +18,10 @@ affectedPaths:
 
 ## Objective
 
-Produce independently verifiable evidence for every stable Starter 1.0 profile
-and both Dokploy topologies, then publish the three lockstep private packages and
-promote the starter from prerelease to stable without rebuilding tested artifacts.
+Produce independently verifiable evidence for the web and mobile baseline,
+stable Starter 1.0 profiles, and standard Dokploy topology, then publish the
+three lockstep private packages and promote the starter from prerelease to
+stable without rebuilding tested artifacts.
 
 ## Scope
 
@@ -32,7 +33,7 @@ qualification statuses, and the final release manifest/tag.
 
 ## Non-goals
 
-Do not promote Railway from beta, qualify mobile for production, weaken or renew
+Do not promote Railway from beta, weaken or renew
 the mobile waiver, contact product-specific paid providers, select product SLOs,
 RPOs, or RTOs, or change initializer commands, presets, profiles, package
 boundaries, and generated-repository independence.

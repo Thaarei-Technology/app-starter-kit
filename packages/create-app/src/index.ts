@@ -66,30 +66,6 @@ const sourceRoot = existsSync(resolve(packagedAssets, "templates/AGENTS.md"))
 const BUNDLED_GOVERNANCE_FILES = [
   { source: "templates/tooling/check-generated.ts", destination: "tooling/check-generated.ts" },
   { source: "templates/tooling/check-migrations.ts", destination: "tooling/check-migrations.ts" },
-  {
-    source: "packages/tooling/src/governance/boundaries.ts",
-    destination: "tooling/governance/src/boundaries.ts",
-  },
-  {
-    source: "packages/tooling/src/governance/cli.ts",
-    destination: "tooling/governance/src/cli.ts",
-  },
-  {
-    source: "packages/tooling/src/governance/implementation.ts",
-    destination: "tooling/governance/src/implementation.ts",
-  },
-  {
-    source: "packages/tooling/src/governance/source-of-truth.ts",
-    destination: "tooling/governance/src/source-of-truth.ts",
-  },
-  {
-    source: "packages/tooling/src/governance/types.ts",
-    destination: "tooling/governance/src/types.ts",
-  },
-  {
-    source: "packages/tooling/tests/governance.test.ts",
-    destination: "tooling/governance/tests/governance.test.ts",
-  },
 ] as const;
 const HELP = `Thaarei create-app initializer
 
@@ -98,7 +74,7 @@ Usage:
     --package-scope <scope> --profiles <list> --deployment <dokploy|railway> \\
     --technical-owner <name> --operations-owner <name>
 
-Presets: web-app,multi-tenant-web-app,api-service
+Presets: web-app,mobile-app,web-mobile-app,multi-tenant-web-app,api-service
 Profiles: web,mobile,api,data,identity,jobs,events,ai,agentic-ai,external-api,storage,python,tenancy,payments,notifications,cache,rate-limit,search,rag,observability,feature-flags
 Provider options: --payment-providers stripe,razorpay --ai-providers openai,anthropic --identity-mail-provider resend --notification-provider resend --cache-provider valkey --observability-exporters otlp,sentry
 Mobile-only options: --mobile-scheme --ios-bundle-id --android-application-id
@@ -306,6 +282,8 @@ export async function runInitializer(argv: readonly string[]): Promise<string> {
   const config = validateInitOptions(options);
   if (options.has("dry-run")) {
     const generated = generateProject(config);
+    const capabilities = config.profiles.map((profile) => CAPABILITY_REGISTRY[profile]);
+    const requested = new Set(config.requestedProfiles ?? config.profiles);
     const bundledFiles = await addAgentTemplate(config, generated.files);
     const plannedFiles = refreshMarker(config, bundledFiles);
     return JSON.stringify(
@@ -316,6 +294,26 @@ export async function runInitializer(argv: readonly string[]): Promise<string> {
           preset: config.preset ?? null,
           requestedProfiles: config.requestedProfiles ?? config.profiles,
           resolvedProfiles: config.profiles,
+          inferredProfiles: config.profiles.filter((profile) => !requested.has(profile)),
+          capabilities: capabilities.map((capability) => ({
+            id: capability.id,
+            maturity: capability.sourceMaturity,
+            productionPolicy: capability.productionPolicy,
+            applications: capability.apps,
+            localServices: capability.localServices.map((service) => service.name),
+          })),
+          prerequisites: [
+            "Node version declared in the generated .nvmrc",
+            "pnpm through Corepack",
+            ...(capabilities.some(
+              (capability) => capability.localServices.length > 0 || capability.id === "data",
+            )
+              ? ["Docker Compose"]
+              : []),
+            ...(config.profiles.includes("mobile")
+              ? ["Android SDK and company macOS lane for iOS"]
+              : []),
+          ],
           deployment: { target: config.deployment, topology: config.topology },
         },
         warnings: config.profiles.includes("mobile")
@@ -365,10 +363,9 @@ export async function runInitializer(argv: readonly string[]): Promise<string> {
     await execFileAsync("pnpm", ["exec", "biome", "format", "--write", "."], {
       cwd: written.outputDir,
     });
-    await execFileAsync("pnpm", ["exec", "biome", "format", "--write", "."], {
-      cwd: written.outputDir,
-    });
-    await execFileAsync("pnpm", ["validate:starter"], { cwd: written.outputDir });
+    await execFileAsync("pnpm", ["check:project"], { cwd: written.outputDir });
+    await execFileAsync("pnpm", ["check:boundaries"], { cwd: written.outputDir });
+    await execFileAsync("pnpm", ["typecheck"], { cwd: written.outputDir });
     const recipePath = resolve(written.outputDir, ".thaarei/starter.json");
     const recipe = JSON.parse(await readFile(recipePath, "utf8")) as Record<string, unknown>;
     recipe.generatedAt = new Date().toISOString();

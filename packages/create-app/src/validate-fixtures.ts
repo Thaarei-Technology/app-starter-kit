@@ -4,7 +4,7 @@ import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { productIdentity } from "./generator.js";
+import { MOBILE_ADVISORY_IDS, productIdentity } from "./generator.js";
 import { runInitializer } from "./index.js";
 
 const execFileAsync = promisify(execFile);
@@ -644,9 +644,7 @@ export async function validateFixtures(): Promise<void> {
         "--prod",
         "--audit-level",
         "high",
-        ...(fixture.mobile
-          ? ["--ignore", "GHSA-w3rx-r6r6-pgpr", "--ignore", "GHSA-5p2g-fcmc-qvqq"]
-          : []),
+        ...(fixture.mobile ? MOBILE_ADVISORY_IDS.flatMap((id) => ["--ignore", id]) : []),
       ]);
       if (fixture.mobile) {
         await runPnpm(root, [

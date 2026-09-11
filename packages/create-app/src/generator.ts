@@ -5,6 +5,7 @@ import {
   DEPENDENCY_VERSIONS,
   type EnvironmentVariableDefinition,
   IMAGE_CATALOG,
+  PROFILE_NAMES,
   type Profile,
   type ProviderSelection,
   resolveCapabilities,
@@ -106,6 +107,7 @@ const TOOLING_VERSION = "1.0.0-dev.1";
 const MOBILE_WAIVER_EXPIRES_AT = "2026-10-05T00:00:00.000Z";
 const MOBILE_WAIVER_EVIDENCE_DIGEST =
   "sha256:84f526a95e79f294bed88c718016538fb0bb9130b9539b82958653aacfbaec4b";
+export const MOBILE_ADVISORY_IDS = ["GHSA-5p2g-fcmc-qvqq", "GHSA-w3rx-r6r6-pgpr"] as const;
 const NODE_VERSION = "24.20.0";
 const PNPM_VERSION = "11.22.0";
 const NODE_IMAGE = `${IMAGE_CATALOG.node.reference}@${IMAGE_CATALOG.node.digest}`;
@@ -597,14 +599,22 @@ function testedPackages(config: InitConfig): Readonly<Record<string, string>> {
     Object.assign(packages, {
       "@types/react": DEPENDENCY_VERSIONS.reactTypes,
       expo: DEPENDENCY_VERSIONS.expo,
-      "expo-notifications": DEPENDENCY_VERSIONS.notifications,
+      "expo-constants": DEPENDENCY_VERSIONS.expoConstants,
+      "expo-dev-client": DEPENDENCY_VERSIONS.expoDevClient,
+      "expo-linking": DEPENDENCY_VERSIONS.expoLinking,
+      "expo-network": DEPENDENCY_VERSIONS.expoNetwork,
       "expo-router": DEPENDENCY_VERSIONS.expoRouter,
-      "expo-secure-store": DEPENDENCY_VERSIONS.secureStore,
+      "expo-status-bar": DEPENDENCY_VERSIONS.expoStatusBar,
       react: DEPENDENCY_VERSIONS.react,
       "react-native": DEPENDENCY_VERSIONS.reactNative,
-      "react-native-gesture-handler": DEPENDENCY_VERSIONS.gestureHandler,
-      "react-native-reanimated": DEPENDENCY_VERSIONS.reanimated,
-      "react-native-unistyles": DEPENDENCY_VERSIONS.unistyles,
+      "react-native-safe-area-context": DEPENDENCY_VERSIONS.safeAreaContext,
+      "react-native-screens": DEPENDENCY_VERSIONS.reactNativeScreens,
+      ...(hasProfile(config, "identity")
+        ? {
+            "@better-auth/expo": DEPENDENCY_VERSIONS.betterAuthExpo,
+            "expo-secure-store": DEPENDENCY_VERSIONS.secureStore,
+          }
+        : {}),
     });
   }
   if (config.deployment === "railway") packages.railway = DEPENDENCY_VERSIONS.railway;
@@ -1571,7 +1581,12 @@ export function evaluateFeatureFlag(flag: FeatureFlagDefinition, actor: Pick<Act
 export type NotificationChannel = "email" | "in-app";
 export interface NotificationTemplate { readonly key: string; readonly version: number; readonly channel: NotificationChannel; readonly subject: string; readonly body: string; }
 export interface NotificationDelivery { readonly idempotencyKey: string; readonly recipient: string; readonly channel: NotificationChannel; readonly template: NotificationTemplate; readonly variables: Readonly<Record<string, string>>; readonly organizationId?: string; }
-export interface NotificationPort { deliver(input: NotificationDelivery): Promise<{ readonly deliveryId: string; readonly status: "queued" | "delivered" | "suppressed" }>; }
+export interface NotificationPort {
+  deliver(input: NotificationDelivery): Promise<{
+    readonly deliveryId: string;
+    readonly status: "queued" | "delivered" | "suppressed";
+  }>;
+}
 export function shouldSuppressNotification(input: { readonly disabled: boolean; readonly alreadyDelivered: boolean; readonly quietHours: boolean; }): boolean {
   return input.disabled || input.alreadyDelivered || input.quietHours;
 }
@@ -1685,6 +1700,7 @@ try { process.loadEnvFile(resolve(process.cwd(), ".env")); } catch (error: unkno
 }
 
 const appEnvironment = process.env.APP_ENV ?? "local";
+if (process.env.NODE_ENV === "production" && appEnvironment === "local") throw new Error("APP_ENV=local is forbidden when NODE_ENV=production");
 const migratorUrl = process.env.MIGRATOR_DATABASE_URL;
 if (appEnvironment !== "local" && !migratorUrl) throw new Error("MIGRATOR_DATABASE_URL is required outside local development");
 const databaseUrl = migratorUrl ?? process.env.DATABASE_URL;
@@ -2231,6 +2247,7 @@ import { APIError, createAuthMiddleware } from "better-auth/api";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { twoFactor } from "better-auth/plugins";
 import { passkey } from "@better-auth/passkey";
+${hasProfile(config, "mobile") ? 'import { expo } from "@better-auth/expo";\n' : ""}
 import { canBootstrapStrongFactor, canPerformSensitiveAccountChange, type AssuranceLevel, type IdentityMailPort } from "${packageName(config, "core")}";
 ${sourceOfTruthBlock({ id: "starter.identity.authentication-adapter", keywords: "identity, authentication, better-auth, session", what: "Better Auth server adapter for authentication artifacts and session resolution.", why: "Authentication stays provider-owned while application identity and authorization remain separate.", when: "Compose the API authentication routes and request context.", how: "createBetterAuthAdapter", boundaries: "The adapter never grants application permissions from an authentication session alone." })}
 export function createIdentityMailAdapter(input: { readonly provider: "mailpit" | "resend"; readonly from: string; readonly mailpitUrl?: string; readonly resendApiKey?: string; readonly fetch?: typeof fetch }): IdentityMailPort {
@@ -2312,7 +2329,7 @@ export function createBetterAuthAdapter(input: {
         "/request-password-reset": { window: 300, max: 3 },
       },
     },
-    plugins: [twoFactor({ issuer: input.appName }), passkey()],
+    plugins: [twoFactor({ issuer: input.appName }), passkey()${hasProfile(config, "mobile") ? ", expo()" : ""}],
     hooks: {
       before: createAuthMiddleware(async (context) => {
         if (["/two-factor/verify-totp", "/two-factor/verify-backup-code"].includes(context.path)) {
@@ -2902,6 +2919,15 @@ function environmentReferenceFile(config: InitConfig, plan: CapabilityPlan): Gen
           ] as const,
         ]
       : []),
+    ...(hasProfile(config, "mobile")
+      ? [
+          [
+            "EXPO_PUBLIC_API_URL",
+            "http://127.0.0.1:3001",
+            "Public API origin. Use 10.0.2.2 for an Android emulator, a LAN address for devices, and HTTPS outside local development.",
+          ] as const,
+        ]
+      : []),
     ...(plan.needsWorker
       ? [["WORKER_PORT", "3002", "Worker health port; separate from the API port."] as const]
       : []),
@@ -3025,6 +3051,67 @@ Copy .env.example to .env for local work. Production receives values from its de
 | Variable | Safe local example | Production requirement |
 | --- | --- | --- |
 ${rows}
+`,
+  );
+}
+
+function setupFile(plan: CapabilityPlan): GeneratedFile {
+  const commands = [
+    ...(plan.needsDatabase || plan.localServices.length > 0 ? [["pnpm", ["dev:deps"]]] : []),
+    ...(plan.needsDatabase
+      ? [
+          ["pnpm", ["db:bootstrap-roles"]],
+          ["pnpm", ["db:migrate"]],
+        ]
+      : []),
+  ];
+  return textFile(
+    "tooling/setup.ts",
+    `import { copyFile, stat } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+
+try { await stat(".env"); }
+catch (error: unknown) {
+  if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+  await copyFile(".env.example", ".env");
+  process.stdout.write("Created .env from .env.example; review local values before sharing access.\\n");
+}
+for (const [command, args] of ${JSON.stringify(commands)} as const) {
+  const result = spawnSync(command, args, { stdio: "inherit", env: process.env });
+  if (result.status !== 0) throw new Error(\`Setup command failed: \${command} \${args.join(" ")}\`);
+}
+process.stdout.write("Local setup is ready. Run pnpm dev.\\n");
+`,
+  );
+}
+
+function doctorFile(config: InitConfig, plan: CapabilityPlan): GeneratedFile {
+  return textFile(
+    "tooling/doctor.ts",
+    `import { readFile } from "node:fs/promises";
+${plan.needsDatabase || plan.localServices.length > 0 ? 'import { spawnSync } from "node:child_process";\n' : ""}
+
+const failures: string[] = [];
+const nodeVersion = process.versions.node;
+if (!nodeVersion.startsWith("${NODE_VERSION.split(".").slice(0, 2).join(".")}.")) failures.push(\`Node ${NODE_VERSION} is required; found \${nodeVersion}\`);
+try { process.loadEnvFile(".env"); } catch (error: unknown) {
+  if (error instanceof Error && "code" in error && error.code === "ENOENT") failures.push(".env is missing; run pnpm setup");
+  else throw error;
+}
+const packageManager = JSON.parse(await readFile("package.json", "utf8")) as { packageManager?: string };
+if (packageManager.packageManager !== "pnpm@${PNPM_VERSION}") failures.push("packageManager must remain pnpm@${PNPM_VERSION}");
+${
+  plan.needsDatabase || plan.localServices.length > 0
+    ? 'const docker = spawnSync("docker", ["compose", "version"], { encoding: "utf8" });\nif (docker.status !== 0) failures.push("Docker Compose is required for selected local dependencies");'
+    : ""
+}
+${
+  hasProfile(config, "mobile")
+    ? 'if (!process.env.EXPO_PUBLIC_API_URL && !process.env.CI) process.stdout.write("Mobile devices require EXPO_PUBLIC_API_URL in .env to reach the API.\\n");'
+    : ""
+}
+if (failures.length > 0) { for (const failure of failures) process.stderr.write(\`doctor: \${failure}\\n\`); process.exitCode = 1; }
+else process.stdout.write("Development prerequisites are ready.\\n");
 `,
   );
 }
@@ -3202,7 +3289,21 @@ permissions:
   attestations: write
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
+        with:
+          version: ${PNPM_VERSION}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+${githubPackageAuthenticationSteps().trimEnd()}
+      - run: pnpm validate:starter
   build:
+    needs: validate
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -3217,7 +3318,6 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
 ${githubPackageAuthenticationSteps().trimEnd()}
-      - run: pnpm validate:starter
       - name: Start disposable runtime dependencies
         run: cp .env.example .env && pnpm dev:deps
 ${plan.needsDatabase ? "      - name: Bootstrap database roles\n        run: pnpm db:bootstrap-roles\n      - name: Apply reviewed migrations for runtime inspection\n        shell: bash\n        run: set -a; . .artifacts/database-credentials.env; set +a; pnpm db:migrate\n" : ""}      - name: Record dependency vulnerability report
@@ -3243,12 +3343,6 @@ ${plan.needsDatabase ? "      - name: Bootstrap database roles\n        run: pnp
             IMAGE_VERSION=${PACKAGE_VERSION}-dev.1
           secret-files: |
             npmrc=\${{ runner.temp }}/thaarei-npmrc
-      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
-        with:
-          image: \${{ steps.image.outputs.image }}@\${{ steps.build.outputs.digest }}
-          format: spdx-json
-          output-file: sbom.spdx.json
-          artifact-name: sbom-\${{ matrix.application }}.spdx.json
       - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
         with:
           subject-name: \${{ steps.image.outputs.image }}
@@ -3280,7 +3374,6 @@ ${plan.needsDatabase ? "      - name: Bootstrap database roles\n        run: pnp
           path: |
             application-image.json
             dependency-vulnerabilities.json
-            sbom.spdx.json
             .artifacts/security
             .artifacts/runtime
           if-no-files-found: error
@@ -3444,8 +3537,10 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
           plan.needsDatabase || plan.localServices.length > 0
             ? `docker compose${resolveCapabilities(plan.profiles, plan.providers).definitions.some((definition) => definition.sourceMaturity === "experimental" && definition.localServices.length > 0) ? " --profile experimental" : ""} up -d --wait --wait-timeout 120`
             : "node -e \"process.stdout.write('No local dependencies selected\\n')\"",
-        dev: `pnpm dev:deps && turbo run dev --parallel`,
-        "dev:full": `pnpm dev:deps && turbo run dev --parallel`,
+        setup: "tsx tooling/setup.ts",
+        doctor: "tsx tooling/doctor.ts",
+        dev: `pnpm dev:deps && turbo watch dev --concurrency=100%`,
+        "dev:full": `pnpm dev:deps && turbo watch dev --concurrency=100%`,
         "dev:down": "docker compose down --remove-orphans",
         "dev:clean": "tsx tooling/dev-clean.ts",
         ...(plan.needsApi
@@ -3476,13 +3571,13 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
             }
           : {}),
         ...(hasProfile(config, "web") ? { "smoke:web": "tsx tooling/smoke-web.ts" } : {}),
-        "check:boundaries": "tsx tooling/governance/src/cli.ts check:boundaries",
-        "check:implementation": "tsx tooling/governance/src/cli.ts check:implementation",
+        "check:boundaries": "thaarei-governance check:boundaries",
+        "check:implementation": "thaarei-governance check:implementation",
         "check:project": "tsx tooling/governance/check-project.ts",
         ...(hasProfile(config, "python")
           ? { "check:python": "python3 -m compileall -q services/python/src" }
           : {}),
-        "check:source-of-truth": "tsx tooling/governance/src/cli.ts check:source-of-truth",
+        "check:source-of-truth": "thaarei-governance check:source-of-truth",
         ...(plan.needsDatabase ? { "check:migrations": "tsx tooling/check-migrations.ts" } : {}),
         ...(plan.needsDatabase
           ? { "recovery:verify": "tsx tooling/recovery/verify-postgres.ts" }
@@ -3507,13 +3602,19 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
           ? { "runtime:inspect": "tsx tooling/runtime/inspect-image.ts" }
           : {}),
         ...(hasProfile(config, "mobile")
-          ? { "security:waiver-check": "tsx tooling/security/check-waivers.ts" }
+          ? {
+              "dev:mobile": `pnpm --filter ${packageName(config, "mobile-app")} dev`,
+              "mobile:android": `pnpm --filter ${packageName(config, "mobile-app")} android`,
+              "mobile:ios": `pnpm --filter ${packageName(config, "mobile-app")} ios`,
+              "check:mobile": `pnpm --filter ${packageName(config, "mobile-app")} check`,
+              "security:waiver-check": "tsx tooling/security/check-waivers.ts",
+            }
           : {}),
         format: "biome format --write .",
         "format:check": "biome format .",
-        "implementation:list": "tsx tooling/governance/src/cli.ts implementation:list",
-        "implementation:new": "tsx tooling/governance/src/cli.ts implementation:new",
-        "implementation:sync": "tsx tooling/governance/src/cli.ts implementation:sync",
+        "implementation:list": "thaarei-governance implementation:list",
+        "implementation:new": "thaarei-governance implementation:new",
+        "implementation:sync": "thaarei-governance implementation:sync",
         ...(hasProfile(config, "external-api") ? { "generate:api-client": "openapi-ts" } : {}),
         ...(hasProfile(config, "external-api")
           ? { "check:generated": "tsx tooling/check-generated.ts" }
@@ -3541,11 +3642,12 @@ function baseFiles(config: InitConfig, plan: CapabilityPlan): GeneratedFile[] {
             }
           : {}),
         typecheck: "turbo run typecheck",
-        check: `pnpm format:check && pnpm lint && pnpm release:check && pnpm check:project && pnpm check:source-of-truth && pnpm check:boundaries && pnpm check:implementation${plan.needsDatabase ? " && pnpm check:migrations" : ""}${plan.needsExternalApi ? " && pnpm check:generated" : ""}${hasProfile(config, "python") ? " && pnpm check:python" : ""} && pnpm typecheck && pnpm build && pnpm test`,
-        "validate:starter": "pnpm check",
+        check:
+          "pnpm format:check && pnpm lint && pnpm check:boundaries && pnpm typecheck && pnpm test",
+        "validate:starter": `pnpm check && pnpm release:check && pnpm check:project && pnpm check:source-of-truth && pnpm check:implementation${plan.needsDatabase ? " && pnpm check:migrations" : ""}${plan.needsExternalApi ? " && pnpm check:generated" : ""}${hasProfile(config, "python") ? " && pnpm check:python" : ""} && pnpm build${hasProfile(config, "mobile") ? " && pnpm check:mobile" : ""}`,
         "validate:deep":
           "pnpm validate:starter && pnpm test:coverage && pnpm security:secrets && pnpm security:sast && pnpm security:fs && pnpm security:config",
-        "validate:product": "pnpm check",
+        "validate:product": "pnpm validate:starter",
       },
       devDependencies: {
         "@thaarei-technology/tooling": TOOLING_VERSION,
@@ -3624,7 +3726,7 @@ const packages = ${JSON.stringify(
 export default defineConfig({
   resolve: { alias: Object.fromEntries(packages.map(([name, directory]) => [name, resolve(root, "packages", directory, "src", "index.ts")])) },
   test: {
-    include: ["packages/**/tests/**/*.test.ts"],
+    include: ["{apps,packages}/**/*.{test,spec}.{ts,tsx}"],
     testTimeout: 30_000,
     coverage: {
       enabled: false,
@@ -3869,7 +3971,7 @@ try {
       ],
       tasks: {
         build: { dependsOn: ["^build"], outputs: ["dist/**", ".next/**", "!**/.next/cache/**"] },
-        dev: { cache: false, persistent: true },
+        dev: { dependsOn: ["^build"], cache: false, persistent: true, interruptible: true },
         typecheck: { dependsOn: ["^typecheck"] },
       },
     }),
@@ -3997,8 +4099,12 @@ try {
         clientId: { type: "string", minLength: 1 },
         displayName: { type: "string", minLength: 1 },
         packageScope: { type: "string", pattern: "^@[a-z0-9][a-z0-9-]*$" },
-        profiles: { type: "array", uniqueItems: true, items: { enum: config.profiles } },
-        services: { type: "array", uniqueItems: true, items: { enum: plan.deployableApps } },
+        profiles: { type: "array", uniqueItems: true, items: { enum: PROFILE_NAMES } },
+        services: {
+          type: "array",
+          uniqueItems: true,
+          items: { enum: ["web", "api", "worker", "python"] },
+        },
         environments: { const: ["development", "test", "staging", "production"] },
         deployment: {
           type: "object",
@@ -4032,15 +4138,15 @@ try {
 const project = JSON.parse(await readFile("${identity.namespace}/project.json", "utf8")) as Record<string, unknown>;
 const expectedKeys = ["$schema", "schemaVersion", "initializedAt", "starterVersion", "productId", "clientId", "displayName", "packageScope", "profiles", "services", "environments", "deployment", "owners", "generatedFiles"].sort();
 if (JSON.stringify(Object.keys(project).sort()) !== JSON.stringify(expectedKeys)) throw new Error("project metadata has unknown or missing fields");
-const expectedProfiles = ${JSON.stringify(config.profiles)};
-const expectedServices = ${JSON.stringify(plan.deployableApps)};
 const expectedEnvironments = ["development", "test", "staging", "production"];
-if (project.$schema !== "../tooling/governance/project.schema.json" || project.schemaVersion !== 2 || project.starterVersion !== "${GENERATOR_VERSION}") throw new Error("project metadata schema or starter version drifted");
-if (JSON.stringify(project.profiles) !== JSON.stringify(expectedProfiles)) throw new Error("project capability metadata drifted");
-if (JSON.stringify(project.services) !== JSON.stringify(expectedServices)) throw new Error("project service metadata drifted");
+if (project.$schema !== "../tooling/governance/project.schema.json" || project.schemaVersion !== 2 || typeof project.starterVersion !== "string" || !project.starterVersion) throw new Error("project metadata schema or starter version is invalid");
+const knownProfiles = new Set(${JSON.stringify(PROFILE_NAMES)});
+if (!Array.isArray(project.profiles) || project.profiles.some((profile) => typeof profile !== "string" || !knownProfiles.has(profile)) || new Set(project.profiles).size !== project.profiles.length) throw new Error("project capability metadata is invalid");
+const knownServices = new Set(["web", "api", "worker", "python"]);
+if (!Array.isArray(project.services) || project.services.some((service) => typeof service !== "string" || !knownServices.has(service)) || new Set(project.services).size !== project.services.length) throw new Error("project service metadata is invalid");
 if (JSON.stringify(project.environments) !== JSON.stringify(expectedEnvironments)) throw new Error("project environment metadata drifted");
 const deployment = project.deployment as Record<string, unknown> | undefined;
-if (!deployment || JSON.stringify(Object.keys(deployment).sort()) !== JSON.stringify(["target", "topology"]) || deployment.target !== "${config.deployment}" || deployment.topology !== "${config.topology ?? "standard"}") throw new Error("project deployment metadata drifted");
+if (!deployment || JSON.stringify(Object.keys(deployment).sort()) !== JSON.stringify(["target", "topology"]) || !["dokploy", "railway"].includes(String(deployment.target)) || !["standard", "hardened"].includes(String(deployment.topology))) throw new Error("project deployment metadata is invalid");
 const owners = project.owners as Record<string, unknown> | undefined;
 if (!owners || typeof owners.technical !== "string" || !owners.technical || typeof owners.operations !== "string" || !owners.operations) throw new Error("project ownership metadata is invalid");
 if (!Array.isArray(project.generatedFiles)) throw new Error("project generatedFiles must be an array");
@@ -4050,6 +4156,8 @@ if (new Set(project.generatedFiles).size !== project.generatedFiles.length) thro
 process.stdout.write("Project metadata is valid\\n");
 `,
     ),
+    setupFile(plan),
+    doctorFile(config, plan),
     ...(plan.needsDatabase || plan.localServices.length > 0
       ? [localComposeFile(config, plan), devCleanFile(config)]
       : []),
@@ -4102,7 +4210,7 @@ const baseUrl = (__ENV.BASE_URL ?? "").replace(/\\/$/u, "");
 if (!baseUrl) throw new Error("BASE_URL is required");
 
 export default function smoke() {
-  const response = http.get(baseUrl + "/health/live", {
+  const response = http.get(\`\${baseUrl}/health/live\`, {
     headers: { "user-agent": "thaarei-k6-smoke/1.0" },
     timeout: "10s",
   });
@@ -4555,7 +4663,7 @@ try {
               id: "mobile-image-size-2026-09",
               scanner: "pnpm-audit",
               findingId: "GHSA-5p2g-fcmc-qvqq",
-              advisoryIds: ["GHSA-5p2g-fcmc-qvqq"],
+              advisoryIds: MOBILE_ADVISORY_IDS,
               severity: "high",
               affectedPath: "generated apps/mobile transitive Metro build dependency",
               affectedArtifact: "generated-experimental-mobile-fixture",
@@ -4593,7 +4701,7 @@ try {
                 id: "mobile-image-size-2026-09",
                 scanner: "pnpm-audit",
                 findingId: "GHSA-5p2g-fcmc-qvqq",
-                advisoryIds: ["GHSA-5p2g-fcmc-qvqq"],
+                advisoryIds: MOBILE_ADVISORY_IDS,
                 severity: "high",
                 affectedPath: "generated apps/mobile transitive Metro build dependency",
                 affectedArtifact: "generated-experimental-mobile-fixture",
@@ -4624,11 +4732,15 @@ try {
   const basePackages: Array<readonly [string, string, string]> = [
     ["core", "core", "Provider-neutral domain ports and policy boundaries."],
     ["contracts", "contracts", "Wire-safe request, response, and job contracts."],
-    ["adapters", "adapters", "Provider implementations behind domain ports."],
+    ...(plan.needsAdapters
+      ? [["adapters", "adapters", "Provider implementations behind domain ports."] as const]
+      : []),
     ...(plan.needsDatabase
       ? [["database", "database", "Persistence schema and repositories."] as const]
       : []),
-    ["test-support", "test-support", "Small deterministic test helpers."],
+    ...(plan.needsExternalApi
+      ? [["test-support", "test-support", "Small deterministic test helpers."] as const]
+      : []),
   ];
   const needsApi = plan.needsApi;
   const needsApiClient = plan.needsApiClient;
@@ -4886,6 +4998,8 @@ test("storage policy rejects cross-subject, unsafe, anonymous, and oversized wri
       if (plan.needsIdentity) adapterDependencies["better-auth"] = DEPENDENCY_VERSIONS.betterAuth;
       if (plan.needsIdentity)
         adapterDependencies["@better-auth/passkey"] = DEPENDENCY_VERSIONS.betterAuthPasskey;
+      if (plan.needsIdentity && hasProfile(config, "mobile"))
+        adapterDependencies["@better-auth/expo"] = DEPENDENCY_VERSIONS.betterAuthExpo;
       if (plan.needsWorker)
         adapterDependencies["graphile-worker"] = DEPENDENCY_VERSIONS.graphileWorker;
       if (plan.needsStorage) {
@@ -5415,15 +5529,22 @@ test("authenticated HTTP callers can execute the composed AI tool boundary", asy
               ? `import { createTRPCProxyClient, httpBatchLink } from "@trpc/client";
 import type { AppRouter } from "${packageName(config, "api")}";
 ${plan.needsIdentity ? 'import { createAuthClient } from "better-auth/client";\n' : ""}
-export function createApiClient() {
+export interface ApiClientOptions {
+  readonly baseUrl?: string;
+  readonly credentials?: RequestCredentials;
+  readonly headers?: () => Promise<Readonly<Record<string, string>>>;
+}
+export function createApiClient(options: ApiClientOptions = {}) {
+  const baseUrl = options.baseUrl?.replace(/\\/$/u, "") ?? "";
   return createTRPCProxyClient<AppRouter>({ links: [httpBatchLink({
-    url: "/trpc",
+    url: \`\${baseUrl}/trpc\`,
+    headers: options.headers,
     fetch: (input, init) => fetch(input, {
       ...(init?.method ? { method: init.method } : {}),
       ...(init?.body ? { body: init.body } : {}),
       ...(init?.headers ? { headers: init.headers } : {}),
       signal: init?.signal ?? null,
-      credentials: "include",
+      credentials: options.credentials ?? "include",
     }),
   })] });
 }
@@ -5473,6 +5594,15 @@ test("generated external client reaches the registered Fastify route", async () 
             ]
           : []),
       );
+    } else if (name === "design-tokens") {
+      files.push(
+        packageManifest(config, name),
+        packageTsconfig(name),
+        textFile(
+          "packages/design-tokens/src/index.ts",
+          'export const colors = Object.freeze({ background: "#ffffff", foreground: "#171717", accent: "#2563eb", muted: "#64748b" });\nexport const spacing = Object.freeze({ small: 8, medium: 16, large: 24 });\n',
+        ),
+      );
     } else {
       files.push(
         packageManifest(config, name),
@@ -5501,7 +5631,8 @@ function apiPackageFile(config: InitConfig, plan: CapabilityPlan): GeneratedFile
     coreTypes.length > 0
       ? `import type { ${coreTypes.join(", ")} } from "${packageName(config, "core")}";\n`
       : "";
-  const zodImport = plan.needsStorage || plan.needsAi ? `import { z } from "zod";\n` : "";
+  const zodImport =
+    plan.needsIdentity || plan.needsStorage || plan.needsAi ? `import { z } from "zod";\n` : "";
   const externalImports = plan.needsExternalApi
     ? `import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
@@ -5565,6 +5696,7 @@ ${plan.needsTenancy ? "  readonly organizationAuthorization?: { readonly hasMemb
     readonly bodyLimitBytes?: number;
     readonly responseLimitBytes?: number;
     readonly requestTimeoutMs?: number;
+    readonly trustedNativeSchemes?: readonly string[];
   };
   readonly telemetry?: {
     readonly startRequest: (request: { readonly method: string; readonly route: string }) => {
@@ -5634,6 +5766,7 @@ ${sourceOfTruthBlock({ id: "starter.api.transport", keywords: "api, fastify, trp
 export const appRouter = t.router({
   health: publicProcedure.query(() => healthResponseSchema.parse({ status: "ok", checkedAt: new Date().toISOString(), instanceId: process.env.${productIdentity(config).environmentPrefix}_FIXTURE_ID ?? "local" })),
   viewer: authenticatedProcedure.query(({ ctx }) => ({ subjectId: ctx.subjectId })),
+${plan.needsIdentity ? "  protectedEcho: authenticatedProcedure.input(z.object({ message: z.string().min(1).max(200) }).strict()).mutation(({ ctx, input }) => ({ subjectId: ctx.subjectId, message: input.message })),\n" : ""}
 ${
   plan.needsStorage
     ? `  storageUrl: ${storageProcedure}.input(z.object({ key: z.string().min(1) })).mutation(async ({ ctx, input }) => {
@@ -5686,6 +5819,7 @@ export function buildApi(dependencies: ApiDependencies${plan.needsIdentity ? "" 
   const bodyLimitBytes = security.bodyLimitBytes ?? 1_048_576;
   const responseLimitBytes = security.responseLimitBytes ?? 2_097_152;
   const requestTimeoutMs = security.requestTimeoutMs ?? 15_000;
+  const trustedNativeSchemes = new Set(security.trustedNativeSchemes ?? []);
   const server = Fastify({
     trustProxy: security.trustedProxyCidrs?.length ? [...security.trustedProxyCidrs] : false,
     bodyLimit: bodyLimitBytes,
@@ -5727,12 +5861,14 @@ export function buildApi(dependencies: ApiDependencies${plan.needsIdentity ? "" 
       reply.header("access-control-allow-credentials", "true");
       reply.header("vary", "Origin");
     }
-    if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method) && request.headers.cookie && origin === null) {
+    const nativeScheme = typeof request.headers["x-native-app"] === "string" ? request.headers["x-native-app"] : null;
+    const trustedNativeRequest = nativeScheme !== null && trustedNativeSchemes.has(nativeScheme);
+    if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method) && request.headers.cookie && origin === null && !trustedNativeRequest) {
       return reply.code(403).send({ error: "origin is required for cookie-authenticated mutations" });
     }
     if (request.method === "OPTIONS") {
       reply.header("access-control-allow-methods", "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS");
-      reply.header("access-control-allow-headers", "content-type,authorization,x-request-id,x-organization-id,idempotency-key");
+      reply.header("access-control-allow-headers", "content-type,authorization,x-request-id,x-organization-id,x-native-app,idempotency-key");
       return reply.code(204).send();
     }
   });
@@ -5796,7 +5932,7 @@ function apiFiles(config: InitConfig): GeneratedFile[] {
     ...(plan.needsIdentity
       ? [
           `  const identityMail = createIdentityMailAdapter({ provider: environment.IDENTITY_MAIL_PROVIDER, from: environment.IDENTITY_FROM_EMAIL, ...(environment.IDENTITY_MAILPIT_URL ? { mailpitUrl: environment.IDENTITY_MAILPIT_URL } : {}), ...(environment.IDENTITY_RESEND_API_KEY ? { resendApiKey: environment.IDENTITY_RESEND_API_KEY } : {}) });`,
-          `  const authentication = createBetterAuthAdapter({ appName: ${stringLiteral(config.displayName)}, secret: environment.BETTER_AUTH_SECRET, baseURL: environment.BETTER_AUTH_URL, trustedOrigins: [new URL(environment.BETTER_AUTH_URL).origin], database: database.authentication.database, schema: database.authentication.schema, identityMail, onUserCreated: async (authenticationSubjectId) => { await database.identity.ensureAuthenticationSubject(authenticationSubjectId); }, recordAssurance: database.authentication.recordAssurance, resolveAssurance: database.authentication.resolveAssurance });`,
+          `  const authentication = createBetterAuthAdapter({ appName: ${stringLiteral(config.displayName)}, secret: environment.BETTER_AUTH_SECRET, baseURL: environment.BETTER_AUTH_URL, trustedOrigins: [new URL(environment.BETTER_AUTH_URL).origin${config.mobile ? `, ${stringLiteral(`${config.mobile.scheme}://`)}` : ""}], database: database.authentication.database, schema: database.authentication.schema, identityMail, onUserCreated: async (authenticationSubjectId) => { await database.identity.ensureAuthenticationSubject(authenticationSubjectId); }, recordAssurance: database.authentication.recordAssurance, resolveAssurance: database.authentication.resolveAssurance });`,
           "  const identity = database.identity;",
         ]
       : []),
@@ -5830,7 +5966,7 @@ function apiFiles(config: InitConfig): GeneratedFile[] {
             ...(plan.needsStorage ? ['{ name: "storage", check: storage.checkReadiness }'] : []),
           ].join(", ")}],`
         : ""
-    } security: { allowedOrigins: environment.ALLOWED_ORIGINS.split(",").map((value) => value.trim()).filter(Boolean), trustedProxyCidrs: environment.TRUSTED_PROXY_CIDRS.split(",").map((value) => value.trim()).filter(Boolean), secureTransport: environment.APP_ENV === "production", bodyLimitBytes: environment.REQUEST_BODY_LIMIT_BYTES, responseLimitBytes: environment.RESPONSE_BODY_LIMIT_BYTES, requestTimeoutMs: environment.REQUEST_TIMEOUT_MS } });`,
+    } security: { allowedOrigins: environment.ALLOWED_ORIGINS.split(",").map((value) => value.trim()).filter(Boolean), trustedProxyCidrs: environment.TRUSTED_PROXY_CIDRS.split(",").map((value) => value.trim()).filter(Boolean), secureTransport: environment.APP_ENV === "production", bodyLimitBytes: environment.REQUEST_BODY_LIMIT_BYTES, responseLimitBytes: environment.RESPONSE_BODY_LIMIT_BYTES, requestTimeoutMs: environment.REQUEST_TIMEOUT_MS${config.mobile ? `, trustedNativeSchemes: [${stringLiteral(config.mobile.scheme)}]` : ""} } });`,
     ...(plan.needsIdentity
       ? [
           "  registerAuthenticationRoutes(server, environment.BETTER_AUTH_URL, authentication.handler);",
@@ -5850,7 +5986,7 @@ function apiFiles(config: InitConfig): GeneratedFile[] {
     );
   const environmentSchema = [
     "const environmentSchema = z.object({",
-    '  APP_ENV: z.enum(["local", "ci", "staging", "production"]).default("local"),',
+    '  APP_ENV: z.enum(["local", "ci", "staging", "production"]),',
     "  PORT: z.coerce.number().int().min(1).max(65535).default(3001),",
     "  ALLOWED_ORIGINS: z.string().min(1),",
     '  TRUSTED_PROXY_CIDRS: z.string().optional().default(""),',
@@ -5905,6 +6041,7 @@ import { z } from "zod";
 try { process.loadEnvFile(resolve(process.cwd(), ".env")); } catch (error: unknown) {
   if (!(error instanceof Error) || !("code" in error && error.code === "ENOENT")) throw error;
 }
+if (process.env.NODE_ENV === "production" && (!process.env.APP_ENV || process.env.APP_ENV === "local")) throw new Error("A non-local APP_ENV is required when NODE_ENV=production");
 ${environmentSchema}
 export async function startApi(): Promise<void> {
 ${setup}
@@ -5981,6 +6118,7 @@ import { createDatabaseRuntime } from "${databasePackage}";
 import { z } from "zod";
 
 const environment = z.object({
+  APP_ENV: z.enum(["local", "ci", "staging", "production"]),
   DATABASE_URL: z.string().min(1),
   WORKER_PORT: z.coerce.number().int().min(1).max(65535).default(3002),
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(50).default(2),
@@ -5993,6 +6131,7 @@ ${plan.capabilityEnvironment
   )
   .join("\n")}
 }).parse(process.env);
+if (process.env.NODE_ENV === "production" && (!process.env.APP_ENV || process.env.APP_ENV === "local")) throw new Error("A non-local APP_ENV is required when NODE_ENV=production");
 export async function startWorker(): Promise<void> {
   const database = createDatabaseRuntime(environment.DATABASE_URL);
 ${plan.needsObservability ? `  const telemetry = createTelemetryRuntime({ serviceName: "${config.productId}-worker", endpoint: environment.OTEL_EXPORTER_OTLP_ENDPOINT });\n` : ""}
@@ -6284,11 +6423,11 @@ function webFiles(config: InitConfig): GeneratedFile[] {
       name: packageName(config, "web-app"),
       private: true,
       version: PACKAGE_VERSION,
-      files: [".next", "public", "next.config.ts"],
+      files: [".next", "public", "next.config.ts", "start.mjs"],
       scripts: {
         build: "next build",
-        dev: "next dev -p 3000",
-        start: "next start",
+        dev: "node --env-file-if-exists=../../.env ./node_modules/next/dist/bin/next dev -p 3000",
+        start: "node --env-file-if-exists=../../.env start.mjs",
         typecheck: "tsc --noEmit",
       },
       dependencies: {
@@ -6335,6 +6474,13 @@ function webFiles(config: InitConfig): GeneratedFile[] {
       `export default { plugins: { "@tailwindcss/postcss": {} } };\n`,
     ),
     textFile("apps/web/global.d.ts", `declare module "*.css";\n`),
+    textFile(
+      "apps/web/start.mjs",
+      `if (process.env.NODE_ENV === "production" && (!process.env.APP_ENV || process.env.APP_ENV === "local")) throw new Error("A non-local APP_ENV is required when NODE_ENV=production");
+process.argv.push("start");
+await import("next/dist/bin/next");
+`,
+    ),
     textFile(
       "apps/web/proxy.ts",
       `import type { NextRequest } from "next/server";
@@ -6413,7 +6559,7 @@ export default config;
     withPrivateRegistryBuildSecret(
       textFile(
         "apps/web/Dockerfile",
-        `FROM ${NODE_IMAGE} AS build\nWORKDIR /workspace\nCOPY . .\nRUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts\nRUN pnpm --filter ${packageName(config, "web-app")}... build\nRUN pnpm --filter ${packageName(config, "web-app")} --prod deploy /runtime\nFROM ${NODE_IMAGE} AS runtime\nENV NODE_ENV=production\nARG SOURCE_COMMIT=local\nARG IMAGE_VERSION=${PACKAGE_VERSION}-dev.1\nLABEL org.opencontainers.image.source="generated-private-repository" \\\n      org.opencontainers.image.description="${config.displayName} web" \\\n      org.opencontainers.image.version="$IMAGE_VERSION" \\\n      org.opencontainers.image.revision="$SOURCE_COMMIT"\nWORKDIR /app\nCOPY --from=build --chown=1000:1000 /runtime/ ./\n${NODE_RUNTIME_CLEANUP}\nUSER 1000:1000\nEXPOSE 3000\nHEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]\nSTOPSIGNAL SIGTERM\nCMD ["./node_modules/.bin/next", "start"]\n`,
+        `FROM ${NODE_IMAGE} AS build\nWORKDIR /workspace\nCOPY . .\nRUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts\nRUN pnpm --filter ${packageName(config, "web-app")}... build\nRUN pnpm --filter ${packageName(config, "web-app")} --prod deploy /runtime\nFROM ${NODE_IMAGE} AS runtime\nENV NODE_ENV=production\nARG SOURCE_COMMIT=local\nARG IMAGE_VERSION=${PACKAGE_VERSION}-dev.1\nLABEL org.opencontainers.image.source="generated-private-repository" \\\n      org.opencontainers.image.description="${config.displayName} web" \\\n      org.opencontainers.image.version="$IMAGE_VERSION" \\\n      org.opencontainers.image.revision="$SOURCE_COMMIT"\nWORKDIR /app\nCOPY --from=build --chown=1000:1000 /runtime/ ./\n${NODE_RUNTIME_CLEANUP}\nUSER 1000:1000\nEXPOSE 3000\nHEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 CMD ["node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]\nSTOPSIGNAL SIGTERM\nCMD ["node", "start.mjs"]\n`,
       ),
     ),
   ];
@@ -6422,6 +6568,9 @@ export default config;
 function mobileFiles(config: InitConfig): GeneratedFile[] {
   const settings = config.mobile;
   if (!settings) throw new Error("Internal error: mobile settings are missing");
+  const apiClientPackage = packageName(config, "api-client");
+  const designTokensPackage = packageName(config, "design-tokens");
+  const hasIdentity = hasProfile(config, "identity");
   return [
     jsonFile("apps/mobile/package.json", {
       name: packageName(config, "mobile-app"),
@@ -6430,19 +6579,35 @@ function mobileFiles(config: InitConfig): GeneratedFile[] {
       main: "expo-router/entry",
       scripts: {
         build: "expo export --platform ios && expo export --platform android",
-        start: "expo start",
+        check: "expo install --check && tsc --noEmit",
+        dev: "node --env-file-if-exists=../../.env ./node_modules/expo/bin/cli start --dev-client",
+        start: "expo start --dev-client",
+        android: "expo run:android",
+        ios: "expo run:ios",
+        "native:sync": "expo prebuild --clean",
         typecheck: "tsc --noEmit",
       },
       dependencies: {
+        [apiClientPackage]: "workspace:*",
+        [designTokensPackage]: "workspace:*",
+        ...(hasIdentity
+          ? {
+              "@better-auth/expo": DEPENDENCY_VERSIONS.betterAuthExpo,
+              "better-auth": DEPENDENCY_VERSIONS.betterAuth,
+              "expo-secure-store": DEPENDENCY_VERSIONS.secureStore,
+            }
+          : {}),
         expo: DEPENDENCY_VERSIONS.expo,
-        "expo-notifications": DEPENDENCY_VERSIONS.notifications,
+        "expo-constants": DEPENDENCY_VERSIONS.expoConstants,
+        "expo-dev-client": DEPENDENCY_VERSIONS.expoDevClient,
+        "expo-linking": DEPENDENCY_VERSIONS.expoLinking,
+        "expo-network": DEPENDENCY_VERSIONS.expoNetwork,
         "expo-router": DEPENDENCY_VERSIONS.expoRouter,
-        "expo-secure-store": DEPENDENCY_VERSIONS.secureStore,
+        "expo-status-bar": DEPENDENCY_VERSIONS.expoStatusBar,
         react: DEPENDENCY_VERSIONS.react,
         "react-native": DEPENDENCY_VERSIONS.reactNative,
-        "react-native-gesture-handler": DEPENDENCY_VERSIONS.gestureHandler,
-        "react-native-reanimated": DEPENDENCY_VERSIONS.reanimated,
-        "react-native-unistyles": DEPENDENCY_VERSIONS.unistyles,
+        "react-native-safe-area-context": DEPENDENCY_VERSIONS.safeAreaContext,
+        "react-native-screens": DEPENDENCY_VERSIONS.reactNativeScreens,
       },
       devDependencies: {
         "@types/react": DEPENDENCY_VERSIONS.reactTypes,
@@ -6456,25 +6621,141 @@ function mobileFiles(config: InitConfig): GeneratedFile[] {
         noUncheckedIndexedAccess: true,
         exactOptionalPropertyTypes: true,
       },
-      include: ["app", "expo-env.d.ts"],
+      include: ["app", "src", "expo-env.d.ts"],
     }),
     jsonFile("apps/mobile/app.json", {
       expo: {
         name: config.displayName,
         slug: config.clientId,
         scheme: settings.scheme,
-        plugins: ["expo-router", "expo-secure-store", "expo-notifications"],
+        plugins: ["expo-router", ...(hasIdentity ? ["expo-secure-store"] : [])],
         ios: { bundleIdentifier: settings.iosBundleId },
         android: { package: settings.androidApplicationId },
       },
     }),
     textFile(
       "apps/mobile/app/_layout.tsx",
-      `import { Stack } from "expo-router";\n\nexport default function RootLayout() { return <Stack />; }\n`,
+      `import { Stack } from "expo-router";\nimport { StatusBar } from "expo-status-bar";\n\nexport default function RootLayout() { return <><StatusBar style="auto" /><Stack /></>; }\n`,
     ),
     textFile(
+      "apps/mobile/src/api.ts",
+      `import { createApiClient } from "${apiClientPackage}";
+${hasIdentity ? 'import { authClient } from "./auth";\n' : ""}
+const configuredUrl = process.env.EXPO_PUBLIC_API_URL;
+if (!configuredUrl) throw new Error("EXPO_PUBLIC_API_URL is required for the mobile application");
+export const api = createApiClient({
+  baseUrl: new URL(configuredUrl).origin,
+  credentials: "omit",
+  headers: async () => ({ "x-native-app": ${stringLiteral(settings.scheme)}${hasIdentity ? ", ...(await authClient.getCookie() ? { cookie: await authClient.getCookie() } : {})" : ""} }),
+});
+`,
+    ),
+    ...(hasIdentity
+      ? [
+          textFile(
+            "apps/mobile/src/auth.ts",
+            `import { expoClient } from "@better-auth/expo/client";
+import { createAuthClient } from "better-auth/react";
+import * as SecureStore from "expo-secure-store";
+
+const baseURL = process.env.EXPO_PUBLIC_API_URL;
+if (!baseURL) throw new Error("EXPO_PUBLIC_API_URL is required for mobile identity");
+export const authClient = createAuthClient({
+  baseURL,
+  plugins: [expoClient({ scheme: ${stringLiteral(settings.scheme)}, storagePrefix: ${stringLiteral(config.productId)}, storage: SecureStore })],
+});
+`,
+          ),
+          textFile(
+            "apps/mobile/app/auth/verified.tsx",
+            `import { useLocalSearchParams } from "expo-router";
+import { StyleSheet, Text, View } from "react-native";
+import { colors, spacing } from "${designTokensPackage}";
+
+export default function Verified() {
+  const { error } = useLocalSearchParams<{ error?: string }>();
+  return <View style={styles.screen}><Text>{error ? \`Verification failed: \${error}\` : "Email verified. Return to sign in."}</Text></View>;
+}
+const styles = StyleSheet.create({ screen: { flex: 1, justifyContent: "center", padding: spacing.large, backgroundColor: colors.background } });
+`,
+          ),
+          textFile(
+            "apps/mobile/app/auth/reset-password.tsx",
+            `import { useLocalSearchParams, useRouter } from "expo-router";
+import { useState } from "react";
+import { Button, StyleSheet, Text, TextInput, View } from "react-native";
+import { colors, spacing } from "${designTokensPackage}";
+import { authClient } from "../../src/auth";
+
+export default function ResetPassword() {
+  const { token, error } = useLocalSearchParams<{ token?: string; error?: string }>();
+  const router = useRouter();
+  const [password, setPassword] = useState("");
+  const [message, setMessage] = useState(error ? \`Reset failed: \${error}\` : "Enter a new password");
+  const reset = async (): Promise<void> => {
+    if (!token) { setMessage("The reset link is missing its token"); return; }
+    const result = await authClient.resetPassword({ newPassword: password, token });
+    if (result.error) { setMessage(result.error.message ?? "Password reset failed"); return; }
+    router.replace("/");
+  };
+  return <View style={styles.screen}>
+    <Text>{message}</Text>
+    <TextInput placeholder="New password" secureTextEntry style={styles.input} value={password} onChangeText={setPassword} />
+    <Button title="Reset password" onPress={() => void reset()} />
+  </View>;
+}
+const styles = StyleSheet.create({
+  screen: { flex: 1, gap: spacing.medium, justifyContent: "center", padding: spacing.large, backgroundColor: colors.background },
+  input: { borderColor: colors.muted, borderWidth: 1, padding: spacing.medium },
+});
+`,
+          ),
+        ]
+      : []),
+    textFile(
       "apps/mobile/app/index.tsx",
-      `import { Text, View } from "react-native";\nimport { GestureHandlerRootView } from "react-native-gesture-handler";\n\nexport default function Index() {\n  return <GestureHandlerRootView><View><Text>{${stringLiteral(config.displayName)}}</Text></View></GestureHandlerRootView>;\n}\n`,
+      `import { useState } from "react";
+import { ActivityIndicator, Button, StyleSheet, Text, TextInput, View } from "react-native";
+${hasIdentity ? 'import * as Linking from "expo-linking";\n' : ""}
+import { colors, spacing } from "${designTokensPackage}";
+import { api } from "../src/api";
+${hasIdentity ? 'import { authClient } from "../src/auth";\n' : ""}
+${hasIdentity ? 'const verificationCallbackURL = Linking.createURL("/auth/verified");\nconst resetCallbackURL = Linking.createURL("/auth/reset-password");\n' : ""}
+
+export default function Index() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [message, setMessage] = useState("Ready");
+  const [loading, setLoading] = useState(false);
+  const run = async (operation: () => Promise<unknown>): Promise<void> => {
+    setLoading(true);
+    try { setMessage(JSON.stringify(await operation())); }
+    catch (error: unknown) { setMessage(error instanceof Error ? error.message : "Request failed"); }
+    finally { setLoading(false); }
+  };
+  return <View style={styles.screen}>
+    <Text style={styles.title}>{${stringLiteral(config.displayName)}}</Text>
+    <Button title="Check API" onPress={() => void run(() => api.health.query())} />
+${
+  hasIdentity
+    ? `    <TextInput autoCapitalize="none" inputMode="email" placeholder="Email" style={styles.input} value={email} onChangeText={setEmail} />
+    <TextInput placeholder="Password" secureTextEntry style={styles.input} value={password} onChangeText={setPassword} />
+    <Button title="Sign up" onPress={() => void run(() => authClient.signUp.email({ email, password, name: "Mobile developer", callbackURL: verificationCallbackURL }))} />
+    <Button title="Sign in" onPress={() => void run(() => authClient.signIn.email({ email, password }))} />
+    <Button title="Reset password" onPress={() => void run(() => authClient.requestPasswordReset({ email, redirectTo: resetCallbackURL }))} />
+    <Button title="Protected action" onPress={() => void run(() => api.protectedEcho.mutate({ message: "Hello from mobile" }))} />
+    <Button title="Sign out" onPress={() => void run(() => authClient.signOut())} />
+`
+    : ""
+}    {loading ? <ActivityIndicator /> : <Text accessibilityLiveRegion="polite">{message}</Text>}
+  </View>;
+}
+const styles = StyleSheet.create({
+  screen: { flex: 1, gap: spacing.medium, justifyContent: "center", padding: spacing.large, backgroundColor: colors.background },
+  title: { color: colors.foreground, fontSize: 28, fontWeight: "700" },
+  input: { borderColor: colors.muted, borderWidth: 1, padding: spacing.medium },
+});
+`,
     ),
   ];
 }
@@ -6663,6 +6944,7 @@ function environmentFile(config: InitConfig): GeneratedFile {
     ...(hasProfile(config, "web") && plan.needsApi
       ? ["API_INTERNAL_URL=http://127.0.0.1:3001"]
       : []),
+    ...(hasProfile(config, "mobile") ? ["EXPO_PUBLIC_API_URL=http://127.0.0.1:3001"] : []),
     ...(plan.needsAi ? ["AI_MAX_TOOL_BUDGET_USD=1"] : []),
     ...(plan.needsWorker ? ["WORKER_PORT=3002", "WORKER_CONCURRENCY=2"] : []),
     ...(hasProfile(config, "external-api") ? ["EXTERNAL_API_BASE_URL="] : []),
@@ -6776,7 +7058,8 @@ function deploymentFiles(config: InitConfig): GeneratedFile[] {
           domain: {
             required:
               service.name === "web" ||
-              (service.name === "api" && hasProfile(config, "external-api")),
+              (service.name === "api" &&
+                (hasProfile(config, "external-api") || hasProfile(config, "mobile"))),
             provider: "dokploy-traefik",
           },
         })),
@@ -6798,20 +7081,28 @@ function deploymentFiles(config: InitConfig): GeneratedFile[] {
 type Command = "plan" | "apply" | "inspect" | "promote" | "rollback" | "evidence";
 const command = process.argv[2] as Command | undefined;
 if (!command || !["plan", "apply", "inspect", "promote", "rollback", "evidence"].includes(command)) throw new Error("Expected plan, apply, inspect, promote, rollback, or evidence");
+const definition = JSON.parse(await readFile("deployment/dokploy/services.json", "utf8")) as { serverVersion: { candidate: string; qualification: string }; services: Array<{ name: string }> };
+if (command === "plan") {
+  process.stdout.write(\`\${JSON.stringify({ schemaVersion: 1, command, definition }, null, 2)}\\n\`);
+  process.exit(0);
+}
 const baseUrl = process.env.DOKPLOY_URL;
 const apiKey = process.env.DOKPLOY_API_KEY;
 if (!baseUrl || !apiKey) throw new Error("DOKPLOY_URL and DOKPLOY_API_KEY are required");
-const definition = JSON.parse(await readFile("deployment/dokploy/services.json", "utf8")) as { serverVersion: { candidate: string; qualification: string }; services: Array<{ name: string }> };
-if ((command === "promote" || command === "apply") && definition.serverVersion.qualification !== "qualified") throw new Error("Dokploy candidate version has not passed its disposable live qualification suite");
+if (command === "promote" && definition.serverVersion.qualification !== "qualified") throw new Error("Dokploy candidate version has not passed its disposable live qualification suite");
 const environment = process.env.DOKPLOY_ENVIRONMENT;
 if (command === "apply" && environment !== "staging") throw new Error("Dokploy apply is restricted to staging");
 if (command === "promote" && environment !== "production") throw new Error("Dokploy promote is restricted to production");
-if (command === "promote") {
+${
+  config.topology === "hardened"
+    ? `if (command === "promote") {
   const approvalEvidenceId = process.env.APPROVAL_EVIDENCE_ID?.trim();
   const initiatingActor = process.env.INITIATING_ACTOR?.trim();
   const approvingActor = process.env.APPROVING_ACTOR?.trim();
   if (!approvalEvidenceId || !initiatingActor || !approvingActor) throw new Error("Promotion requires approval evidence plus initiating and approving actor identities");
   if (initiatingActor.toLocaleLowerCase("en-US") === approvingActor.toLocaleLowerCase("en-US")) throw new Error("Promotion approval must come from a different actor");
+}`
+    : ""
 }
 const request = async (path: string, init?: RequestInit): Promise<unknown> => {
   const response = await fetch(new URL(\`api/\${path}\`, baseUrl), { ...init, headers: { "content-type": "application/json", "x-api-key": apiKey, ...init?.headers } });

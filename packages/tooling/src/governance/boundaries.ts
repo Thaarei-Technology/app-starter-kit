@@ -32,8 +32,14 @@ const isProviderModule = (specifier: string): boolean =>
       : specifier === prefix || specifier.startsWith(`${prefix}/`),
   );
 const isAllowedProviderClient = (specifier: string, owner: PackageInfo | undefined): boolean =>
-  (specifier === "better-auth/client" || specifier.startsWith("better-auth/client/")) &&
-  (owner?.name.endsWith("/api-client") ?? false);
+  (specifier === "better-auth/client" ||
+    specifier.startsWith("better-auth/client/") ||
+    specifier === "better-auth/react" ||
+    specifier.startsWith("better-auth/react/")) &&
+  (owner?.name.endsWith("/api-client") ||
+    owner?.name.endsWith("/web-app") ||
+    owner?.name.endsWith("/mobile-app") ||
+    false);
 const isAllowedInfrastructureMigration = (
   specifier: string,
   owner: PackageInfo | undefined,
@@ -50,6 +56,7 @@ const importSpecifiers = (source: string): readonly string[] => {
   const expressions = [
     /\bfrom\s*["']([^"']+)["']/g,
     /\bimport\s*["']([^"']+)["']/g,
+    /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
     /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g,
   ];
   for (const expression of expressions) {
@@ -218,6 +225,24 @@ export const checkBoundaries = async (root: string): Promise<CheckResult> => {
           diagnostic(
             "BOUNDARY_CLIENT_DATABASE",
             "Web and mobile code must not import packages/database.",
+            file,
+          ),
+        );
+      }
+      if (
+        owner !== undefined &&
+        under(file, absoluteRoot, "apps") &&
+        (relative(absoluteRoot, file).startsWith("apps/web/") ||
+          relative(absoluteRoot, file).startsWith("apps/mobile/")) &&
+        (resolvedTarget?.name.endsWith("/core") ||
+          resolvedTarget?.name.endsWith("/adapters") ||
+          resolvedTarget?.name.endsWith("/api") ||
+          specifier.startsWith("node:"))
+      ) {
+        diagnostics.push(
+          diagnostic(
+            "BOUNDARY_CLIENT_SERVER_IMPORT",
+            "Web and mobile code may use client contracts and design packages, but not server or Node runtime owners.",
             file,
           ),
         );

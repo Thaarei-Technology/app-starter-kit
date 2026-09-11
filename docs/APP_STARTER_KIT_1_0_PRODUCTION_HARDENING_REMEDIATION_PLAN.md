@@ -1,5 +1,8 @@
 # Thaarei App Starter Kit 1.0 — Production Hardening Remediation Plan
 
+> Historical plan. STARTER-022 and the current engineering contract supersede
+> its workflow and company-default decisions.
+
 - **Status:** Local implementation complete; external qualification pending
 - **Plan date:** 2026-09-06
 - **Implementation baseline:** `main`, merged from `codex/starter-kit-1-0-plan`

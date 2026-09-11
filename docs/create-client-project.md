@@ -9,15 +9,10 @@ The generated repository has its own `docs/developer-guide.md`. That guide
 covers work inside the client repository. This guide covers the creation step
 from the starter source.
 
-## Choose a creation route
+## Create into a new destination
 
-Use one of these routes. In both routes, the destination must have no tracked
-files. A cloned empty Git repository may contain its `.git` directory.
-
-### Generate locally, then publish
-
-Use this route when you want to inspect the generated files before creating the
-GitHub repository.
+The initializer writes atomically and supports only a nonexistent destination.
+Generate locally, inspect the result, then create and attach the private remote.
 
 1. Clone the private starter source and enter the checkout.
 
@@ -67,45 +62,6 @@ GitHub repository.
    Create the empty private GitHub repository before `git remote add`, or use
    `gh repo create <owner>/<repository> --private --source . --remote origin --push`.
 
-### Clone an empty private repository, then generate
-
-Use this route when the GitHub repository must exist before initialization.
-
-1. Create an empty private repository. Do not add a README, license, or
-   `.gitignore`.
-
-2. Clone the repository.
-
-   ```bash
-   git clone https://github.com/<owner>/<repository>.git example-client
-   ```
-
-3. Run the initializer from the starter checkout and point `--output` at the
-   cloned directory.
-
-   ```bash
-   cd /path/to/thaarei-starter
-   pnpm starter:init \
-     --product-id example-product \
-     --client-id example-client \
-     --display-name "Example Product" \
-     --package-scope @example \
-     --profiles web,api,data,identity \
-     --deployment dokploy \
-     --technical-owner engineering@example.com \
-     --operations-owner operations@example.com \
-     --output /path/to/example-client
-   ```
-
-4. Validate the generated repository, commit the result, and push it.
-
-   ```bash
-   cd /path/to/example-client
-   git add .
-   git commit -m "Initialize example client"
-   git push -u origin main
-   ```
-
 GitHub's **Use this template** action copies the starter source repository. It
 does not run `starter:init`, select profiles, or create a client configuration.
 Do not use that action as the client initialization route.
@@ -151,14 +107,33 @@ The output options are:
 | `--help` or `-h` | Prints usage and exits without generating files. |
 
 When the initializer writes a repository, it also runs Biome formatting and
-creates a lockfile. The `external-api` profile triggers a frozen install and
-OpenAPI client generation during initialization.
+creates a lockfile. It performs required code generation and structural checks;
+full builds, runtime tests, and deployment qualification remain separate.
+
+Before writing, use `--dry-run --json` to inspect selected and inferred
+capabilities, maturity, local services, prerequisites, and every output path.
+
+## Start local development
+
+In the generated repository, run `pnpm setup` once and `pnpm dev` thereafter.
+Setup preserves an existing `.env` and local data, starts selected dependencies,
+waits for health, and applies migrations. `pnpm doctor` is read-only and reports
+missing tools or configuration. Turborepo watch rebuilds shared packages and
+restarts dependent applications as their sources change.
+
+`APP_ENV` is required for application processes. Mobile builds also require an
+absolute `EXPO_PUBLIC_API_URL`; browser configuration remains scoped to the web
+application.
 
 ## Select profiles
 
 The base profile is always enabled. Select only the capabilities that the
 product needs. An unselected profile adds no application, package, environment
 variable, or CI job.
+
+The supported presets are `web-app`, `mobile-app`, `web-mobile-app`,
+`multi-tenant-web-app`, and `api-service`. Each includes API, data, and identity;
+the multi-tenant preset adds tenancy to the web baseline.
 
 | Profile | Adds | Required profiles |
 | --- | --- | --- |
@@ -201,6 +176,16 @@ api,data,identity,storage
 The profile order does not change the generated profile set. The initializer
 rejects unknown and duplicate names and reports missing dependencies before it
 writes files.
+
+### Add a capability after initialization
+
+The initialization recipe records history; it is not an upstream sync source.
+To add a capability, generate a temporary repository with the current profiles
+plus the new selection, compare the affected application, package, environment,
+service, and CI files, then apply reviewed product-owned edits. Update
+`.thaarei/project.json` structurally and record the capability, dependencies,
+providers, and validation in the active work item. Delete the temporary
+repository after review.
 
 ### Full-profile validation fixture
 

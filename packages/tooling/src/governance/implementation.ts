@@ -35,14 +35,9 @@ const VALID_STATUSES: readonly WorkStatus[] = ["planned", "in_progress", "blocke
 const GENERATED_HEADER = "<!-- GENERATED FILE. Run `pnpm implementation:sync`. Do not edit. -->";
 const REQUIRED_SECTIONS = [
   "Objective",
-  "Scope",
-  "Non-goals",
   "Acceptance criteria",
   "Validation",
-  "Evidence",
   "Decisions",
-  "Blockers",
-  "Handoff",
   "Completion",
 ] as const;
 const COMPLETED_ITEM_LIMIT = 5;
@@ -428,7 +423,7 @@ export const checkImplementation = async (root: string): Promise<CheckResult> =>
           code: "IMPLEMENTATION_OVERLAPPING_PATH",
           message: `Active work items ${prior.workId} and ${item.workId} overlap on ${priorPath} and ${normalizedPath}.`,
           file: item.path,
-          severity: "error",
+          severity: "warning",
         });
       } else {
         activePathOwners.set(normalizedPath, item);

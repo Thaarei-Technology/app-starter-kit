@@ -1,5 +1,8 @@
 # Thaarei App Starter Kit 1.0 — Company-Wide Foundation Plan
 
+> Historical plan. STARTER-022 and the current engineering contract supersede
+> its workflow and company-default decisions.
+
 **Status:** Approved implementation baseline with final remediation decisions  
 **Plan date:** 2026-09-05  
 **Implementation repository:** `Thaarei-Technology/app-starter-kit`  

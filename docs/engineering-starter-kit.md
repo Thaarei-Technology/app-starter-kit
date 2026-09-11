@@ -34,7 +34,7 @@ listed in the project configuration.
 | --- | --- | --- |
 | `base` | Node 24 LTS, pnpm 11, Turborepo, strict TypeScript, Biome, Vitest, CI gates, package boundaries, source-of-truth checks, and `.thaarei/work` | None |
 | `web` | Next.js, React, Tailwind CSS v4, shadcn configured with Base UI, TanStack Query, TanStack Form, and `packages/design-tokens` | None |
-| `mobile` | Experimental internal-only Expo SDK 57 profile. Selection requires `--allow-experimental`; production admission is forbidden in Starter 1.0 and native iOS/Android qualification remains blocked. | `api` |
+| `mobile` | Expo SDK 57 development-build client with typed API transport, shared tokens, and Better Auth/SecureStore integration when identity is selected. Selection requires `--allow-experimental`; production admission remains forbidden until native iOS/Android qualification passes. | `api` |
 | `api` | Fastify 5, tRPC 11, Zod, Pino, request context, and health checks | `base` |
 | `data` | PostgreSQL and Drizzle, isolated in `packages/database` | `base` |
 | `identity` | Better Auth for authentication artifacts only. The application owns authorization and its records. | `api`, `data` |
